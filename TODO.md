@@ -11,9 +11,10 @@ Tracking deferred MVP scope and known issues.
 
 ## Known issues to address before real-device use
 
-- [ ] **Tokens in plaintext AsyncStorage** — `apps/mobile/src/lib/settings.ts` saves `navettedToken` via `@react-native-async-storage/async-storage`. Swap to `expo-secure-store` (already in navette's mobile deps; matches the navette pattern). High priority before sharing the binary.
+- [x] **Mobile tokens in plaintext AsyncStorage** — Now stored in `expo-secure-store` (`apps/mobile/src/lib/settings.ts`). Migrates legacy AsyncStorage tokens on first read.
+- [ ] **Desktop tokens in plaintext localStorage** — `apps/desktop/src/lib/storage.ts` still writes the token to `localStorage`. Move to an OS keychain via Tauri (`tauri-plugin-keyring` or similar) before distributing a desktop build.
 - [ ] **WS read-loop blocks during `claude -p`** — `navette/src/ws.rs` arms await `capture::handlers::handle_*` inline. A 5–30s Claude call blocks that single client's read loop; rapid double-Submit fails with "Not connected". Other clients unaffected. To fix: `tokio::spawn` the handler with a `mpsc` channel back to the sink writer, similar to how `run_session` decouples session work from the WS task.
-- [ ] **No request timeout on the daemon side** — Client has a 60s `requestTimeoutMs` (`packages/shared/src/client.ts`). Daemon side has no timeout — a hung `claude` process leaves the WS read loop wedged. Add `tokio::time::timeout` around `run_claude`.
+- [x] **Daemon-side `claude -p` timeout** — Hard 120s ceiling lands in `navette/src/capture/claude.rs` (PR Entrevoix/navette#34). Per-request configurable timeout still pending.
 
 ## Nice-to-have (post-MVP)
 

@@ -77,12 +77,11 @@ sync_folder = "/home/user/Obsidian/Carnet"
 
 ## ⚠️ Pre-production warning
 
-The mobile app currently stores the navetted token in **plaintext AsyncStorage**;
-the desktop app stores it in **plaintext localStorage**. This is acceptable for
-local development on a trusted device, but **do not ship to a real device or
-distribute a build** until tokens move to `expo-secure-store` (mobile) and an
-OS keychain via Tauri (desktop). See `TODO.md` "Known issues to address before
-real-device use" for tracking.
+The desktop app currently stores the navetted token in **plaintext
+localStorage**. This is acceptable for local development on a trusted
+machine, but **do not distribute a desktop build** until tokens move to an
+OS keychain via Tauri. The mobile app now uses `expo-secure-store` for the
+token. See `TODO.md` for tracking.
 
 ## License
 
