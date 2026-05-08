@@ -1,0 +1,17 @@
+{
+  "name": "carnet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mobile-first knowledge capture for Obsidian, with LLM enrichment over WebSocket to navetted",
+  "license": "AGPL-3.0-only",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build:shared": "npm -w @carnet/shared run build",
+    "mobile": "npm -w @carnet/mobile start",
+    "desktop": "npm -w @carnet/desktop run dev",
+    "desktop:tauri": "npm -w @carnet/desktop run tauri dev"
+  }
+}
