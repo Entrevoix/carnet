@@ -1,0 +1,144 @@
+import { useRef, useState } from "react";
+import { StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  Button,
+  HelperText,
+  IconButton,
+  Modal,
+  Portal,
+  Text,
+} from "react-native-paper";
+import { CameraView, useCameraPermissions } from "expo-camera";
+
+import { ocrBusinessCard } from "../lib/ocr";
+import { getSettings } from "../lib/settings";
+
+interface Props {
+  visible: boolean;
+  onResult: (text: string) => void;
+  onClose: () => void;
+}
+
+export function CardScannerModal({ visible, onResult, onClose }: Props) {
+  const cameraRef = useRef<CameraView>(null);
+  const [permission, requestPermission] = useCameraPermissions();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const capture = async () => {
+    if (!cameraRef.current) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        base64: true,
+        quality: 0.6,
+      });
+      if (!photo?.base64) {
+        throw new Error("aucune image capturée");
+      }
+      const settings = await getSettings();
+      const { text } = await ocrBusinessCard(settings.omniRouteUrl, photo.base64);
+      onResult(text);
+      onClose();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const grant = async () => {
+    const result = await requestPermission();
+    if (!result.granted) {
+      setError("Permission caméra refusée");
+    }
+  };
+
+  return (
+    <Portal>
+      <Modal
+        visible={visible}
+        onDismiss={onClose}
+        contentContainerStyle={styles.modal}
+      >
+        <View style={styles.header}>
+          <Text variant="titleMedium">Scanner la carte</Text>
+          <IconButton
+            icon="close"
+            onPress={onClose}
+            accessibilityLabel="Fermer et saisir manuellement"
+          />
+        </View>
+
+        {!permission ? (
+          <View style={styles.body}>
+            <ActivityIndicator />
+          </View>
+        ) : !permission.granted ? (
+          <View style={styles.body}>
+            <Text>Autorisation caméra requise.</Text>
+            <Button mode="contained" onPress={grant} style={styles.grantBtn}>
+              Autoriser la caméra
+            </Button>
+          </View>
+        ) : (
+          <View style={styles.body}>
+            <CameraView ref={cameraRef} style={styles.camera} facing="back" />
+            <Button
+              mode="contained"
+              icon="camera"
+              onPress={capture}
+              loading={busy}
+              disabled={busy}
+              style={styles.captureBtn}
+            >
+              Capturer
+            </Button>
+            {busy && (
+              <HelperText type="info" visible>
+                OCR en cours…
+              </HelperText>
+            )}
+            {error && (
+              <HelperText type="error" visible>
+                {error}
+              </HelperText>
+            )}
+          </View>
+        )}
+      </Modal>
+    </Portal>
+  );
+}
+
+const styles = StyleSheet.create({
+  modal: {
+    backgroundColor: "white",
+    margin: 16,
+    padding: 0,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingLeft: 16,
+  },
+  body: {
+    padding: 16,
+    gap: 12,
+  },
+  camera: {
+    aspectRatio: 3 / 4,
+    width: "100%",
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+  captureBtn: {},
+  grantBtn: {
+    marginTop: 12,
+  },
+});
