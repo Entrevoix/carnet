@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Carnet",
+    "slug": "carnet",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#1A1A1A"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "us.beary.carnet",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Carnet uses speech recognition to transcribe your voice notes into journal entries.",
+        "NSMicrophoneUsageDescription": "Carnet uses the microphone to capture voice notes.",
+        "NSCameraUsageDescription": "Carnet uses the camera to capture business cards for the contact mode."
+      }
+    },
+    "android": {
+      "softwareKeyboardLayoutMode": "adjustResize",
+      "package": "us.beary.carnet",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Carnet uses the camera to capture business cards for contacts."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "androidSpeechServicePackages": [
+            "com.google.android.as",
+            "com.google.android.tts"
+          ]
+        }
+      ]
+    ]
+  }
+}
