@@ -12,8 +12,8 @@ build/
 web-build/
 
 # Tauri
-src-tauri/target/
-src-tauri/gen/
+**/src-tauri/target/
+**/src-tauri/gen/
 
 # OS
 .DS_Store

@@ -7,7 +7,7 @@ export function useConnectionStatus(): ConnectionStatus {
   const [status, setStatus] = useState<ConnectionStatus>(getCurrentStatus());
 
   useEffect(() => {
-    getClient();
+    void getClient();
     const unsubscribe = subscribeStatus(setStatus);
     return unsubscribe;
   }, []);

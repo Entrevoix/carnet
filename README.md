@@ -75,14 +75,6 @@ Daemon-side `~/.config/navetted/config.toml`:
 sync_folder = "/home/user/Obsidian/Carnet"
 ```
 
-## ⚠️ Pre-production warning
-
-The desktop app currently stores the navetted token in **plaintext
-localStorage**. This is acceptable for local development on a trusted
-machine, but **do not distribute a desktop build** until tokens move to an
-OS keychain via Tauri. The mobile app now uses `expo-secure-store` for the
-token. See `TODO.md` for tracking.
-
 ## License
 
 AGPL-3.0-only

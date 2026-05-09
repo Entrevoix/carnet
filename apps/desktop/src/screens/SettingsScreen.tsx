@@ -16,7 +16,7 @@ interface TestResult {
 }
 
 export default function SettingsScreen() {
-  const [settings, setSettings] = useState<Settings>(getSettings());
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [clientId, setClientId] = useState("");
   const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -24,13 +24,22 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     setClientId(getClientId());
+    void getSettings().then(setSettings);
   }, []);
+
+  if (!settings) {
+    return (
+      <main className="screen">
+        <p className="muted">Chargement…</p>
+      </main>
+    );
+  }
 
   const update = (patch: Partial<Settings>) =>
     setSettings({ ...settings, ...patch });
 
-  const save = () => {
-    saveSettings(settings);
+  const save = async () => {
+    await saveSettings(settings);
     disconnectClient();
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
@@ -121,7 +130,7 @@ export default function SettingsScreen() {
           <p className={testResult.ok ? "info" : "error"}>{testResult.msg}</p>
         )}
 
-        <button onClick={save} className="primary-btn">
+        <button onClick={() => void save()} className="primary-btn">
           Enregistrer
         </button>
         {saved && <p className="info">Paramètres enregistrés</p>}
