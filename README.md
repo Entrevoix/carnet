@@ -41,7 +41,7 @@ Three capture modes:
 - Node 20+
 - npm 10+
 - For mobile: Expo CLI, Xcode/Android Studio simulators or a physical device with Expo Go
-- For desktop: Rust toolchain + Tauri v2 prerequisites (per platform)
+- For desktop: Rust toolchain + Tauri v2 prerequisites (per platform). Linux additionally needs a keyring daemon (`gnome-keyring` or `kwallet`) running so the navetted token can be stored via the Secret Service API.
 - A running `navetted` (in the sibling [navette](../navette) repo) with `[carnet] sync_folder = "..."` configured
 
 ## Build

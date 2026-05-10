@@ -10,6 +10,7 @@
 //! `src/lib/secureStorage.ts`.
 
 use tauri::{
+    async_runtime,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     Manager,
@@ -18,34 +19,50 @@ use tauri::{
 const KEYRING_SERVICE: &str = "carnet";
 const KEYRING_USER: &str = "navetted_token";
 
+// The `keyring` crate is synchronous (the OS APIs it wraps are blocking).
+// Run each call on a blocking worker so the async runtime isn't stalled
+// while libsecret / Security.framework / Credential Manager does its thing.
+
 #[tauri::command]
 async fn get_navetted_token() -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-        .map_err(|e| format!("keyring init: {e}"))?;
-    match entry.get_password() {
-        Ok(pw) => Ok(Some(pw)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keyring read: {e}")),
-    }
+    async_runtime::spawn_blocking(|| -> Result<Option<String>, String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+            .map_err(|e| format!("keyring init: {e}"))?;
+        match entry.get_password() {
+            Ok(pw) => Ok(Some(pw)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(format!("keyring read: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("keyring task join: {e}"))?
 }
 
 #[tauri::command]
 async fn set_navetted_token(token: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-        .map_err(|e| format!("keyring init: {e}"))?;
-    entry
-        .set_password(&token)
-        .map_err(|e| format!("keyring write: {e}"))
+    async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+            .map_err(|e| format!("keyring init: {e}"))?;
+        entry
+            .set_password(&token)
+            .map_err(|e| format!("keyring write: {e}"))
+    })
+    .await
+    .map_err(|e| format!("keyring task join: {e}"))?
 }
 
 #[tauri::command]
 async fn delete_navetted_token() -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-        .map_err(|e| format!("keyring init: {e}"))?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(format!("keyring delete: {e}")),
-    }
+    async_runtime::spawn_blocking(|| -> Result<(), String> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+            .map_err(|e| format!("keyring init: {e}"))?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(format!("keyring delete: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("keyring task join: {e}"))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

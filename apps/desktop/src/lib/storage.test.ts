@@ -137,3 +137,50 @@ describe("getSettings — keychain migration", () => {
     expect(persisted.navettedToken).toBeUndefined();
   });
 });
+
+describe("saveSettings — delete path", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    localStorage.clear();
+    vi.resetModules();
+  });
+
+  it("calls delete_navetted_token when given an empty token", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "delete_navetted_token") return Promise.resolve();
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    const { saveSettings } = await import("./storage.js");
+    await saveSettings({
+      navettedUrl: "ws://x:7878",
+      omniRouteUrl: "",
+      navettedToken: "",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("delete_navetted_token");
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "set_navetted_token",
+      expect.anything(),
+    );
+  });
+
+  it("calls set_navetted_token when given a non-empty token", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "set_navetted_token") return Promise.resolve();
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    const { saveSettings } = await import("./storage.js");
+    await saveSettings({
+      navettedUrl: "ws://x:7878",
+      omniRouteUrl: "",
+      navettedToken: "fresh-token",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("set_navetted_token", {
+      token: "fresh-token",
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith("delete_navetted_token");
+  });
+});
