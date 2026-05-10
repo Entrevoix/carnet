@@ -47,6 +47,13 @@ async function buildClient(): Promise<NavettedClient> {
  * Returns a singleton NavettedClient. Concurrent callers serialise behind a
  * single in-flight build promise so we never construct two NavettedClients
  * for the same key. Mirrors the mobile pattern.
+ *
+ * Invariant: settingsKey changes only after `disconnectClient()` runs (in
+ * `saveSettings` callers), and `getSettings()` is awaited *inside*
+ * `buildClient`. So an in-flight `buildClient()` and any concurrent
+ * `getClient()` call that reuses `buildingClient` see a consistent
+ * (settings, cachedClient) tuple — there's no race between the read of
+ * settings and the cache check.
  */
 export function getClient(): Promise<NavettedClient> {
   if (buildingClient) return buildingClient;

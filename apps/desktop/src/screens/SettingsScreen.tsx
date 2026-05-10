@@ -15,16 +15,34 @@ interface TestResult {
   msg: string;
 }
 
+const FALLBACK_SETTINGS: Settings = {
+  navettedUrl: "ws://localhost:7878",
+  navettedToken: "",
+  omniRouteUrl: "",
+};
+
 export default function SettingsScreen() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [clientId, setClientId] = useState("");
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   useEffect(() => {
     setClientId(getClientId());
-    void getSettings().then(setSettings);
+    // Catch on the load path: if getSettings rejects (e.g. keyring write
+    // failure during legacy migration on Linux without a daemon), surface
+    // the error and fall back to defaults so the form stays usable. Without
+    // this, the screen wedges on "Chargement…" with no escape.
+    void getSettings()
+      .then(setSettings)
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        setSettings({ ...FALLBACK_SETTINGS });
+        setLoadError(msg);
+      });
   }, []);
 
   if (!settings) {
@@ -39,10 +57,17 @@ export default function SettingsScreen() {
     setSettings({ ...settings, ...patch });
 
   const save = async () => {
-    await saveSettings(settings);
-    disconnectClient();
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setSaveError(null);
+    try {
+      await saveSettings(settings);
+      disconnectClient();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e: unknown) {
+      // Without this, a keychain write failure leaves the user re-tapping
+      // Save with no feedback while the same error fires every time.
+      setSaveError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const testConnection = async () => {
@@ -88,6 +113,12 @@ export default function SettingsScreen() {
       </header>
 
       <section className="form">
+        {loadError && (
+          <p className="error">
+            Impossible de charger les paramètres ({loadError}). Saisis-les à
+            nouveau ci-dessous.
+          </p>
+        )}
         <label>
           <span>navetted URL</span>
           <input
@@ -134,6 +165,9 @@ export default function SettingsScreen() {
           Enregistrer
         </button>
         {saved && <p className="info">Paramètres enregistrés</p>}
+        {saveError && (
+          <p className="error">Échec de l'enregistrement: {saveError}</p>
+        )}
       </section>
     </main>
   );
