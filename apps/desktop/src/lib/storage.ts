@@ -68,16 +68,43 @@ function writePersisted(settings: PersistedSettings): void {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitised));
 }
 
+/**
+ * Public, sync-safe read of the non-sensitive persisted fields. Used by the
+ * Settings screen to recover URL/OmniRoute when the keychain read fails — the
+ * localStorage data is still readable even when the OS keychain is unreachable.
+ */
+export function readPersistedSettings(): {
+  navettedUrl: string;
+  omniRouteUrl: string;
+} {
+  const p = readPersisted();
+  return { navettedUrl: p.navettedUrl, omniRouteUrl: p.omniRouteUrl };
+}
+
 export async function getSettings(): Promise<Settings> {
   const persisted = readPersisted();
-  let token = (await getNavettedToken()) ?? "";
+  const token = (await getNavettedToken()) ?? "";
 
-  // One-time migration: if localStorage still has a legacy token (from a
-  // pre-keychain install) and the keychain is empty, move it across and
-  // strip the field from disk.
   if (!token && persisted.navettedToken) {
-    token = persisted.navettedToken;
-    await setNavettedToken(token);
+    // One-time migration: keychain empty, legacy localStorage token present.
+    // Move the secret across, then strip the legacy field. Order matters —
+    // never strip before the keychain write succeeds, or a Linux box without
+    // a keyring daemon would lose the user's pairing.
+    const migrated = persisted.navettedToken;
+    await setNavettedToken(migrated);
+    writePersisted(persisted);
+    return {
+      navettedUrl: persisted.navettedUrl,
+      omniRouteUrl: persisted.omniRouteUrl,
+      navettedToken: migrated,
+    };
+  }
+
+  if (token && persisted.navettedToken !== undefined) {
+    // Defense-in-depth: keychain already has a token, but legacy localStorage
+    // field is still present. This means a prior migration's keychain write
+    // succeeded but the strip step was interrupted (process kill, crash, etc.).
+    // Strip it now so the secret stops sitting in plaintext.
     writePersisted(persisted);
   }
 

@@ -5,6 +5,7 @@ import { NavettedClient } from "@carnet/shared";
 import {
   getClientId,
   getSettings,
+  readPersistedSettings,
   saveSettings,
   type Settings,
 } from "../lib/storage";
@@ -32,15 +33,20 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     setClientId(getClientId());
-    // Catch on the load path: if getSettings rejects (e.g. keyring write
-    // failure during legacy migration on Linux without a daemon), surface
-    // the error and fall back to defaults so the form stays usable. Without
-    // this, the screen wedges on "Chargement…" with no escape.
+    // If getSettings rejects (e.g. keyring read failure on Linux without a
+    // daemon), the URL/OmniRoute stored in localStorage are still readable —
+    // recover them via readPersistedSettings so the user doesn't lose their
+    // saved server config when only the keychain is unavailable.
     void getSettings()
       .then(setSettings)
       .catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
-        setSettings({ ...FALLBACK_SETTINGS });
+        const persisted = readPersistedSettings();
+        setSettings({
+          navettedUrl: persisted.navettedUrl || FALLBACK_SETTINGS.navettedUrl,
+          omniRouteUrl: persisted.omniRouteUrl,
+          navettedToken: "",
+        });
         setLoadError(msg);
       });
   }, []);

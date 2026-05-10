@@ -102,4 +102,38 @@ describe("getSettings — keychain migration", () => {
       expect.anything(),
     );
   });
+
+  it("strips the legacy localStorage field even when the keychain already holds a token", async () => {
+    // Simulates a prior migration where the keychain write succeeded but
+    // the localStorage strip was interrupted (process kill / crash). On the
+    // next read, getSettings should clean up the lingering legacy field.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_navetted_token")
+        return Promise.resolve("already-in-keychain");
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+    localStorage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({
+        navettedUrl: "ws://x:7878",
+        omniRouteUrl: "",
+        navettedToken: "stale-legacy",
+      }),
+    );
+
+    const { getSettings } = await import("./storage.js");
+    const settings = await getSettings();
+
+    expect(settings.navettedToken).toBe("already-in-keychain");
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "set_navetted_token",
+      expect.anything(),
+    );
+
+    const persisted = JSON.parse(localStorage.getItem(SETTINGS_KEY)!) as Record<
+      string,
+      unknown
+    >;
+    expect(persisted.navettedToken).toBeUndefined();
+  });
 });
