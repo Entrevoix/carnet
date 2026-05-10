@@ -71,6 +71,9 @@ jobs:
       - name: Type check
         run: cd apps/desktop && npx tsc --noEmit
 
+      - name: Unit tests
+        run: npm -w @carnet/desktop test
+
       - name: Vite build (smoke)
         run: cd apps/desktop && npx vite build
 

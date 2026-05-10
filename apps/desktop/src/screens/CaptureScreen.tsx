@@ -46,7 +46,7 @@ export default function CaptureScreen() {
     setPhase("submitting");
     setError(null);
     try {
-      const client = getClient();
+      const client = await getClient();
       let result: CaptureResponse;
       if (mode === "idea") {
         result = await client.captureIdea({ text: text.trim() });
@@ -85,7 +85,7 @@ export default function CaptureScreen() {
     if (!response?.filepath || next === currentStatus) return;
     setError(null);
     try {
-      const client = getClient();
+      const client = await getClient();
       const updated = await client.promoteIdea(response.filepath, next);
       if (updated.status !== "ok") {
         throw new Error(updated.error ?? "promote failed");

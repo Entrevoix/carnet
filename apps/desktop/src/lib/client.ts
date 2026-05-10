@@ -6,6 +6,7 @@ type StatusListener = (status: ConnectionStatus, detail?: string) => void;
 
 let cachedClient: NavettedClient | null = null;
 let cachedKey: string | null = null;
+let buildingClient: Promise<NavettedClient> | null = null;
 const listeners = new Set<StatusListener>();
 let lastStatus: ConnectionStatus = "disconnected";
 
@@ -18,15 +19,14 @@ function broadcastStatus(status: ConnectionStatus, detail?: string): void {
   listeners.forEach((cb) => cb(status, detail));
 }
 
-export function getClient(): NavettedClient {
-  const settings = getSettings();
+async function buildClient(): Promise<NavettedClient> {
+  const settings = await getSettings();
   const clientId = getClientId();
   const key = settingsKey(settings, clientId);
 
   if (cachedClient && cachedKey === key) {
     return cachedClient;
   }
-
   if (cachedClient) {
     cachedClient.disconnect();
   }
@@ -41,6 +41,26 @@ export function getClient(): NavettedClient {
   cachedClient = client;
   cachedKey = key;
   return client;
+}
+
+/**
+ * Returns a singleton NavettedClient. Concurrent callers serialise behind a
+ * single in-flight build promise so we never construct two NavettedClients
+ * for the same key. Mirrors the mobile pattern.
+ *
+ * Invariant: settingsKey changes only after `disconnectClient()` runs (in
+ * `saveSettings` callers), and `getSettings()` is awaited *inside*
+ * `buildClient`. So an in-flight `buildClient()` and any concurrent
+ * `getClient()` call that reuses `buildingClient` see a consistent
+ * (settings, cachedClient) tuple — there's no race between the read of
+ * settings and the cache check.
+ */
+export function getClient(): Promise<NavettedClient> {
+  if (buildingClient) return buildingClient;
+  buildingClient = buildClient().finally(() => {
+    buildingClient = null;
+  });
+  return buildingClient;
 }
 
 export function subscribeStatus(cb: StatusListener): () => void {

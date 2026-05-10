@@ -5,6 +5,7 @@ import { NavettedClient } from "@carnet/shared";
 import {
   getClientId,
   getSettings,
+  readPersistedSettings,
   saveSettings,
   type Settings,
 } from "../lib/storage";
@@ -15,25 +16,64 @@ interface TestResult {
   msg: string;
 }
 
+const FALLBACK_SETTINGS: Settings = {
+  navettedUrl: "ws://localhost:7878",
+  navettedToken: "",
+  omniRouteUrl: "",
+};
+
 export default function SettingsScreen() {
-  const [settings, setSettings] = useState<Settings>(getSettings());
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [clientId, setClientId] = useState("");
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   useEffect(() => {
     setClientId(getClientId());
+    // If getSettings rejects (e.g. keyring read failure on Linux without a
+    // daemon), the URL/OmniRoute stored in localStorage are still readable —
+    // recover them via readPersistedSettings so the user doesn't lose their
+    // saved server config when only the keychain is unavailable.
+    void getSettings()
+      .then(setSettings)
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        const persisted = readPersistedSettings();
+        setSettings({
+          navettedUrl: persisted.navettedUrl || FALLBACK_SETTINGS.navettedUrl,
+          omniRouteUrl: persisted.omniRouteUrl,
+          navettedToken: "",
+        });
+        setLoadError(msg);
+      });
   }, []);
+
+  if (!settings) {
+    return (
+      <main className="screen">
+        <p className="muted">Chargement…</p>
+      </main>
+    );
+  }
 
   const update = (patch: Partial<Settings>) =>
     setSettings({ ...settings, ...patch });
 
-  const save = () => {
-    saveSettings(settings);
-    disconnectClient();
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+  const save = async () => {
+    setSaveError(null);
+    try {
+      await saveSettings(settings);
+      disconnectClient();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e: unknown) {
+      // Without this, a keychain write failure leaves the user re-tapping
+      // Save with no feedback while the same error fires every time.
+      setSaveError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const testConnection = async () => {
@@ -79,6 +119,12 @@ export default function SettingsScreen() {
       </header>
 
       <section className="form">
+        {loadError && (
+          <p className="error">
+            Impossible de charger les paramètres ({loadError}). Saisis-les à
+            nouveau ci-dessous.
+          </p>
+        )}
         <label>
           <span>navetted URL</span>
           <input
@@ -121,10 +167,13 @@ export default function SettingsScreen() {
           <p className={testResult.ok ? "info" : "error"}>{testResult.msg}</p>
         )}
 
-        <button onClick={save} className="primary-btn">
+        <button onClick={() => void save()} className="primary-btn">
           Enregistrer
         </button>
         {saved && <p className="info">Paramètres enregistrés</p>}
+        {saveError && (
+          <p className="error">Échec de l'enregistrement: {saveError}</p>
+        )}
       </section>
     </main>
   );

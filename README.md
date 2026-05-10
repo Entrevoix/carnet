@@ -41,7 +41,7 @@ Three capture modes:
 - Node 20+
 - npm 10+
 - For mobile: Expo CLI, Xcode/Android Studio simulators or a physical device with Expo Go
-- For desktop: Rust toolchain + Tauri v2 prerequisites (per platform)
+- For desktop: Rust toolchain + Tauri v2 prerequisites (per platform). Linux additionally needs a keyring daemon (`gnome-keyring` or `kwallet`) running so the navetted token can be stored via the Secret Service API.
 - A running `navetted` (in the sibling [navette](../navette) repo) with `[carnet] sync_folder = "..."` configured
 
 ## Build
@@ -74,14 +74,6 @@ Daemon-side `~/.config/navetted/config.toml`:
 [carnet]
 sync_folder = "/home/user/Obsidian/Carnet"
 ```
-
-## ⚠️ Pre-production warning
-
-The desktop app currently stores the navetted token in **plaintext
-localStorage**. This is acceptable for local development on a trusted
-machine, but **do not distribute a desktop build** until tokens move to an
-OS keychain via Tauri. The mobile app now uses `expo-secure-store` for the
-token. See `TODO.md` for tracking.
 
 ## License
 
