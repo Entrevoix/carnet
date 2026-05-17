@@ -5,8 +5,9 @@
     "version": "0.2.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
     "splash": {
-      "backgroundColor": "#1A1A1A"
+      "backgroundColor": "#1A1410"
     },
     "ios": {
       "supportsTablet": true,
@@ -20,6 +21,10 @@
     "android": {
       "softwareKeyboardLayoutMode": "adjustResize",
       "package": "us.beary.carnet",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1A1410"
+      },
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.CAMERA"

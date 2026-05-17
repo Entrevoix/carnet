@@ -5,10 +5,10 @@ export type {
   PersonNote,
   CaptureResponse,
   CaptureStatus,
-} from "./types.js";
+} from "./types";
 
 export {
   IDEA_STATUSES,
   parseStatusFromMarkdown,
   deriveTitle,
-} from "./markdown.js";
+} from "./markdown";

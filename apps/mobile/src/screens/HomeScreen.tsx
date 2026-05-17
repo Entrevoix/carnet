@@ -57,7 +57,7 @@ export default function HomeScreen({ navigation }: Props) {
         contentStyle={styles.buttonContent}
         labelStyle={styles.buttonLabel}
       >
-        Idée
+        Idea
       </Button>
       <Button
         mode="contained-tonal"
@@ -88,18 +88,18 @@ export default function HomeScreen({ navigation }: Props) {
         style={styles.journalShortcut}
         compact
       >
-        Continuer le journal d'aujourd'hui
+        Continue today's journal
       </Button>
 
       <Divider style={styles.divider} />
 
       {/* Last 5 captures card */}
       <Card style={styles.recentCard}>
-        <Card.Title title="Récents" />
+        <Card.Title title="Recent" />
         <Card.Content>
           {recent.length === 0 ? (
             <Text variant="bodyMedium" style={styles.emptyHint}>
-              Aucune capture pour le moment.
+              No captures yet.
             </Text>
           ) : (
             <View>
@@ -125,7 +125,7 @@ export default function HomeScreen({ navigation }: Props) {
 function formatMode(mode: CaptureEntry["mode"]): string {
   switch (mode) {
     case "idea":
-      return "Idée";
+      return "Idea";
     case "journal":
       return "Journal";
     case "person":

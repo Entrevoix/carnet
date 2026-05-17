@@ -1,6 +1,18 @@
-import { useEffect, useState } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
-import { Banner, Button, HelperText, Snackbar, Text, TextInput } from "react-native-paper";
+import { useEffect, useMemo, useState } from "react";
+import { FlatList, ScrollView, StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  Banner,
+  Button,
+  HelperText,
+  IconButton,
+  List,
+  Modal,
+  Portal,
+  Snackbar,
+  Text,
+  TextInput,
+} from "react-native-paper";
 
 import {
   DEFAULT_OMNIROUTE_MODEL,
@@ -12,12 +24,26 @@ import {
   shouldShowMigrationBanner,
   type Settings,
 } from "../lib/settings";
+import { listModels } from "../lib/omniroute";
 
 interface FormState {
   omniRouteUrl: string;
   omniRouteModel: string;
   captureFolderPath: string;
 }
+
+/**
+ * Pinned at the top of the model browser. Verified-working chat models on
+ * llm.grepon.cc for carnet's structured-markdown use case — the catalog also
+ * contains embeddings, image gen, and broken upstream routes the user has no
+ * reason to click. Order is rough quality/cost tradeoff.
+ */
+const RECOMMENDED_MODELS = [
+  "gemini/gemini-2.5-flash-lite",
+  "gemini/gemini-2.5-flash",
+  "claude/claude-haiku-4-5-20251001",
+  "claude/claude-sonnet-4-6",
+] as const;
 
 export default function SettingsScreen() {
   const [form, setForm] = useState<FormState | null>(null);
@@ -26,6 +52,28 @@ export default function SettingsScreen() {
   const [pendingKey, setPendingKey] = useState<string>("");
   const [saved, setSaved] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
+
+  // Model browser state — opens a modal that lists available models from
+  // GET /v1/models so the user can pick from the actual catalog instead of
+  // guessing a model name.
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseError, setBrowseError] = useState<string | null>(null);
+  const [models, setModels] = useState<string[] | null>(null);
+  const [modelFilter, setModelFilter] = useState("");
+
+  // useMemo MUST run on every render in the same order — must live above
+  // the `if (!form) return …` early return below, or hook count changes
+  // between renders and React throws "Rendered more hooks than…".
+  const { recommended, others } = useMemo(() => {
+    if (!models) return { recommended: [], others: [] as string[] };
+    const q = modelFilter.trim().toLowerCase();
+    const matches = q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
+    const recSet = new Set<string>(RECOMMENDED_MODELS);
+    const rec = RECOMMENDED_MODELS.filter((m) => matches.includes(m));
+    const rest = matches.filter((m) => !recSet.has(m));
+    return { recommended: rec as string[], others: rest };
+  }, [models, modelFilter]);
 
   useEffect(() => {
     void (async () => {
@@ -47,7 +95,7 @@ export default function SettingsScreen() {
   if (!form) {
     return (
       <View style={styles.loading}>
-        <Text>Chargement…</Text>
+        <Text>Loading…</Text>
       </View>
     );
   }
@@ -90,20 +138,49 @@ export default function SettingsScreen() {
     setShowBanner(false);
   };
 
+  /** Open the model browser. Uses the URL from form state and the API key
+   * from SecureStore (via getSettings) — or the freshly-typed pendingKey
+   * if the user hasn't saved it yet. */
+  const openBrowse = async () => {
+    if (!form) return;
+    setBrowseError(null);
+    setBrowseOpen(true);
+    setModelFilter("");
+    // Refetch every open — the user may have changed URL/key since last time.
+    setBrowseLoading(true);
+    try {
+      const stored = await getSettings();
+      const key = pendingKey.length > 0 ? pendingKey : stored.omniRouteApiKey;
+      const list = await listModels(form.omniRouteUrl, key);
+      setModels(list);
+    } catch (e: unknown) {
+      setBrowseError(e instanceof Error ? e.message : String(e));
+      setModels(null);
+    } finally {
+      setBrowseLoading(false);
+    }
+  };
+
+  const pickModel = (id: string) => {
+    if (!form) return;
+    setForm({ ...form, omniRouteModel: id });
+    setBrowseOpen(false);
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.content}>
       <Banner
         visible={showBanner}
         actions={[
           {
-            label: "OK, compris",
+            label: "OK, got it",
             onPress: handleDismissBanner,
           },
         ]}
         icon="information"
       >
-        navetted a été remplacé par OmniRoute. Configure ta clé OmniRoute
-        ci-dessous pour continuer à capturer.
+        navetted has been replaced by OmniRoute. Configure your OmniRoute key
+        below to continue capturing.
       </Banner>
 
       <TextInput
@@ -116,30 +193,30 @@ export default function SettingsScreen() {
         onChangeText={(v) => update({ omniRouteUrl: v })}
       />
       <HelperText type="info" visible>
-        URL de base OmniRoute, doit commencer par https:// (ex: https://llm.grepon.cc)
+        OmniRoute base URL — must start with https:// (e.g. https://llm.grepon.cc)
       </HelperText>
 
       <TextInput
-        label={keyConfigured && pendingKey.length === 0 ? "OmniRoute API key (configurée)" : "OmniRoute API key"}
+        label={keyConfigured && pendingKey.length === 0 ? "OmniRoute API key (configured)" : "OmniRoute API key"}
         mode="outlined"
         autoCapitalize="none"
         autoCorrect={false}
         secureTextEntry
-        placeholder={keyConfigured ? "•••• configurée — tape pour remplacer" : "sk-..."}
+        placeholder={keyConfigured ? "•••• configured — tap to replace" : "sk-..."}
         value={pendingKey}
         onChangeText={setPendingKey}
       />
       <HelperText type="info" visible>
-        Stockée dans le trousseau sécurisé. La clé existante n'est jamais ré-affichée.
+        Stored in the secure keychain. The existing key is never shown again.
       </HelperText>
       {keyConfigured && (
         <Button mode="text" compact onPress={clearKey} style={styles.clearKey}>
-          Effacer la clé
+          Clear key
         </Button>
       )}
 
       <TextInput
-        label="Modèle"
+        label="Model"
         mode="outlined"
         autoCapitalize="none"
         autoCorrect={false}
@@ -148,24 +225,34 @@ export default function SettingsScreen() {
         placeholder={DEFAULT_OMNIROUTE_MODEL}
       />
       <HelperText type="info" visible>
-        Modèle OmniRoute (ex: gpt-4o-mini, claude-sonnet-4, gemini-1.5-pro)
+        OmniRoute model — tap Browse to pick from your provider's catalog
       </HelperText>
+      <Button
+        mode="text"
+        icon="format-list-bulleted"
+        compact
+        onPress={openBrowse}
+        disabled={!form.omniRouteUrl.trim()}
+        style={styles.browseBtn}
+      >
+        Browse available models
+      </Button>
 
       <TextInput
-        label="Dossier de capture"
+        label="Capture folder"
         mode="outlined"
         autoCapitalize="none"
         autoCorrect={false}
         value={form.captureFolderPath}
         onChangeText={(v) => update({ captureFolderPath: v })}
-        placeholder="(dossier sandbox par défaut)"
+        placeholder="(app sandbox folder by default)"
       />
       <HelperText type="info" visible>
-        Chemin du dossier Syncthing sur Android (ex: /storage/emulated/0/carnet)
+        Syncthing folder path on Android (e.g. /storage/emulated/0/carnet)
       </HelperText>
 
       <Button mode="contained" onPress={save} style={styles.save}>
-        Enregistrer
+        Save
       </Button>
 
       <Snackbar
@@ -173,8 +260,99 @@ export default function SettingsScreen() {
         onDismiss={() => setSaved(false)}
         duration={2500}
       >
-        Paramètres enregistrés
+        Settings saved
       </Snackbar>
+
+      <Portal>
+        <Modal
+          visible={browseOpen}
+          onDismiss={() => setBrowseOpen(false)}
+          contentContainerStyle={styles.browseModal}
+        >
+          <View style={styles.browseHeader}>
+            <Text variant="titleMedium">Available models</Text>
+            <IconButton
+              icon="close"
+              onPress={() => setBrowseOpen(false)}
+              accessibilityLabel="Close model browser"
+            />
+          </View>
+          {browseLoading ? (
+            <View style={styles.browseLoading}>
+              <ActivityIndicator />
+              <Text style={styles.browseLoadingText}>Fetching catalog…</Text>
+            </View>
+          ) : browseError ? (
+            <View style={styles.browseBody}>
+              <HelperText type="error" visible>
+                {browseError}
+              </HelperText>
+              <Button mode="contained-tonal" onPress={openBrowse}>
+                Retry
+              </Button>
+            </View>
+          ) : (
+            <View style={styles.browseBody}>
+              <TextInput
+                mode="outlined"
+                placeholder="Filter (e.g. claude, gemini, gpt)"
+                autoCapitalize="none"
+                autoCorrect={false}
+                value={modelFilter}
+                onChangeText={setModelFilter}
+                dense
+              />
+              <Text variant="bodySmall" style={styles.browseCount}>
+                {recommended.length + others.length} model
+                {recommended.length + others.length === 1 ? "" : "s"}
+                {modelFilter ? ` matching “${modelFilter}”` : ""}
+              </Text>
+              <FlatList
+                data={others}
+                keyExtractor={(item) => item}
+                style={styles.browseList}
+                ListHeaderComponent={
+                  recommended.length > 0 ? (
+                    <View>
+                      <List.Subheader style={styles.browseSubheader}>
+                        Recommended for carnet
+                      </List.Subheader>
+                      {recommended.map((item) => (
+                        <List.Item
+                          key={item}
+                          title={item}
+                          titleNumberOfLines={2}
+                          onPress={() => pickModel(item)}
+                          style={styles.browseRow}
+                          left={(p) => <List.Icon {...p} icon="star" />}
+                        />
+                      ))}
+                      {others.length > 0 && (
+                        <List.Subheader style={styles.browseSubheader}>
+                          All available
+                        </List.Subheader>
+                      )}
+                    </View>
+                  ) : null
+                }
+                renderItem={({ item }) => (
+                  <List.Item
+                    title={item}
+                    titleNumberOfLines={2}
+                    onPress={() => pickModel(item)}
+                    style={styles.browseRow}
+                  />
+                )}
+                ListEmptyComponent={
+                  recommended.length === 0 ? (
+                    <Text style={styles.browseEmpty}>No models match.</Text>
+                  ) : null
+                }
+              />
+            </View>
+          )}
+        </Modal>
+      </Portal>
     </ScrollView>
   );
 }
@@ -191,4 +369,26 @@ const styles = StyleSheet.create({
   content: { padding: 16, gap: 4 },
   save: { marginTop: 12 },
   clearKey: { alignSelf: "flex-start", marginTop: 4 },
+  browseBtn: { alignSelf: "flex-start", marginTop: 4 },
+  browseModal: {
+    backgroundColor: "white",
+    margin: 16,
+    borderRadius: 12,
+    maxHeight: "85%",
+    overflow: "hidden",
+  },
+  browseHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingLeft: 16,
+  },
+  browseBody: { padding: 16, gap: 8, flexShrink: 1 },
+  browseList: { flexGrow: 0, maxHeight: 480 },
+  browseRow: { paddingVertical: 0 },
+  browseLoading: { padding: 32, alignItems: "center", gap: 8 },
+  browseLoadingText: { opacity: 0.7 },
+  browseCount: { opacity: 0.6, paddingHorizontal: 4 },
+  browseSubheader: { paddingHorizontal: 0, paddingTop: 4 },
+  browseEmpty: { textAlign: "center", opacity: 0.6, padding: 24 },
 });

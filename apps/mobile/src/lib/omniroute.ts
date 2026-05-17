@@ -106,7 +106,12 @@ async function chatCompletion(
     { role: "user", content: prompt.user },
   ];
 
-  const body = JSON.stringify({ model, messages });
+  // stream: false is REQUIRED. OmniRoute (LiteLLM-style proxy) defaults to
+  // text/event-stream even when stream is omitted. RN's fetch then hangs on
+  // `await response.json()` because the SSE body never closes into a parseable
+  // JSON document. Explicitly opting out of streaming returns application/json
+  // with a single chat.completion object.
+  const body = JSON.stringify({ model, messages, stream: false });
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -190,7 +195,73 @@ async function getApiKey(): Promise<string> {
 
 async function getModel(): Promise<string> {
   const settings = await getSettings();
-  return settings.omniRouteModel.trim() || "gpt-4o-mini";
+  return settings.omniRouteModel.trim() || "openrouter/openai/gpt-4o-mini";
+}
+
+/**
+ * Fetch the available model catalog from `${baseUrl}/v1/models`. Returns
+ * the sorted list of model IDs. Same auth + HTTPS rules as chatCompletion.
+ *
+ * This is the network primitive behind the Settings screen's "Browse
+ * models" picker — so the user can see what's actually available on their
+ * OmniRoute instance instead of guessing a model name.
+ */
+export async function listModels(
+  baseUrl: string,
+  apiKey: string,
+): Promise<string[]> {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  if (!/^https:\/\//i.test(trimmed)) {
+    const isLocal = /^http:\/\/(localhost|127\.0\.0\.1|10\.)/i.test(trimmed);
+    if (!isLocal) {
+      throw new OmniRouteError(
+        "OmniRoute URL must use https:// to protect the API key",
+        0,
+      );
+    }
+  }
+
+  const url = `${trimmed}/v1/models`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: {
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      signal: controller.signal,
+    });
+  } catch (e: unknown) {
+    clearTimeout(timer);
+    const raw = e instanceof Error ? e.message : String(e);
+    throw new OmniRouteError(
+      `OmniRoute network error — ${sanitizeErrorMessage(raw)}`,
+      0,
+    );
+  }
+  clearTimeout(timer);
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const errBody = (await response.json()) as OpenAIResponse;
+      if (errBody.error?.message) {
+        detail += `: ${sanitizeErrorMessage(errBody.error.message)}`;
+      }
+    } catch {
+      // ignore parse failure
+    }
+    throw new OmniRouteError(`OmniRoute error — ${detail}`, response.status);
+  }
+
+  const json = (await response.json()) as { data?: Array<{ id?: string }> };
+  const ids = (json.data ?? [])
+    .map((m) => m.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  return [...new Set(ids)].sort();
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

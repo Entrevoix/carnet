@@ -57,7 +57,7 @@ export default function App() {
             options={({ route }) => ({
               title:
                 route.params.mode === "idea"
-                  ? "Idée"
+                  ? "Idea"
                   : route.params.mode === "journal"
                     ? "Journal"
                     : "Contact",
@@ -66,7 +66,7 @@ export default function App() {
           <Stack.Screen
             name="Settings"
             component={SettingsScreen}
-            options={{ title: "Paramètres" }}
+            options={{ title: "Settings" }}
           />
         </Stack.Navigator>
       </NavigationContainer>

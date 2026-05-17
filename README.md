@@ -81,13 +81,13 @@ npm -w @carnet/shared run typecheck
 
 ## Configuration
 
-Open the **Paramètres** screen in the app and set:
+Open the **Settings** screen in the app and set:
 
 | Setting | Description |
 |---------|-------------|
 | OmniRoute URL | Base URL of your OmniRoute instance (e.g. `https://llm.grepon.cc`) |
 | OmniRoute API key | Your API key — stored in the OS secure keystore via `expo-secure-store` |
-| Dossier de capture | Path to your Syncthing-watched folder on Android (e.g. `/storage/emulated/0/carnet`). Leave blank to use the app sandbox. |
+| Capture folder | Path to your Syncthing-watched folder on Android (e.g. `/storage/emulated/0/carnet`). Leave blank to use the app sandbox. |
 
 ### Syncthing sync
 

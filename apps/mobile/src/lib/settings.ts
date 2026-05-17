@@ -14,7 +14,7 @@ const MIGRATION_BANNER_KEY = "carnet:migration_banner_dismissed:v1";
  * unconditional sweep so we don't hit SecureStore on every getSettings(). */
 const LEGACY_PURGE_KEY = "carnet:legacy_purge:v1";
 
-export const DEFAULT_OMNIROUTE_MODEL = "gpt-4o-mini";
+export const DEFAULT_OMNIROUTE_MODEL = "openrouter/openai/gpt-4o-mini";
 
 export interface Settings {
   omniRouteUrl: string;

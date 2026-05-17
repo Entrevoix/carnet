@@ -133,7 +133,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
     await enqueueFn();
     const depth = await getQueueDepth();
     setQueueDepth(depth);
-    setError("Pas de connexion — capture mise en file d'attente.");
+    setError("Offline — capture queued.");
     setPhase("input");
   };
 
@@ -312,11 +312,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
             disabled={!canSubmit}
             style={styles.submit}
           >
-            Envoyer
+            Send
           </Button>
           {queueDepth > 0 && (
             <HelperText type="info" visible>
-              {queueDepth} capture{queueDepth > 1 ? "s" : ""} en attente de sync
+              {queueDepth} capture{queueDepth > 1 ? "s" : ""} pending sync
             </HelperText>
           )}
           {error && (
@@ -331,7 +331,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         <View style={styles.loading}>
           <ActivityIndicator animating size="large" />
           <Text variant="bodyMedium" style={styles.loadingText}>
-            OmniRoute structure la note…
+            OmniRoute is structuring the note…
           </Text>
         </View>
       )}
@@ -339,7 +339,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       {phase === "preview" && response && (
         <Card style={styles.previewCard}>
           <Card.Title
-            title="Aperçu"
+            title="Preview"
             subtitle={(() => {
               const filename =
                 mode === "idea" && pendingIdea
@@ -381,10 +381,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
               compact
               onPress={() => setShowSource((v) => !v)}
             >
-              {showSource ? "Voir rendu" : "Voir source"}
+              {showSource ? "View rendered" : "View source"}
             </Button>
             <Button onPress={confirmSave} mode="contained">
-              Enregistrer
+              Save
             </Button>
           </Card.Actions>
         </Card>
@@ -416,7 +416,7 @@ function ModeInput({
     return (
       <View>
         <TextInput
-          label="Ton idée"
+          label="Your idea"
           mode="outlined"
           multiline
           numberOfLines={6}
@@ -425,7 +425,7 @@ function ModeInput({
           autoFocus
         />
         <Text variant="bodySmall" style={styles.wordCounter}>
-          {text.length} car.
+          {text.length} chars
         </Text>
       </View>
     );
@@ -444,11 +444,11 @@ function ModeInput({
             }}
           />
           <Text variant="bodySmall" style={styles.voiceHint}>
-            Maintenir pour enregistrer
+            Hold to record
           </Text>
         </View>
         <TextInput
-          label="Transcription"
+          label="Transcript"
           mode="outlined"
           multiline
           numberOfLines={5}
@@ -456,7 +456,7 @@ function ModeInput({
           onChangeText={onTranscriptChange}
         />
         <TextInput
-          label="Notes additionnelles"
+          label="Additional notes"
           mode="outlined"
           multiline
           numberOfLines={3}
@@ -497,7 +497,7 @@ function PersonInput({
     const settings = await getSettings();
     if (!settings.omniRouteUrl.trim()) {
       setHint(
-        "OmniRoute non configuré. Saisis le texte de la carte ci-dessous, puis Envoyer.",
+        "OmniRoute not configured. Type the card text below, then tap Send.",
       );
       return;
     }
@@ -507,7 +507,7 @@ function PersonInput({
   return (
     <View style={styles.personBlock}>
       <Button icon="camera" mode="contained-tonal" onPress={open}>
-        Scanner la carte
+        Scan card
       </Button>
       {hint && (
         <HelperText type="info" visible>
@@ -515,7 +515,7 @@ function PersonInput({
         </HelperText>
       )}
       <TextInput
-        label="Texte OCR (carte de visite)"
+        label="OCR text (business card)"
         mode="outlined"
         multiline
         numberOfLines={4}
@@ -523,7 +523,7 @@ function PersonInput({
         onChangeText={onOcrChange}
       />
       <TextInput
-        label="Contexte de la rencontre"
+        label="Meeting context"
         mode="outlined"
         multiline
         numberOfLines={3}
