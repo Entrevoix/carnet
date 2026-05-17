@@ -13,7 +13,7 @@ Tracking deferred MVP scope and known issues.
 
 - [x] **Mobile tokens in plaintext AsyncStorage** — Now stored in `expo-secure-store` (`apps/mobile/src/lib/settings.ts`). Migrates legacy AsyncStorage tokens on first read.
 - [x] **Desktop tokens in plaintext localStorage** — Now stored in the OS keychain (macOS Keychain / Windows Credential Manager / Linux Secret Service) via three Tauri commands wrapping the `keyring` crate. Migrates legacy localStorage tokens on first read.
-- [ ] **WS read-loop blocks during `claude -p`** — `navette/src/ws.rs` arms await `capture::handlers::handle_*` inline. A 5–30s Claude call blocks that single client's read loop; rapid double-Submit fails with "Not connected". Other clients unaffected. To fix: `tokio::spawn` the handler with a `mpsc` channel back to the sink writer, similar to how `run_session` decouples session work from the WS task.
+- [x] **WS read-loop blocks during `claude -p`** — Decoupled in Entrevoix/navette#35. Each capture handler now runs in its own `tokio::spawn`, replies flow back through a per-connection `mpsc<Message>` channel drained by the WS `select!`. Plus per-connection capture-concurrency cap (`max_concurrent_captures`, default 4), panic guard via nested `JoinHandle`, and ack-before-persist so mid-flight disconnects no longer duplicate files in the sync folder.
 - [x] **Daemon-side `claude -p` timeout** — Hard 120s ceiling lands in `navette/src/capture/claude.rs` (PR Entrevoix/navette#34). Per-request configurable timeout still pending.
 
 ## Nice-to-have (post-MVP)
