@@ -12,11 +12,14 @@ export interface Settings {
   navettedToken: string;
   omniRouteUrl: string;
   omniRouteApiKey: string;
+  /** Feature flag: use OmniRoute + local writer instead of navetted. */
+  experimentalOmniRoute: boolean;
 }
 
 interface PersistedSettings {
   navettedUrl: string;
   omniRouteUrl: string;
+  experimentalOmniRoute: boolean;
   // navettedToken intentionally absent — lives in SecureStore.
   navettedToken?: string; // legacy, migrated on first read
 }
@@ -24,6 +27,7 @@ interface PersistedSettings {
 const DEFAULT_PERSISTED: PersistedSettings = {
   navettedUrl: "ws://100.0.0.1:7878",
   omniRouteUrl: "http://192.168.1.20:20128",
+  experimentalOmniRoute: false,
 };
 
 async function readPersisted(): Promise<PersistedSettings> {
@@ -43,6 +47,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
   const sanitised: PersistedSettings = {
     navettedUrl: settings.navettedUrl,
     omniRouteUrl: settings.omniRouteUrl,
+    experimentalOmniRoute: settings.experimentalOmniRoute,
   };
   await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitised));
 }
@@ -66,6 +71,7 @@ export async function getSettings(): Promise<Settings> {
     omniRouteUrl: persisted.omniRouteUrl,
     navettedToken: token,
     omniRouteApiKey,
+    experimentalOmniRoute: persisted.experimentalOmniRoute,
   };
 }
 
@@ -73,6 +79,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
   await writePersisted({
     navettedUrl: settings.navettedUrl,
     omniRouteUrl: settings.omniRouteUrl,
+    experimentalOmniRoute: settings.experimentalOmniRoute,
   });
   if (settings.navettedToken) {
     await SecureStore.setItemAsync(TOKEN_KEY, settings.navettedToken);

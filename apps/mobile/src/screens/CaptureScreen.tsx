@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
@@ -19,6 +19,9 @@ import { getClient } from "../lib/client";
 import { useConnectionStatus } from "../lib/useConnectionStatus";
 import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
+import { enrichIdea, promoteIdea as omniPromoteIdea } from "../lib/omniroute";
+import { slugify, writeIdea, readNote, updateNote } from "../lib/writer";
+import { rewriteFrontmatterField } from "../lib/writer";
 import {
   IDEA_STATUSES,
   deriveTitle,
@@ -31,6 +34,13 @@ type Props = NativeStackScreenProps<RootStackParamList, "Capture">;
 
 type Phase = "input" | "submitting" | "preview" | "saved";
 
+/** Pending OmniRoute idea result — held in state until user confirms save. */
+interface PendingIdea {
+  slug: string;
+  markdown: string;
+  model: string;
+}
+
 export default function CaptureScreen({ route, navigation }: Props) {
   const mode: CaptureMode = route.params.mode;
   const [phase, setPhase] = useState<Phase>("input");
@@ -39,7 +49,19 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const [ocrText, setOcrText] = useState("");
   const [response, setResponse] = useState<CaptureResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [useOmniRoute, setUseOmniRoute] = useState(false);
+  // OmniRoute path: preview data before file write
+  const [pendingIdea, setPendingIdea] = useState<PendingIdea | null>(null);
+  // OmniRoute path: filepath only set after confirmSave writes the file
+  const [savedFilepath, setSavedFilepath] = useState<string | null>(null);
+  // OmniRoute path: model used for display
+  const [omniModel, setOmniModel] = useState<string | null>(null);
+
   const status = useConnectionStatus();
+
+  useEffect(() => {
+    void getSettings().then((s) => setUseOmniRoute(s.experimentalOmniRoute));
+  }, []);
 
   const currentStatus = useMemo(
     () => parseStatusFromMarkdown(response?.preview_markdown ?? ""),
@@ -47,21 +69,48 @@ export default function CaptureScreen({ route, navigation }: Props) {
   );
 
   const canSubmit = useMemo(() => {
-    if (phase !== "input" || status !== "connected") {
-      return false;
-    }
-    if (mode === "idea") {
+    if (phase !== "input") return false;
+    if (useOmniRoute && mode === "idea") {
+      // OmniRoute idea path doesn't need navetted connection
       return text.trim().length > 0;
     }
+    if (status !== "connected") return false;
+    if (mode === "idea") return text.trim().length > 0;
     if (mode === "journal") {
       return transcript.trim().length > 0 || text.trim().length > 0;
     }
     return ocrText.trim().length > 0 || text.trim().length > 0;
-  }, [phase, status, mode, text, transcript, ocrText]);
+  }, [phase, status, useOmniRoute, mode, text, transcript, ocrText]);
 
   const submit = async () => {
     setPhase("submitting");
     setError(null);
+
+    // OmniRoute path: idea mode with flag enabled
+    if (useOmniRoute && mode === "idea") {
+      try {
+        const result = await enrichIdea(text.trim());
+        // Derive slug from the markdown H1
+        const title = deriveTitle(result.markdown);
+        const slug = slugify(title) || "untitled";
+        setPendingIdea({ slug, markdown: result.markdown, model: result.model });
+        setOmniModel(result.model);
+        // Show preview using the same CaptureResponse shape (no filepath yet)
+        setResponse({
+          type: "capture_response",
+          request_id: "",
+          status: "ok",
+          preview_markdown: result.markdown,
+        });
+        setPhase("preview");
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPhase("input");
+      }
+      return;
+    }
+
+    // Legacy navetted path
     try {
       const client = await getClient();
       let result: CaptureResponse;
@@ -91,9 +140,29 @@ export default function CaptureScreen({ route, navigation }: Props) {
   };
 
   const confirmSave = async () => {
-    if (!response || !response.filepath) {
+    // OmniRoute idea path: write the file now (not before)
+    if (useOmniRoute && mode === "idea" && pendingIdea) {
+      try {
+        const { filepath } = await writeIdea(pendingIdea.slug, pendingIdea.markdown);
+        setSavedFilepath(filepath);
+        const title = deriveTitle(pendingIdea.markdown);
+        await recordCapture({
+          id: uuidv4(),
+          mode,
+          title,
+          filepath,
+          createdAt: Date.now(),
+        });
+        setPhase("saved");
+        navigation.goBack();
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
       return;
     }
+
+    // Legacy navetted path
+    if (!response || !response.filepath) return;
     const title = deriveTitle(response.preview_markdown ?? "");
     await recordCapture({
       id: uuidv4(),
@@ -107,8 +176,50 @@ export default function CaptureScreen({ route, navigation }: Props) {
   };
 
   const promote = async (next: IdeaStatus) => {
-    if (!response?.filepath || next === currentStatus) return;
+    if (next === currentStatus) return;
     setError(null);
+
+    // OmniRoute idea path: re-enrich with target status, then update file if saved
+    if (useOmniRoute && mode === "idea" && pendingIdea) {
+      try {
+        const currentMd = response?.preview_markdown ?? pendingIdea.markdown;
+        const result = await omniPromoteIdea(currentMd, next);
+        const newSlug = slugify(deriveTitle(result.markdown)) || pendingIdea.slug;
+        const updated: PendingIdea = {
+          slug: newSlug,
+          markdown: result.markdown,
+          model: result.model,
+        };
+        setPendingIdea(updated);
+        setOmniModel(result.model);
+        setResponse({
+          type: "capture_response",
+          request_id: "",
+          status: "ok",
+          preview_markdown: result.markdown,
+          filepath: savedFilepath ?? undefined,
+        });
+
+        // If file was already written, update it on disk
+        if (savedFilepath) {
+          // Try rewriting just the frontmatter field first (cheaper)
+          try {
+            const existing = await readNote(savedFilepath);
+            const updated = rewriteFrontmatterField(existing, "status", next);
+            await updateNote(savedFilepath, updated);
+          } catch {
+            // Fall back to full overwrite with LLM result
+            await updateNote(savedFilepath, result.markdown);
+          }
+        }
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+      return;
+    }
+
+    // Legacy navetted path
+    if (!response?.filepath || next === currentStatus) return;
     try {
       const client = await getClient();
       const updated = await client.promoteIdea(response.filepath, next);
@@ -145,9 +256,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
           >
             Envoyer
           </Button>
-          <HelperText type="info" visible>
-            navetted: {status}
-          </HelperText>
+          {!(useOmniRoute && mode === "idea") && (
+            <HelperText type="info" visible>
+              navetted: {status}
+            </HelperText>
+          )}
           {error && (
             <HelperText type="error" visible>
               {error}
@@ -160,16 +273,25 @@ export default function CaptureScreen({ route, navigation }: Props) {
         <View style={styles.loading}>
           <ActivityIndicator animating size="large" />
           <Text variant="bodyMedium" style={styles.loadingText}>
-            Claude rédige la note…
+            {useOmniRoute && mode === "idea"
+              ? "OmniRoute structure la note…"
+              : "Claude rédige la note…"}
           </Text>
         </View>
       )}
 
       {phase === "preview" && response && (
         <Card style={styles.previewCard}>
-          <Card.Title title="Aperçu" subtitle={response.filepath} />
+          <Card.Title
+            title="Aperçu"
+            subtitle={
+              useOmniRoute && mode === "idea" && pendingIdea
+                ? `${pendingIdea.slug}.md${omniModel ? ` • ${omniModel}` : ""}`
+                : (response.filepath ?? "")
+            }
+          />
           <Card.Content>
-            {mode === "idea" && response.filepath && (
+            {mode === "idea" && (
               <View style={styles.statusRow}>
                 {IDEA_STATUSES.map((s) => (
                   <Chip

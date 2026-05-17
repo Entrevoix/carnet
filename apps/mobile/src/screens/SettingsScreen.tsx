@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import { Button, HelperText, Snackbar, Text, TextInput } from "react-native-paper";
+import { Button, HelperText, Snackbar, Switch, Text, TextInput } from "react-native-paper";
 import { NavettedClient } from "@carnet/shared";
 
 import {
@@ -122,8 +122,34 @@ export default function SettingsScreen() {
         onChangeText={(v) => update({ omniRouteUrl: v })}
       />
       <HelperText type="info" visible>
-        Service OCR pour les cartes de visite (optionnel)
+        URL de base OmniRoute (ex: https://llm.grepon.cc)
       </HelperText>
+
+      <TextInput
+        label="OmniRoute API key"
+        mode="outlined"
+        autoCapitalize="none"
+        autoCorrect={false}
+        secureTextEntry
+        value={settings.omniRouteApiKey}
+        onChangeText={(v) => update({ omniRouteApiKey: v })}
+      />
+      <HelperText type="info" visible>
+        Clé API OmniRoute (stockée dans le trousseau sécurisé)
+      </HelperText>
+
+      <View style={styles.switchRow}>
+        <View style={styles.switchLabel}>
+          <Text variant="labelLarge">OmniRoute (experimental)</Text>
+          <Text variant="bodySmall" style={styles.switchHint}>
+            Utilise OmniRoute + stockage local au lieu de navetted
+          </Text>
+        </View>
+        <Switch
+          value={settings.experimentalOmniRoute}
+          onValueChange={(v) => update({ experimentalOmniRoute: v })}
+        />
+      </View>
 
       <View style={styles.metaRow}>
         <Text variant="labelMedium">Client ID</Text>
@@ -181,4 +207,13 @@ const styles = StyleSheet.create({
   test: { marginTop: 24 },
   testResult: { marginTop: 4 },
   save: { marginTop: 12 },
+  switchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 16,
+    paddingVertical: 4,
+  },
+  switchLabel: { flex: 1, marginRight: 16 },
+  switchHint: { opacity: 0.6, marginTop: 2 },
 });
