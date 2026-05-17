@@ -2,8 +2,8 @@
  * OmniRoute LLM chat client for carnet v0.2.
  *
  * Posts to the OpenAI-compatible `/v1/chat/completions` endpoint at the
- * configured OmniRoute base URL. Reads `omniRouteUrl` and `omniRouteApiKey`
- * from settings.
+ * configured OmniRoute base URL. Reads `omniRouteUrl`, `omniRouteApiKey`,
+ * and `omniRouteModel` from settings.
  *
  * Each method corresponds to one capture mode:
  *   enrichIdea    — raw thought → structured Obsidian markdown
@@ -18,6 +18,7 @@ import {
   buildJournalPrompt,
   buildPersonPrompt,
   buildPromoteIdeaPrompt,
+  type PromptPair,
 } from "./prompts";
 import type { IdeaStatus } from "@carnet/shared";
 
@@ -42,53 +43,120 @@ interface OpenAIResponse {
 }
 
 /**
- * Low-level POST to /v1/chat/completions. Returns the text content of
- * choices[0].message.content and the model string.
+ * Error thrown by the OmniRoute client. Carries the HTTP status so callers
+ * can classify between transient (network / 5xx — safe to queue and retry)
+ * and permanent (4xx — auth / bad model / malformed request — surface to
+ * user, do NOT retry blindly). Status `0` means a network-level failure
+ * (DNS, TLS, connection refused, abort).
+ */
+export class OmniRouteError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "OmniRouteError";
+    this.status = status;
+  }
+}
+
+/** True for HTTP statuses that indicate a permanent failure — caller should
+ * NOT enqueue these for automatic retry. */
+export function isPermanentError(err: unknown): boolean {
+  if (!(err instanceof OmniRouteError)) return false;
+  return err.status >= 400 && err.status < 500;
+}
+
+const FETCH_TIMEOUT_MS = 60_000;
+
+/** Strip any "Bearer ..." substring from an error message so the API key
+ * never lands in stored error logs or on-screen toasts. Also strip the
+ * Authorization header form just in case. */
+function sanitizeErrorMessage(raw: string): string {
+  return raw
+    .replace(/Bearer\s+[A-Za-z0-9._\-+/=]+/g, "Bearer [redacted]")
+    .replace(/Authorization:\s*[^\s,;]+/gi, "Authorization: [redacted]");
+}
+
+/**
+ * Low-level POST to /v1/chat/completions. Sends `messages` as
+ * [system, user] when the PromptPair has both, plus the configured `model`.
  */
 async function chatCompletion(
   baseUrl: string,
   apiKey: string,
-  prompt: string,
+  model: string,
+  prompt: PromptPair,
 ): Promise<EnrichResult> {
-  const url = `${baseUrl.trim().replace(/\/+$/, "")}/v1/chat/completions`;
+  // Enforce HTTPS. An http:// URL would leak the bearer token in cleartext.
+  // Allow http://localhost / 127.0.0.1 / 10.x for dev convenience.
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  if (!/^https:\/\//i.test(trimmed)) {
+    const isLocal = /^http:\/\/(localhost|127\.0\.0\.1|10\.)/i.test(trimmed);
+    if (!isLocal) {
+      throw new OmniRouteError(
+        "OmniRoute URL must use https:// to protect the API key",
+        0,
+      );
+    }
+  }
 
-  const body = JSON.stringify({
-    messages: [{ role: "user", content: prompt }],
-  });
+  const url = `${trimmed}/v1/chat/completions`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-    },
-    body,
-  });
+  const messages: OpenAIMessage[] = [
+    { role: "system", content: prompt.system },
+    { role: "user", content: prompt.user },
+  ];
+
+  const body = JSON.stringify({ model, messages });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body,
+      signal: controller.signal,
+    });
+  } catch (e: unknown) {
+    clearTimeout(timer);
+    const raw = e instanceof Error ? e.message : String(e);
+    const msg = sanitizeErrorMessage(raw);
+    // Abort or network failure: status 0 → caller treats as transient.
+    throw new OmniRouteError(`OmniRoute network error — ${msg}`, 0);
+  }
+  clearTimeout(timer);
 
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
     try {
       const errBody = (await response.json()) as OpenAIResponse;
       if (errBody.error?.message) {
-        detail += `: ${errBody.error.message}`;
+        detail += `: ${sanitizeErrorMessage(errBody.error.message)}`;
       }
     } catch {
       // ignore parse failure — original status message is enough
     }
-    throw new Error(`OmniRoute error — ${detail}`);
+    throw new OmniRouteError(`OmniRoute error — ${detail}`, response.status);
   }
 
   const json = (await response.json()) as OpenAIResponse;
   const content = json.choices?.[0]?.message?.content;
   if (typeof content !== "string" || !content.trim().length) {
-    throw new Error("OmniRoute returned an empty or malformed response");
+    throw new OmniRouteError(
+      "OmniRoute returned an empty or malformed response",
+      response.status,
+    );
   }
 
-  // Strip defensive code fences that some models add.
   const markdown = stripCodeFences(content);
-  const model = json.model ?? "unknown";
+  const modelUsed = json.model ?? model;
 
-  return { markdown, model };
+  return { markdown, model: modelUsed };
 }
 
 /** Strip a leading ``` fence (and matching trailer). Does not trim unfenced content. */
@@ -107,7 +175,10 @@ async function getBaseUrl(): Promise<string> {
   const settings = await getSettings();
   const url = settings.omniRouteUrl.trim();
   if (!url) {
-    throw new Error("OmniRoute URL not configured — set it in Settings");
+    throw new OmniRouteError(
+      "OmniRoute URL not configured — set it in Settings",
+      0,
+    );
   }
   return url;
 }
@@ -117,13 +188,21 @@ async function getApiKey(): Promise<string> {
   return settings.omniRouteApiKey ?? "";
 }
 
+async function getModel(): Promise<string> {
+  const settings = await getSettings();
+  return settings.omniRouteModel.trim() || "gpt-4o-mini";
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /** Enrich a raw idea text into structured Obsidian markdown. */
 export async function enrichIdea(text: string): Promise<EnrichResult> {
-  const [baseUrl, apiKey] = await Promise.all([getBaseUrl(), getApiKey()]);
-  const prompt = buildIdeaPrompt(text);
-  return chatCompletion(baseUrl, apiKey, prompt);
+  const [baseUrl, apiKey, model] = await Promise.all([
+    getBaseUrl(),
+    getApiKey(),
+    getModel(),
+  ]);
+  return chatCompletion(baseUrl, apiKey, model, buildIdeaPrompt(text));
 }
 
 /** Enrich a journal voice transcript (plus optional notes) into a journal entry. */
@@ -131,9 +210,17 @@ export async function enrichJournal(input: {
   transcript: string;
   notes: string;
 }): Promise<EnrichResult> {
-  const [baseUrl, apiKey] = await Promise.all([getBaseUrl(), getApiKey()]);
-  const prompt = buildJournalPrompt(input.transcript, input.notes);
-  return chatCompletion(baseUrl, apiKey, prompt);
+  const [baseUrl, apiKey, model] = await Promise.all([
+    getBaseUrl(),
+    getApiKey(),
+    getModel(),
+  ]);
+  return chatCompletion(
+    baseUrl,
+    apiKey,
+    model,
+    buildJournalPrompt(input.transcript, input.notes),
+  );
 }
 
 /** Enrich a business card OCR result + context into a contact note. */
@@ -141,9 +228,17 @@ export async function enrichPerson(input: {
   ocrResult: string;
   context: string;
 }): Promise<EnrichResult> {
-  const [baseUrl, apiKey] = await Promise.all([getBaseUrl(), getApiKey()]);
-  const prompt = buildPersonPrompt(input.ocrResult, input.context);
-  return chatCompletion(baseUrl, apiKey, prompt);
+  const [baseUrl, apiKey, model] = await Promise.all([
+    getBaseUrl(),
+    getApiKey(),
+    getModel(),
+  ]);
+  return chatCompletion(
+    baseUrl,
+    apiKey,
+    model,
+    buildPersonPrompt(input.ocrResult, input.context),
+  );
 }
 
 /**
@@ -154,7 +249,15 @@ export async function promoteIdea(
   currentMarkdown: string,
   target: IdeaStatus,
 ): Promise<EnrichResult> {
-  const [baseUrl, apiKey] = await Promise.all([getBaseUrl(), getApiKey()]);
-  const prompt = buildPromoteIdeaPrompt(currentMarkdown, target);
-  return chatCompletion(baseUrl, apiKey, prompt);
+  const [baseUrl, apiKey, model] = await Promise.all([
+    getBaseUrl(),
+    getApiKey(),
+    getModel(),
+  ]);
+  return chatCompletion(
+    baseUrl,
+    apiKey,
+    model,
+    buildPromoteIdeaPrompt(currentMarkdown, target),
+  );
 }

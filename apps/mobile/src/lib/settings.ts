@@ -1,19 +1,25 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
-import { v4 as uuidv4 } from "uuid";
 
 const SETTINGS_KEY = "carnet:settings:v2";
 /** Legacy key — read once for migration, then ignored. */
 const SETTINGS_KEY_V1 = "carnet:settings:v1";
-const CLIENT_ID_KEY = "carnet:client_id:v1";
-const TOKEN_KEY = "carnet_navetted_token";
+/** Legacy SecureStore key from v0.1's navetted HMAC token. Purged on first
+ * v0.2 settings load — see purgeLegacySecretsOnce(). */
+const LEGACY_NAVETTED_TOKEN_KEY = "carnet_navetted_token";
 const OMNIROUTE_API_KEY = "carnet_omniroute_api_key";
 /** Flag: user dismissed the navetted→OmniRoute migration banner. */
 const MIGRATION_BANNER_KEY = "carnet:migration_banner_dismissed:v1";
+/** Flag: legacy SecureStore secrets purged. Set to "1" after the one-time
+ * unconditional sweep so we don't hit SecureStore on every getSettings(). */
+const LEGACY_PURGE_KEY = "carnet:legacy_purge:v1";
+
+export const DEFAULT_OMNIROUTE_MODEL = "gpt-4o-mini";
 
 export interface Settings {
   omniRouteUrl: string;
   omniRouteApiKey: string;
+  omniRouteModel: string;
   /**
    * Root folder for captured notes. Defaults to the app sandbox carnet/ dir.
    * Set to a Syncthing-watched folder for automatic sync to workstation.
@@ -23,6 +29,7 @@ export interface Settings {
 
 interface PersistedSettings {
   omniRouteUrl: string;
+  omniRouteModel: string;
   captureFolderPath: string;
 }
 
@@ -35,6 +42,7 @@ interface LegacyPersistedSettings {
 
 const DEFAULT_PERSISTED: PersistedSettings = {
   omniRouteUrl: "",
+  omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
   captureFolderPath: "",
 };
 
@@ -56,6 +64,7 @@ async function readPersisted(): Promise<PersistedSettings> {
       const legacy = JSON.parse(rawV1) as LegacyPersistedSettings;
       return {
         omniRouteUrl: legacy.omniRouteUrl ?? "",
+        omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
         captureFolderPath: legacy.captureFolderPath ?? "",
       };
     } catch {
@@ -69,18 +78,39 @@ async function readPersisted(): Promise<PersistedSettings> {
 async function writePersisted(settings: PersistedSettings): Promise<void> {
   const sanitised: PersistedSettings = {
     omniRouteUrl: settings.omniRouteUrl,
+    omniRouteModel: settings.omniRouteModel,
     captureFolderPath: settings.captureFolderPath,
   };
   await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitised));
 }
 
+/**
+ * One-time unconditional sweep of legacy SecureStore secrets. Runs the first
+ * time v0.2 boots after an upgrade. Catches the case where a user upgraded
+ * past the migration banner without dismissing it (e.g. fresh install with
+ * leftover keychain entries from a prior install).
+ */
+async function purgeLegacySecretsOnce(): Promise<void> {
+  const done = await AsyncStorage.getItem(LEGACY_PURGE_KEY);
+  if (done) return;
+  try {
+    await SecureStore.deleteItemAsync(LEGACY_NAVETTED_TOKEN_KEY);
+  } catch {
+    // SecureStore can throw on platforms without keychain access — best-effort
+  }
+  await AsyncStorage.setItem(LEGACY_PURGE_KEY, "1");
+}
+
 export async function getSettings(): Promise<Settings> {
+  await purgeLegacySecretsOnce();
   const persisted = await readPersisted();
-  const omniRouteApiKey = (await SecureStore.getItemAsync(OMNIROUTE_API_KEY)) ?? "";
+  const omniRouteApiKey =
+    (await SecureStore.getItemAsync(OMNIROUTE_API_KEY)) ?? "";
 
   return {
     omniRouteUrl: persisted.omniRouteUrl,
     omniRouteApiKey,
+    omniRouteModel: persisted.omniRouteModel,
     captureFolderPath: persisted.captureFolderPath,
   };
 }
@@ -88,10 +118,30 @@ export async function getSettings(): Promise<Settings> {
 export async function saveSettings(settings: Settings): Promise<void> {
   await writePersisted({
     omniRouteUrl: settings.omniRouteUrl,
+    omniRouteModel: settings.omniRouteModel,
     captureFolderPath: settings.captureFolderPath,
   });
   if (settings.omniRouteApiKey) {
     await SecureStore.setItemAsync(OMNIROUTE_API_KEY, settings.omniRouteApiKey);
+  } else {
+    await SecureStore.deleteItemAsync(OMNIROUTE_API_KEY);
+  }
+}
+
+/**
+ * True if there is an API key stored in SecureStore. Used by the settings
+ * UI to render a "•••• configured" placeholder rather than reading the key
+ * into React state for display.
+ */
+export async function hasOmniRouteApiKey(): Promise<boolean> {
+  const key = await SecureStore.getItemAsync(OMNIROUTE_API_KEY);
+  return Boolean(key && key.trim().length > 0);
+}
+
+/** Write-only setter for the API key. Used by the settings UI. */
+export async function setOmniRouteApiKey(value: string): Promise<void> {
+  if (value && value.trim().length > 0) {
+    await SecureStore.setItemAsync(OMNIROUTE_API_KEY, value.trim());
   } else {
     await SecureStore.deleteItemAsync(OMNIROUTE_API_KEY);
   }
@@ -116,21 +166,6 @@ export async function dismissMigrationBanner(): Promise<void> {
   await Promise.all([
     AsyncStorage.setItem(MIGRATION_BANNER_KEY, "1"),
     AsyncStorage.removeItem(SETTINGS_KEY_V1),
-    SecureStore.deleteItemAsync(TOKEN_KEY),
+    SecureStore.deleteItemAsync(LEGACY_NAVETTED_TOKEN_KEY),
   ]);
-}
-
-/**
- * Stable per-install client ID, generated on first call and persisted. Used
- * as the `client_id` in the navetted hello v2 handshake. Not sensitive —
- * stays in AsyncStorage.
- */
-export async function getClientId(): Promise<string> {
-  const existing = await AsyncStorage.getItem(CLIENT_ID_KEY);
-  if (existing) {
-    return existing;
-  }
-  const id = uuidv4();
-  await AsyncStorage.setItem(CLIENT_ID_KEY, id);
-  return id;
 }
