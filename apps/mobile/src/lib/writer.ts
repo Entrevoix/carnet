@@ -1,28 +1,150 @@
 /**
- * Local markdown writer for carnet v0.2.
+ * Local markdown writer for carnet v0.2+.
  *
- * Writes notes to the local file system under the carnet folder
- * (default: ${FileSystem.documentDirectory}carnet/). Directory structure:
+ * Writes notes under the user-configured `captureFolderPath` setting, or
+ * the app sandbox `${FileSystem.documentDirectory}carnet/` if unset.
+ * Directory structure inside that root:
  *   Ideas/{slug}.md            — one file per idea
  *   Journal/YYYY-MM-DD.md      — daily journal, append-on-existing
  *   People/{Firstname-Lastname}.md — one file per contact
  *
- * Uses expo-file-system (legacy API) which is available in Expo 54 React Native.
+ * Storage paths come in two flavors:
+ *   - `file://...` — direct filesystem path inside the app sandbox or a
+ *     legacy raw Android path. Uses the regular expo-file-system API.
+ *   - `content://...tree/...` — Android Storage Access Framework URI granted
+ *     persistently by the OS document picker. Uses StorageAccessFramework
+ *     API (createFileAsync, readDirectoryAsync, etc.) because raw
+ *     concatenation doesn't work on SAF URIs.
+ *
+ * The branching is concentrated in resolveRoot/findOrCreateSubdir/
+ * findFileInDir/writeNewFile/readByUri/writeByUri so the public API
+ * (writeIdea, appendJournal, writePerson, readNote, updateNote) stays the
+ * same shape callers depend on.
  */
 
 import * as FileSystem from "expo-file-system/legacy";
+import { getSettings } from "./settings";
 
-/** Returns the root carnet folder URI (trailing slash). */
-function carnetRoot(): string {
-  const base = FileSystem.documentDirectory ?? "file:///data/user/0/carnet/files/";
-  return `${base.replace(/\/$/, "")}/carnet`;
+const { StorageAccessFramework } = FileSystem;
+
+interface Root {
+  /** Either a `file://` URI or a `content://...tree/...` SAF tree URI. */
+  uri: string;
+  /** True when `uri` is a SAF URI and SAF APIs must be used. */
+  isSaf: boolean;
 }
 
-async function ensureDir(uri: string): Promise<void> {
-  const info = await FileSystem.getInfoAsync(uri);
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(uri, { intermediates: true });
+/**
+ * Resolve the root folder URI from settings.
+ *   - empty / default → app sandbox carnet/
+ *   - content://...tree/... → SAF tree URI as-is
+ *   - anything else → treat as a file:// URI (legacy raw Android path)
+ */
+async function resolveRoot(): Promise<Root> {
+  const { captureFolderPath } = await getSettings();
+  const trimmed = captureFolderPath.trim();
+  if (!trimmed) {
+    const base = FileSystem.documentDirectory ?? "file:///data/user/0/carnet/files/";
+    return { uri: `${base.replace(/\/$/, "")}/carnet`, isSaf: false };
   }
+  if (trimmed.startsWith("content://")) {
+    return { uri: trimmed, isSaf: true };
+  }
+  // Best-effort: file:// or raw path. Ensure file:// prefix for FileSystem API.
+  const uri = trimmed.startsWith("file://") ? trimmed : `file://${trimmed}`;
+  return { uri, isSaf: false };
+}
+
+/** Extract the last path segment (filename or subdir name) from a SAF URI.
+ * SAF URIs look like `content://...document/primary%3Acarnet%2FIdeas%2Fmyidea.md`;
+ * the filename is whatever follows the last `/` in the decoded path part. */
+function safLastSegment(uri: string): string {
+  const decoded = decodeURIComponent(uri);
+  const slash = decoded.lastIndexOf("/");
+  return slash >= 0 ? decoded.slice(slash + 1) : decoded;
+}
+
+/** Find a child file in `parentUri` whose name matches, or null. */
+async function findFileInDir(
+  parentUri: string,
+  filename: string,
+  isSaf: boolean,
+): Promise<string | null> {
+  if (isSaf) {
+    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
+    return children.find((u) => safLastSegment(u) === filename) ?? null;
+  }
+  const fileUri = `${parentUri.replace(/\/$/, "")}/${filename}`;
+  const info = await FileSystem.getInfoAsync(fileUri);
+  return info.exists ? fileUri : null;
+}
+
+/** Get or create a named subdirectory, returning its URI. */
+async function findOrCreateSubdir(root: Root, name: string): Promise<string> {
+  if (root.isSaf) {
+    const children = await StorageAccessFramework.readDirectoryAsync(root.uri);
+    const existing = children.find((u) => safLastSegment(u) === name);
+    if (existing) return existing;
+    return await StorageAccessFramework.makeDirectoryAsync(root.uri, name);
+  }
+  const dir = `${root.uri.replace(/\/$/, "")}/${name}`;
+  const info = await FileSystem.getInfoAsync(dir);
+  if (!info.exists) {
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+  }
+  return dir;
+}
+
+/** Create a new file in `parentUri` with `filename` and write `content`.
+ * Returns the URI of the new file. Caller must guarantee `filename` is
+ * collision-free (i.e. has already been verified via findFileInDir). */
+async function writeNewFile(
+  parentUri: string,
+  filename: string,
+  content: string,
+  isSaf: boolean,
+): Promise<string> {
+  if (isSaf) {
+    const fileUri = await StorageAccessFramework.createFileAsync(
+      parentUri,
+      filename,
+      "text/markdown",
+    );
+    await StorageAccessFramework.writeAsStringAsync(fileUri, content, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    return fileUri;
+  }
+  const fileUri = `${parentUri.replace(/\/$/, "")}/${filename}`;
+  await FileSystem.writeAsStringAsync(fileUri, content, {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
+  return fileUri;
+}
+
+/** Read a file by its URI (handles both file:// and content://). */
+async function readByUri(uri: string): Promise<string> {
+  if (uri.startsWith("content://")) {
+    return await StorageAccessFramework.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+  }
+  return await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
+}
+
+/** Overwrite a file by its URI. */
+async function writeByUri(uri: string, content: string): Promise<void> {
+  if (uri.startsWith("content://")) {
+    await StorageAccessFramework.writeAsStringAsync(uri, content, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    return;
+  }
+  await FileSystem.writeAsStringAsync(uri, content, {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
 }
 
 /**
@@ -227,25 +349,22 @@ export async function writeIdea(
   slug: string,
   markdown: string,
 ): Promise<{ filepath: string }> {
-  const root = carnetRoot();
-  const dir = `${root}/Ideas`;
-  await ensureDir(dir);
+  const root = await resolveRoot();
+  const ideasUri = await findOrCreateSubdir(root, "Ideas");
 
-  let filepath = `${dir}/${slug}.md`;
-  let info = await FileSystem.getInfoAsync(filepath);
+  let filename = `${slug}.md`;
+  let existing = await findFileInDir(ideasUri, filename, root.isSaf);
   let n = 2;
-  while (info.exists && n < 100) {
-    filepath = `${dir}/${slug}-${n}.md`;
-    info = await FileSystem.getInfoAsync(filepath);
+  while (existing && n < 100) {
+    filename = `${slug}-${n}.md`;
+    existing = await findFileInDir(ideasUri, filename, root.isSaf);
     n++;
   }
-  if (info.exists) {
+  if (existing) {
     throw new Error(`More than 99 ideas with slug "${slug}" — pick a more distinctive title`);
   }
 
-  await FileSystem.writeAsStringAsync(filepath, markdown, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  const filepath = await writeNewFile(ideasUri, filename, markdown, root.isSaf);
   return { filepath };
 }
 
@@ -261,31 +380,30 @@ export async function appendJournal(
   date: string,
   markdown: string,
 ): Promise<{ filepath: string }> {
-  const root = carnetRoot();
-  const dir = `${root}/Journal`;
-  await ensureDir(dir);
+  const root = await resolveRoot();
+  const journalUri = await findOrCreateSubdir(root, "Journal");
+  const filename = `${date}.md`;
 
-  const filepath = `${dir}/${date}.md`;
+  // Serialize per (journalUri + filename) so two concurrent appends to today's
+  // file (e.g. an offline drain pass) don't read the same baseline and clobber.
+  // The journalUri may be a content:// URI when SAF is in play; that's fine —
+  // it's still unique per file.
+  const lockKey = `${journalUri}/${filename}`;
 
-  return serialize(filepath, async () => {
-    const info = await FileSystem.getInfoAsync(filepath);
+  return serialize(lockKey, async () => {
+    const existingUri = await findFileInDir(journalUri, filename, root.isSaf);
 
-    let finalMarkdown: string;
-    if (info.exists) {
-      const existing = await FileSystem.readAsStringAsync(filepath, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
+    if (existingUri) {
+      const existing = await readByUri(existingUri);
       const now = new Date();
       const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
       const appended = stripFrontmatter(markdown);
-      finalMarkdown = `${existing.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
-    } else {
-      finalMarkdown = markdown;
+      const finalMarkdown = `${existing.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
+      await writeByUri(existingUri, finalMarkdown);
+      return { filepath: existingUri };
     }
 
-    await FileSystem.writeAsStringAsync(filepath, finalMarkdown, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
+    const filepath = await writeNewFile(journalUri, filename, markdown, root.isSaf);
     return { filepath };
   });
 }
@@ -304,9 +422,8 @@ export async function writePerson(
   lastName: string,
   markdown: string,
 ): Promise<{ filepath: string }> {
-  const root = carnetRoot();
-  const dir = `${root}/People`;
-  await ensureDir(dir);
+  const root = await resolveRoot();
+  const peopleUri = await findOrCreateSubdir(root, "People");
 
   // Use provided names if non-empty; fall back to frontmatter/H1.
   let stem: string;
@@ -320,36 +437,30 @@ export async function writePerson(
   }
   if (!stem) stem = "Unknown-Person";
 
-  let filepath = `${dir}/${stem}.md`;
-  let info = await FileSystem.getInfoAsync(filepath);
+  let filename = `${stem}.md`;
+  let existing = await findFileInDir(peopleUri, filename, root.isSaf);
   let n = 2;
-  while (info.exists && n < 100) {
-    filepath = `${dir}/${stem}-${n}.md`;
-    info = await FileSystem.getInfoAsync(filepath);
+  while (existing && n < 100) {
+    filename = `${stem}-${n}.md`;
+    existing = await findFileInDir(peopleUri, filename, root.isSaf);
     n++;
   }
-  if (info.exists) {
+  if (existing) {
     throw new Error(
       `More than 99 contacts with stem "${stem}" — clean up duplicates first`,
     );
   }
 
-  await FileSystem.writeAsStringAsync(filepath, markdown, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  const filepath = await writeNewFile(peopleUri, filename, markdown, root.isSaf);
   return { filepath };
 }
 
-/** Read the raw string content of a note file. */
+/** Read the raw string content of a note file. Supports both file:// and content:// URIs. */
 export async function readNote(filepath: string): Promise<string> {
-  return FileSystem.readAsStringAsync(filepath, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  return readByUri(filepath);
 }
 
-/** Overwrite a note file with new content. */
+/** Overwrite a note file with new content. Supports both file:// and content:// URIs. */
 export async function updateNote(filepath: string, markdown: string): Promise<void> {
-  await FileSystem.writeAsStringAsync(filepath, markdown, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  await writeByUri(filepath, markdown);
 }
