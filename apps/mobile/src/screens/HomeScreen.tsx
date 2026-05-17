@@ -11,7 +11,6 @@ import {
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import type { RootStackParamList } from "../../App";
-import { StatusPill } from "../components/StatusPill";
 import { getRecentCaptures, type CaptureEntry } from "../lib/storage";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
@@ -23,13 +22,10 @@ export default function HomeScreen({ navigation }: Props) {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <StatusPill />
-          <IconButton
-            icon="cog"
-            onPress={() => navigation.navigate("Settings")}
-          />
-        </View>
+        <IconButton
+          icon="cog"
+          onPress={() => navigation.navigate("Settings")}
+        />
       ),
     });
   }, [navigation]);

@@ -1,10 +1,23 @@
 /**
- * Note types — match the Obsidian frontmatter that navetted writes to the
- * sync folder. The daemon is the source of truth for file format; these
- * mirror the shape so consumers can render previews without re-parsing YAML.
+ * Note types shared between mobile and desktop.
  */
 
 export type IdeaStatus = "seedling" | "developing" | "mature";
+
+export type CaptureStatus = "ok" | "error";
+
+/**
+ * Preview response shape used by CaptureScreen to hold the OmniRoute result
+ * before the user confirms saving.
+ */
+export interface CaptureResponse {
+  type: "capture_response";
+  request_id: string;
+  status: CaptureStatus;
+  filepath?: string;
+  preview_markdown?: string;
+  error?: string;
+}
 
 export interface IdeaNote {
   created: string;

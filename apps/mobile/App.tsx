@@ -9,42 +9,25 @@ import { StatusBar } from "expo-status-bar";
 import HomeScreen from "./src/screens/HomeScreen";
 import CaptureScreen from "./src/screens/CaptureScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
-import PairScreen from "./src/screens/PairScreen";
-import { getSettings } from "./src/lib/settings";
 import type { CaptureMode } from "./src/lib/storage";
 
 export type RootStackParamList = {
   Home: undefined;
   Capture: { mode: CaptureMode };
   Settings: undefined;
-  Pair: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-type InitialRoute = keyof RootStackParamList;
-
 export default function App() {
-  const [initialRoute, setInitialRoute] = useState<InitialRoute | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const settings = await getSettings();
-        // First launch heuristic: if the user hasn't pasted a token yet,
-        // route to PairScreen. Token is the only field that *must* be set.
-        const hasToken = settings.navettedToken.trim().length > 0;
-        setInitialRoute(hasToken ? "Home" : "Pair");
-      } catch {
-        // AsyncStorage native failure → default to Pair so the user can
-        // recover via QR scan or manual entry instead of seeing a stuck
-        // spinner with no way out.
-        setInitialRoute("Pair");
-      }
-    })();
+    // Allow async storage to initialise before rendering navigation.
+    setReady(true);
   }, []);
 
-  if (!initialRoute) {
+  if (!ready) {
     return (
       <View
         style={{
@@ -62,7 +45,7 @@ export default function App() {
     <PaperProvider>
       <NavigationContainer>
         <StatusBar style="auto" />
-        <Stack.Navigator initialRouteName={initialRoute}>
+        <Stack.Navigator initialRouteName="Home">
           <Stack.Screen
             name="Home"
             component={HomeScreen}
@@ -84,11 +67,6 @@ export default function App() {
             name="Settings"
             component={SettingsScreen}
             options={{ title: "Paramètres" }}
-          />
-          <Stack.Screen
-            name="Pair"
-            component={PairScreen}
-            options={{ headerShown: false }}
           />
         </Stack.Navigator>
       </NavigationContainer>

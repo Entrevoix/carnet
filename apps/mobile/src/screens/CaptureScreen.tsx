@@ -15,8 +15,6 @@ import { v4 as uuidv4 } from "uuid";
 import type { RootStackParamList } from "../../App";
 import { VoiceButton } from "../voice/VoiceButton";
 import { CardScannerModal } from "../components/CardScannerModal";
-import { getClient } from "../lib/client";
-import { useConnectionStatus } from "../lib/useConnectionStatus";
 import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
 import { enrichIdea, enrichJournal, enrichPerson, promoteIdea as omniPromoteIdea } from "../lib/omniroute";
@@ -64,7 +62,6 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const [ocrText, setOcrText] = useState("");
   const [response, setResponse] = useState<CaptureResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [useOmniRoute, setUseOmniRoute] = useState(false);
   // OmniRoute path: preview data before file write
   const [pendingIdea, setPendingIdea] = useState<PendingIdea | null>(null);
   const [pendingJournal, setPendingJournal] = useState<PendingJournal | null>(null);
@@ -74,11 +71,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // OmniRoute path: model used for display
   const [omniModel, setOmniModel] = useState<string | null>(null);
 
-  const status = useConnectionStatus();
   const [queueDepth, setQueueDepth] = useState(0);
 
   useEffect(() => {
-    void getSettings().then((s) => setUseOmniRoute(s.experimentalOmniRoute));
     void getQueueDepth().then(setQueueDepth);
     // Drain any queued captures on screen open
     void drainQueue().then(() => getQueueDepth().then(setQueueDepth));
@@ -91,26 +86,16 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
   const canSubmit = useMemo(() => {
     if (phase !== "input") return false;
-    if (useOmniRoute) {
-      // OmniRoute paths don't need navetted connection
-      if (mode === "idea") return text.trim().length > 0;
-      if (mode === "journal") return transcript.trim().length > 0 || text.trim().length > 0;
-      if (mode === "person") return ocrText.trim().length > 0 || text.trim().length > 0;
-    }
-    if (status !== "connected") return false;
     if (mode === "idea") return text.trim().length > 0;
-    if (mode === "journal") {
-      return transcript.trim().length > 0 || text.trim().length > 0;
-    }
+    if (mode === "journal") return transcript.trim().length > 0 || text.trim().length > 0;
     return ocrText.trim().length > 0 || text.trim().length > 0;
-  }, [phase, status, useOmniRoute, mode, text, transcript, ocrText]);
+  }, [phase, mode, text, transcript, ocrText]);
 
   const submit = async () => {
     setPhase("submitting");
     setError(null);
 
-    // OmniRoute path: idea mode with flag enabled
-    if (useOmniRoute && mode === "idea") {
+    if (mode === "idea") {
       try {
         const result = await enrichIdea(text.trim());
         const title = deriveTitle(result.markdown);
@@ -125,7 +110,6 @@ export default function CaptureScreen({ route, navigation }: Props) {
         });
         setPhase("preview");
       } catch (e: unknown) {
-        // Enqueue for offline retry on network/5xx errors
         await enqueue({ mode: "idea", text: text.trim() });
         const depth = await getQueueDepth();
         setQueueDepth(depth);
@@ -135,8 +119,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       return;
     }
 
-    // OmniRoute path: journal mode with flag enabled
-    if (useOmniRoute && mode === "journal") {
+    if (mode === "journal") {
       try {
         const combined = [transcript, text].map((s) => s.trim()).filter(Boolean).join("\n\n");
         const result = await enrichJournal({ transcript: combined, notes: "" });
@@ -162,67 +145,35 @@ export default function CaptureScreen({ route, navigation }: Props) {
       return;
     }
 
-    // OmniRoute path: person mode with flag enabled
-    if (useOmniRoute && mode === "person") {
-      try {
-        const result = await enrichPerson({ ocrResult: ocrText.trim(), context: text.trim() });
-        const nameField = extractNameFromMarkdown(result.markdown);
-        setPendingPerson({
-          firstName: nameField.firstName,
-          lastName: nameField.lastName,
-          markdown: result.markdown,
-          model: result.model,
-        });
-        setOmniModel(result.model);
-        setResponse({
-          type: "capture_response",
-          request_id: "",
-          status: "ok",
-          preview_markdown: result.markdown,
-        });
-        setPhase("preview");
-      } catch (e: unknown) {
-        await enqueue({ mode: "person", ocrResult: ocrText.trim(), context: text.trim() });
-        const depth = await getQueueDepth();
-        setQueueDepth(depth);
-        setError("Pas de connexion — capture mise en file d'attente.");
-        setPhase("input");
-      }
-      return;
-    }
-
-    // Legacy navetted path
+    // mode === "person"
     try {
-      const client = await getClient();
-      let result: CaptureResponse;
-      if (mode === "idea") {
-        result = await client.captureIdea({ text: text.trim() });
-      } else if (mode === "journal") {
-        const combined = [transcript, text]
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .join("\n\n");
-        result = await client.captureJournal({ transcript: combined });
-      } else {
-        result = await client.capturePerson({
-          ocr_result: ocrText.trim(),
-          context: text.trim(),
-        });
-      }
-      if (result.status !== "ok") {
-        throw new Error(result.error ?? "Unknown error");
-      }
-      setResponse(result);
+      const result = await enrichPerson({ ocrResult: ocrText.trim(), context: text.trim() });
+      const nameField = extractNameFromMarkdown(result.markdown);
+      setPendingPerson({
+        firstName: nameField.firstName,
+        lastName: nameField.lastName,
+        markdown: result.markdown,
+        model: result.model,
+      });
+      setOmniModel(result.model);
+      setResponse({
+        type: "capture_response",
+        request_id: "",
+        status: "ok",
+        preview_markdown: result.markdown,
+      });
       setPhase("preview");
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      await enqueue({ mode: "person", ocrResult: ocrText.trim(), context: text.trim() });
+      const depth = await getQueueDepth();
+      setQueueDepth(depth);
+      setError("Pas de connexion — capture mise en file d'attente.");
       setPhase("input");
     }
   };
 
   const confirmSave = async () => {
-    // OmniRoute idea path: write the file now (not before)
-    if (useOmniRoute && mode === "idea" && pendingIdea) {
+    if (mode === "idea" && pendingIdea) {
       try {
         const { filepath } = await writeIdea(pendingIdea.slug, pendingIdea.markdown);
         setSavedFilepath(filepath);
@@ -236,8 +187,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       return;
     }
 
-    // OmniRoute journal path: append to today's file
-    if (useOmniRoute && mode === "journal" && pendingJournal) {
+    if (mode === "journal" && pendingJournal) {
       try {
         const { filepath } = await appendJournal(pendingJournal.date, pendingJournal.markdown);
         setSavedFilepath(filepath);
@@ -251,8 +201,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       return;
     }
 
-    // OmniRoute person path: write person file
-    if (useOmniRoute && mode === "person" && pendingPerson) {
+    if (mode === "person" && pendingPerson) {
       try {
         const { filepath } = await writePerson(
           pendingPerson.firstName,
@@ -267,75 +216,37 @@ export default function CaptureScreen({ route, navigation }: Props) {
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : String(e));
       }
-      return;
     }
-
-    // Legacy navetted path
-    if (!response || !response.filepath) return;
-    const title = deriveTitle(response.preview_markdown ?? "");
-    await recordCapture({
-      id: uuidv4(),
-      mode,
-      title,
-      filepath: response.filepath,
-      createdAt: Date.now(),
-    });
-    setPhase("saved");
-    navigation.goBack();
   };
 
   const promote = async (next: IdeaStatus) => {
-    if (next === currentStatus) return;
+    if (next === currentStatus || !pendingIdea) return;
     setError(null);
 
-    // OmniRoute idea path: re-enrich with target status, then update file if saved
-    if (useOmniRoute && mode === "idea" && pendingIdea) {
-      try {
-        const currentMd = response?.preview_markdown ?? pendingIdea.markdown;
-        const result = await omniPromoteIdea(currentMd, next);
-        const newSlug = slugify(deriveTitle(result.markdown)) || pendingIdea.slug;
-        const updated: PendingIdea = {
-          slug: newSlug,
-          markdown: result.markdown,
-          model: result.model,
-        };
-        setPendingIdea(updated);
-        setOmniModel(result.model);
-        setResponse({
-          type: "capture_response",
-          request_id: "",
-          status: "ok",
-          preview_markdown: result.markdown,
-          filepath: savedFilepath ?? undefined,
-        });
-
-        // If file was already written, update it on disk
-        if (savedFilepath) {
-          // Try rewriting just the frontmatter field first (cheaper)
-          try {
-            const existing = await readNote(savedFilepath);
-            const updated = rewriteFrontmatterField(existing, "status", next);
-            await updateNote(savedFilepath, updated);
-          } catch {
-            // Fall back to full overwrite with LLM result
-            await updateNote(savedFilepath, result.markdown);
-          }
-        }
-      } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-      return;
-    }
-
-    // Legacy navetted path
-    if (!response?.filepath || next === currentStatus) return;
     try {
-      const client = await getClient();
-      const updated = await client.promoteIdea(response.filepath, next);
-      if (updated.status !== "ok") {
-        throw new Error(updated.error ?? "promote failed");
+      const currentMd = response?.preview_markdown ?? pendingIdea.markdown;
+      const result = await omniPromoteIdea(currentMd, next);
+      const newSlug = slugify(deriveTitle(result.markdown)) || pendingIdea.slug;
+      setPendingIdea({ slug: newSlug, markdown: result.markdown, model: result.model });
+      setOmniModel(result.model);
+      setResponse({
+        type: "capture_response",
+        request_id: "",
+        status: "ok",
+        preview_markdown: result.markdown,
+        filepath: savedFilepath ?? undefined,
+      });
+
+      // If file was already written, update it on disk
+      if (savedFilepath) {
+        try {
+          const existing = await readNote(savedFilepath);
+          const patched = rewriteFrontmatterField(existing, "status", next);
+          await updateNote(savedFilepath, patched);
+        } catch {
+          await updateNote(savedFilepath, result.markdown);
+        }
       }
-      setResponse(updated);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -365,12 +276,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           >
             Envoyer
           </Button>
-          {!useOmniRoute && (
-            <HelperText type="info" visible>
-              navetted: {status}
-            </HelperText>
-          )}
-          {useOmniRoute && queueDepth > 0 && (
+          {queueDepth > 0 && (
             <HelperText type="info" visible>
               {queueDepth} capture{queueDepth > 1 ? "s" : ""} en attente de sync
             </HelperText>
@@ -387,9 +293,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         <View style={styles.loading}>
           <ActivityIndicator animating size="large" />
           <Text variant="bodyMedium" style={styles.loadingText}>
-            {useOmniRoute
-              ? "OmniRoute structure la note…"
-              : "Claude rédige la note…"}
+            OmniRoute structure la note…
           </Text>
         </View>
       )}
@@ -398,21 +302,17 @@ export default function CaptureScreen({ route, navigation }: Props) {
         <Card style={styles.previewCard}>
           <Card.Title
             title="Aperçu"
-            subtitle={
-              useOmniRoute
-                ? (() => {
-                    const filename =
-                      mode === "idea" && pendingIdea
-                        ? `Ideas/${pendingIdea.slug}.md`
-                        : mode === "journal" && pendingJournal
-                          ? `Journal/${pendingJournal.date}.md`
-                          : mode === "person" && pendingPerson
-                            ? `People/${pendingPerson.firstName}-${pendingPerson.lastName}.md`
-                            : "";
-                    return `${filename}${omniModel ? ` • ${omniModel}` : ""}`;
-                  })()
-                : (response.filepath ?? "")
-            }
+            subtitle={(() => {
+              const filename =
+                mode === "idea" && pendingIdea
+                  ? `Ideas/${pendingIdea.slug}.md`
+                  : mode === "journal" && pendingJournal
+                    ? `Journal/${pendingJournal.date}.md`
+                    : mode === "person" && pendingPerson
+                      ? `People/${pendingPerson.firstName}-${pendingPerson.lastName}.md`
+                      : "";
+              return `${filename}${omniModel ? ` • ${omniModel}` : ""}`;
+            })()}
           />
           <Card.Content>
             {mode === "idea" && (
