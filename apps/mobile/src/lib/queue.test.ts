@@ -16,7 +16,7 @@ const _rows: Map<string, Row> = new Map();
 
 const mockDb = {
   execAsync: vi.fn(async (_sql: string) => {}),
-  getAllAsync: vi.fn(async <T>(sql: string, ...params: unknown[]): Promise<T[]> => {
+  getAllAsync: vi.fn(async (sql: string, ...params: unknown[]): Promise<unknown[]> => {
     let rows = Array.from(_rows.values());
     // Filter by attempts < MAX if the query mentions it
     if (sql.includes("attempts <") && params.length > 0) {
@@ -27,9 +27,9 @@ const mockDb = {
     rows.sort((a, b) => a.created_at - b.created_at);
     // COUNT query
     if (sql.includes("COUNT(*)")) {
-      return [{ count: rows.length }] as unknown as T[];
+      return [{ count: rows.length }];
     }
-    return rows as unknown as T[];
+    return rows;
   }),
   runAsync: vi.fn(async (sql: string, ...params: unknown[]) => {
     if (sql.startsWith("INSERT")) {
@@ -51,6 +51,11 @@ const mockDb = {
 
 vi.mock("expo-sqlite", () => ({
   openDatabaseAsync: vi.fn(async (_name: string) => mockDb),
+}));
+
+vi.mock("expo-haptics", () => ({
+  impactAsync: vi.fn(async () => {}),
+  ImpactFeedbackStyle: { Light: "light", Medium: "medium", Heavy: "heavy" },
 }));
 
 // ── Mock omniroute ────────────────────────────────────────────────────────────
@@ -108,7 +113,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Re-apply stable mock implementations after clearAllMocks
   mockDb.execAsync.mockResolvedValue(undefined);
-  mockDb.getAllAsync.mockImplementation(async <T>(sql: string, ...params: unknown[]): Promise<T[]> => {
+  mockDb.getAllAsync.mockImplementation(async (sql: string, ...params: unknown[]): Promise<unknown[]> => {
     let rows = Array.from(_rows.values());
     if (sql.includes("attempts <") && params.length > 0) {
       const limit = params[0] as number;
@@ -116,9 +121,9 @@ beforeEach(() => {
     }
     rows.sort((a, b) => a.created_at - b.created_at);
     if (sql.includes("COUNT(*)")) {
-      return [{ count: rows.length }] as unknown as T[];
+      return [{ count: rows.length }];
     }
-    return rows as unknown as T[];
+    return rows;
   });
   mockDb.runAsync.mockImplementation(async (sql: string, ...params: unknown[]) => {
     if (sql.startsWith("INSERT")) {
