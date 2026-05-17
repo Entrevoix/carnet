@@ -138,6 +138,19 @@ export default function SettingsScreen() {
         Clé API OmniRoute (stockée dans le trousseau sécurisé)
       </HelperText>
 
+      <TextInput
+        label="Dossier de capture"
+        mode="outlined"
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={settings.captureFolderPath}
+        onChangeText={(v) => update({ captureFolderPath: v })}
+        placeholder="(dossier sandbox par défaut)"
+      />
+      <HelperText type="info" visible>
+        Chemin du dossier Syncthing sur Android (ex: /storage/emulated/0/carnet)
+      </HelperText>
+
       <View style={styles.switchRow}>
         <View style={styles.switchLabel}>
           <Text variant="labelLarge">OmniRoute (experimental)</Text>

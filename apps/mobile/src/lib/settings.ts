@@ -14,12 +14,18 @@ export interface Settings {
   omniRouteApiKey: string;
   /** Feature flag: use OmniRoute + local writer instead of navetted. */
   experimentalOmniRoute: boolean;
+  /**
+   * Root folder for captured notes. Defaults to the app sandbox carnet/ dir.
+   * Set to a Syncthing-watched folder for automatic sync to workstation.
+   */
+  captureFolderPath: string;
 }
 
 interface PersistedSettings {
   navettedUrl: string;
   omniRouteUrl: string;
   experimentalOmniRoute: boolean;
+  captureFolderPath: string;
   // navettedToken intentionally absent — lives in SecureStore.
   navettedToken?: string; // legacy, migrated on first read
 }
@@ -28,6 +34,7 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   navettedUrl: "ws://100.0.0.1:7878",
   omniRouteUrl: "http://192.168.1.20:20128",
   experimentalOmniRoute: false,
+  captureFolderPath: "", // empty = use app sandbox default
 };
 
 async function readPersisted(): Promise<PersistedSettings> {
@@ -48,6 +55,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     navettedUrl: settings.navettedUrl,
     omniRouteUrl: settings.omniRouteUrl,
     experimentalOmniRoute: settings.experimentalOmniRoute,
+    captureFolderPath: settings.captureFolderPath,
   };
   await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitised));
 }
@@ -72,6 +80,7 @@ export async function getSettings(): Promise<Settings> {
     navettedToken: token,
     omniRouteApiKey,
     experimentalOmniRoute: persisted.experimentalOmniRoute,
+    captureFolderPath: persisted.captureFolderPath,
   };
 }
 
@@ -80,6 +89,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     navettedUrl: settings.navettedUrl,
     omniRouteUrl: settings.omniRouteUrl,
     experimentalOmniRoute: settings.experimentalOmniRoute,
+    captureFolderPath: settings.captureFolderPath,
   });
   if (settings.navettedToken) {
     await SecureStore.setItemAsync(TOKEN_KEY, settings.navettedToken);
