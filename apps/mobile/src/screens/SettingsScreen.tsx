@@ -1,116 +1,187 @@
-import { useEffect, useState } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
-import { Button, HelperText, Snackbar, Text, TextInput } from "react-native-paper";
-import { NavettedClient } from "@carnet/shared";
+import { useEffect, useMemo, useState } from "react";
+import { FlatList, ScrollView, StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  Banner,
+  Button,
+  HelperText,
+  IconButton,
+  List,
+  Modal,
+  Portal,
+  Snackbar,
+  Text,
+  TextInput,
+} from "react-native-paper";
 
 import {
-  getClientId,
+  DEFAULT_OMNIROUTE_MODEL,
+  dismissMigrationBanner,
   getSettings,
+  hasOmniRouteApiKey,
   saveSettings,
+  setOmniRouteApiKey,
+  shouldShowMigrationBanner,
   type Settings,
 } from "../lib/settings";
-import { disconnectClient } from "../lib/client";
+import { listModels } from "../lib/omniroute";
 
-interface TestResult {
-  ok: boolean;
-  msg: string;
+interface FormState {
+  omniRouteUrl: string;
+  omniRouteModel: string;
+  captureFolderPath: string;
 }
 
+/**
+ * Pinned at the top of the model browser. Verified-working chat models on
+ * llm.grepon.cc for carnet's structured-markdown use case — the catalog also
+ * contains embeddings, image gen, and broken upstream routes the user has no
+ * reason to click. Order is rough quality/cost tradeoff.
+ */
+const RECOMMENDED_MODELS = [
+  "gemini/gemini-2.5-flash-lite",
+  "gemini/gemini-2.5-flash",
+  "claude/claude-haiku-4-5-20251001",
+  "claude/claude-sonnet-4-6",
+] as const;
+
 export default function SettingsScreen() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [clientId, setClientId] = useState<string>("");
+  const [form, setForm] = useState<FormState | null>(null);
+  const [keyConfigured, setKeyConfigured] = useState<boolean>(false);
+  /** Holds a NEW API key the user is entering. Empty string means "no change". */
+  const [pendingKey, setPendingKey] = useState<string>("");
   const [saved, setSaved] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [showBanner, setShowBanner] = useState(false);
+
+  // Model browser state — opens a modal that lists available models from
+  // GET /v1/models so the user can pick from the actual catalog instead of
+  // guessing a model name.
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseError, setBrowseError] = useState<string | null>(null);
+  const [models, setModels] = useState<string[] | null>(null);
+  const [modelFilter, setModelFilter] = useState("");
+
+  // useMemo MUST run on every render in the same order — must live above
+  // the `if (!form) return …` early return below, or hook count changes
+  // between renders and React throws "Rendered more hooks than…".
+  const { recommended, others } = useMemo(() => {
+    if (!models) return { recommended: [], others: [] as string[] };
+    const q = modelFilter.trim().toLowerCase();
+    const matches = q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
+    const recSet = new Set<string>(RECOMMENDED_MODELS);
+    const rec = RECOMMENDED_MODELS.filter((m) => matches.includes(m));
+    const rest = matches.filter((m) => !recSet.has(m));
+    return { recommended: rec as string[], others: rest };
+  }, [models, modelFilter]);
 
   useEffect(() => {
     void (async () => {
-      const [s, id] = await Promise.all([getSettings(), getClientId()]);
-      setSettings(s);
-      setClientId(id);
+      const [s, hasKey, banner] = await Promise.all([
+        getSettings(),
+        hasOmniRouteApiKey(),
+        shouldShowMigrationBanner(),
+      ]);
+      setForm({
+        omniRouteUrl: s.omniRouteUrl,
+        omniRouteModel: s.omniRouteModel,
+        captureFolderPath: s.captureFolderPath,
+      });
+      setKeyConfigured(hasKey);
+      setShowBanner(banner);
     })();
   }, []);
 
-  if (!settings) {
+  if (!form) {
     return (
       <View style={styles.loading}>
-        <Text>Chargement…</Text>
+        <Text>Loading…</Text>
       </View>
     );
   }
 
-  const update = (patch: Partial<Settings>) => {
-    setSettings({ ...settings, ...patch });
+  const update = (patch: Partial<FormState>) => {
+    setForm({ ...form, ...patch });
   };
 
   const save = async () => {
-    await saveSettings(settings);
-    disconnectClient();
+    // Compose a Settings object. The API key is intentionally NOT read into
+    // form state — we only write it if the user typed a new one OR cleared it.
+    const next: Settings = {
+      omniRouteUrl: form.omniRouteUrl,
+      omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
+      // Pass an empty string here so saveSettings doesn't touch the key.
+      // Then we handle the key write separately below.
+      omniRouteApiKey: "",
+      captureFolderPath: form.captureFolderPath,
+    };
+    // Save URL / model / folder via saveSettings, but skip the key write
+    // by re-reading the key state inside this scope (we don't have the key
+    // in form state). Use setOmniRouteApiKey only when the user typed one.
+    await saveSettings({ ...next, omniRouteApiKey: await currentKeyOrEmpty() });
+    if (pendingKey.length > 0) {
+      await setOmniRouteApiKey(pendingKey);
+      setPendingKey("");
+      setKeyConfigured(true);
+    }
     setSaved(true);
   };
 
-  const testConnection = async () => {
-    if (!settings) return;
-    setTesting(true);
-    setTestResult(null);
-    const probe = new NavettedClient({
-      url: settings.navettedUrl,
-      token: settings.navettedToken,
-      clientId,
-      requestTimeoutMs: 5_000,
-      initialReconnectDelay: 60_000,
-      maxReconnectDelay: 60_000,
-    });
-    probe.connect();
+  const clearKey = async () => {
+    await setOmniRouteApiKey("");
+    setKeyConfigured(false);
+    setPendingKey("");
+  };
+
+  const handleDismissBanner = async () => {
+    await dismissMigrationBanner();
+    setShowBanner(false);
+  };
+
+  /** Open the model browser. Uses the URL from form state and the API key
+   * from SecureStore (via getSettings) — or the freshly-typed pendingKey
+   * if the user hasn't saved it yet. */
+  const openBrowse = async () => {
+    if (!form) return;
+    setBrowseError(null);
+    setBrowseOpen(true);
+    setModelFilter("");
+    // Refetch every open — the user may have changed URL/key since last time.
+    setBrowseLoading(true);
     try {
-      // Wait briefly for hello/welcome before pinging.
-      const start = Date.now();
-      while (probe.getStatus() !== "connected" && Date.now() - start < 5_000) {
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      if (probe.getStatus() !== "connected") {
-        throw new Error(`connexion impossible (statut: ${probe.getStatus()})`);
-      }
-      const { rttMs } = await probe.ping();
-      setTestResult({ ok: true, msg: `Connecté en ${rttMs}ms` });
+      const stored = await getSettings();
+      const key = pendingKey.length > 0 ? pendingKey : stored.omniRouteApiKey;
+      const list = await listModels(form.omniRouteUrl, key);
+      setModels(list);
     } catch (e: unknown) {
-      setTestResult({
-        ok: false,
-        msg: e instanceof Error ? e.message : String(e),
-      });
+      setBrowseError(e instanceof Error ? e.message : String(e));
+      setModels(null);
     } finally {
-      probe.disconnect();
-      setTesting(false);
+      setBrowseLoading(false);
     }
+  };
+
+  const pickModel = (id: string) => {
+    if (!form) return;
+    setForm({ ...form, omniRouteModel: id });
+    setBrowseOpen(false);
   };
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
-      <TextInput
-        label="navetted URL"
-        mode="outlined"
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="url"
-        value={settings.navettedUrl}
-        onChangeText={(v) => update({ navettedUrl: v })}
-      />
-      <HelperText type="info" visible>
-        ws://… ou wss://… (Tailscale ou LAN)
-      </HelperText>
-
-      <TextInput
-        label="navetted token"
-        mode="outlined"
-        autoCapitalize="none"
-        autoCorrect={false}
-        secureTextEntry
-        value={settings.navettedToken}
-        onChangeText={(v) => update({ navettedToken: v })}
-      />
-      <HelperText type="info" visible>
-        Token dans ~/.config/navetted/config.toml du poste
-      </HelperText>
+      <Banner
+        visible={showBanner}
+        actions={[
+          {
+            label: "OK, got it",
+            onPress: handleDismissBanner,
+          },
+        ]}
+        icon="information"
+      >
+        navetted has been replaced by OmniRoute. Configure your OmniRoute key
+        below to continue capturing.
+      </Banner>
 
       <TextInput
         label="OmniRoute URL"
@@ -118,48 +189,70 @@ export default function SettingsScreen() {
         autoCapitalize="none"
         autoCorrect={false}
         keyboardType="url"
-        value={settings.omniRouteUrl}
+        value={form.omniRouteUrl}
         onChangeText={(v) => update({ omniRouteUrl: v })}
       />
       <HelperText type="info" visible>
-        Service OCR pour les cartes de visite (optionnel)
+        OmniRoute base URL — must start with https:// (e.g. https://llm.grepon.cc)
       </HelperText>
 
-      <View style={styles.metaRow}>
-        <Text variant="labelMedium">Client ID</Text>
-        <Text selectable variant="bodySmall" style={styles.mono}>
-          {clientId}
-        </Text>
-      </View>
-
-      <View style={styles.metaRow}>
-        <Text variant="labelMedium">Sync folder</Text>
-        <Text variant="bodySmall" style={styles.mono}>
-          configuré côté daemon ([carnet] sync_folder)
-        </Text>
-      </View>
-
-      <Button
+      <TextInput
+        label={keyConfigured && pendingKey.length === 0 ? "OmniRoute API key (configured)" : "OmniRoute API key"}
         mode="outlined"
-        onPress={testConnection}
-        loading={testing}
-        disabled={testing}
-        style={styles.test}
-      >
-        Tester la connexion
-      </Button>
-      {testResult && (
-        <HelperText
-          type={testResult.ok ? "info" : "error"}
-          visible
-          style={styles.testResult}
-        >
-          {testResult.msg}
-        </HelperText>
+        autoCapitalize="none"
+        autoCorrect={false}
+        secureTextEntry
+        placeholder={keyConfigured ? "•••• configured — tap to replace" : "sk-..."}
+        value={pendingKey}
+        onChangeText={setPendingKey}
+      />
+      <HelperText type="info" visible>
+        Stored in the secure keychain. The existing key is never shown again.
+      </HelperText>
+      {keyConfigured && (
+        <Button mode="text" compact onPress={clearKey} style={styles.clearKey}>
+          Clear key
+        </Button>
       )}
 
+      <TextInput
+        label="Model"
+        mode="outlined"
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={form.omniRouteModel}
+        onChangeText={(v) => update({ omniRouteModel: v })}
+        placeholder={DEFAULT_OMNIROUTE_MODEL}
+      />
+      <HelperText type="info" visible>
+        OmniRoute model — tap Browse to pick from your provider's catalog
+      </HelperText>
+      <Button
+        mode="text"
+        icon="format-list-bulleted"
+        compact
+        onPress={openBrowse}
+        disabled={!form.omniRouteUrl.trim()}
+        style={styles.browseBtn}
+      >
+        Browse available models
+      </Button>
+
+      <TextInput
+        label="Capture folder"
+        mode="outlined"
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={form.captureFolderPath}
+        onChangeText={(v) => update({ captureFolderPath: v })}
+        placeholder="(app sandbox folder by default)"
+      />
+      <HelperText type="info" visible>
+        Syncthing folder path on Android (e.g. /storage/emulated/0/carnet)
+      </HelperText>
+
       <Button mode="contained" onPress={save} style={styles.save}>
-        Enregistrer
+        Save
       </Button>
 
       <Snackbar
@@ -167,18 +260,135 @@ export default function SettingsScreen() {
         onDismiss={() => setSaved(false)}
         duration={2500}
       >
-        Paramètres enregistrés
+        Settings saved
       </Snackbar>
+
+      <Portal>
+        <Modal
+          visible={browseOpen}
+          onDismiss={() => setBrowseOpen(false)}
+          contentContainerStyle={styles.browseModal}
+        >
+          <View style={styles.browseHeader}>
+            <Text variant="titleMedium">Available models</Text>
+            <IconButton
+              icon="close"
+              onPress={() => setBrowseOpen(false)}
+              accessibilityLabel="Close model browser"
+            />
+          </View>
+          {browseLoading ? (
+            <View style={styles.browseLoading}>
+              <ActivityIndicator />
+              <Text style={styles.browseLoadingText}>Fetching catalog…</Text>
+            </View>
+          ) : browseError ? (
+            <View style={styles.browseBody}>
+              <HelperText type="error" visible>
+                {browseError}
+              </HelperText>
+              <Button mode="contained-tonal" onPress={openBrowse}>
+                Retry
+              </Button>
+            </View>
+          ) : (
+            <View style={styles.browseBody}>
+              <TextInput
+                mode="outlined"
+                placeholder="Filter (e.g. claude, gemini, gpt)"
+                autoCapitalize="none"
+                autoCorrect={false}
+                value={modelFilter}
+                onChangeText={setModelFilter}
+                dense
+              />
+              <Text variant="bodySmall" style={styles.browseCount}>
+                {recommended.length + others.length} model
+                {recommended.length + others.length === 1 ? "" : "s"}
+                {modelFilter ? ` matching “${modelFilter}”` : ""}
+              </Text>
+              <FlatList
+                data={others}
+                keyExtractor={(item) => item}
+                style={styles.browseList}
+                ListHeaderComponent={
+                  recommended.length > 0 ? (
+                    <View>
+                      <List.Subheader style={styles.browseSubheader}>
+                        Recommended for carnet
+                      </List.Subheader>
+                      {recommended.map((item) => (
+                        <List.Item
+                          key={item}
+                          title={item}
+                          titleNumberOfLines={2}
+                          onPress={() => pickModel(item)}
+                          style={styles.browseRow}
+                          left={(p) => <List.Icon {...p} icon="star" />}
+                        />
+                      ))}
+                      {others.length > 0 && (
+                        <List.Subheader style={styles.browseSubheader}>
+                          All available
+                        </List.Subheader>
+                      )}
+                    </View>
+                  ) : null
+                }
+                renderItem={({ item }) => (
+                  <List.Item
+                    title={item}
+                    titleNumberOfLines={2}
+                    onPress={() => pickModel(item)}
+                    style={styles.browseRow}
+                  />
+                )}
+                ListEmptyComponent={
+                  recommended.length === 0 ? (
+                    <Text style={styles.browseEmpty}>No models match.</Text>
+                  ) : null
+                }
+              />
+            </View>
+          )}
+        </Modal>
+      </Portal>
     </ScrollView>
   );
+}
+
+/** Helper that returns the currently-stored API key if present (so
+ * saveSettings doesn't wipe it when the user only changed URL/model). */
+async function currentKeyOrEmpty(): Promise<string> {
+  const s = await getSettings();
+  return s.omniRouteApiKey ?? "";
 }
 
 const styles = StyleSheet.create({
   loading: { flex: 1, alignItems: "center", justifyContent: "center" },
   content: { padding: 16, gap: 4 },
-  metaRow: { marginTop: 16, gap: 4 },
-  mono: { fontFamily: "monospace" },
-  test: { marginTop: 24 },
-  testResult: { marginTop: 4 },
   save: { marginTop: 12 },
+  clearKey: { alignSelf: "flex-start", marginTop: 4 },
+  browseBtn: { alignSelf: "flex-start", marginTop: 4 },
+  browseModal: {
+    backgroundColor: "white",
+    margin: 16,
+    borderRadius: 12,
+    maxHeight: "85%",
+    overflow: "hidden",
+  },
+  browseHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingLeft: 16,
+  },
+  browseBody: { padding: 16, gap: 8, flexShrink: 1 },
+  browseList: { flexGrow: 0, maxHeight: 480 },
+  browseRow: { paddingVertical: 0 },
+  browseLoading: { padding: 32, alignItems: "center", gap: 8 },
+  browseLoadingText: { opacity: 0.7 },
+  browseCount: { opacity: 0.6, paddingHorizontal: 4 },
+  browseSubheader: { paddingHorizontal: 0, paddingTop: 4 },
+  browseEmpty: { textAlign: "center", opacity: 0.6, padding: 24 },
 });

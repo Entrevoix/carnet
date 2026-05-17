@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
@@ -10,15 +10,36 @@ import {
   TextInput,
 } from "react-native-paper";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { v4 as uuidv4 } from "uuid";
+// Non-crypto local ID — only used as a key for the recents history list,
+// not for anything security-sensitive. uuid v11 requires crypto.getRandomValues
+// which RN doesn't provide without the react-native-get-random-values polyfill
+// (which would require a native rebuild). This avoids that whole detour.
+const localId = (): string =>
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 import type { RootStackParamList } from "../../App";
 import { VoiceButton } from "../voice/VoiceButton";
 import { CardScannerModal } from "../components/CardScannerModal";
-import { getClient } from "../lib/client";
-import { useConnectionStatus } from "../lib/useConnectionStatus";
 import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
+import {
+  enrichIdea,
+  enrichJournal,
+  enrichPerson,
+  isPermanentError,
+  promoteIdea as omniPromoteIdea,
+} from "../lib/omniroute";
+import {
+  slugify,
+  writeIdea,
+  appendJournal,
+  writePerson,
+  readNote,
+  updateNote,
+  rewriteFrontmatterField,
+  extractNameFromMarkdown,
+} from "../lib/writer";
+import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
 import {
   IDEA_STATUSES,
   deriveTitle,
@@ -29,7 +50,39 @@ import {
 
 type Props = NativeStackScreenProps<RootStackParamList, "Capture">;
 
+/** Local-date YYYY-MM-DD (NOT UTC). Late-evening captures in UTC- timezones
+ * must land in today's journal, not tomorrow's. */
+function todayLocal(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 type Phase = "input" | "submitting" | "preview" | "saved";
+
+/** Pending OmniRoute idea result — held in state until user confirms save. */
+interface PendingIdea {
+  slug: string;
+  markdown: string;
+  model: string;
+}
+
+/** Pending OmniRoute journal result — held until user confirms save. */
+interface PendingJournal {
+  date: string;
+  markdown: string;
+  model: string;
+}
+
+/** Pending OmniRoute person result — held until user confirms save. */
+interface PendingPerson {
+  firstName: string;
+  lastName: string;
+  markdown: string;
+  model: string;
+}
 
 export default function CaptureScreen({ route, navigation }: Props) {
   const mode: CaptureMode = route.params.mode;
@@ -39,7 +92,23 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const [ocrText, setOcrText] = useState("");
   const [response, setResponse] = useState<CaptureResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const status = useConnectionStatus();
+  // OmniRoute path: preview data before file write
+  const [pendingIdea, setPendingIdea] = useState<PendingIdea | null>(null);
+  const [pendingJournal, setPendingJournal] = useState<PendingJournal | null>(null);
+  const [pendingPerson, setPendingPerson] = useState<PendingPerson | null>(null);
+  // OmniRoute path: filepath only set after confirmSave writes the file
+  const [savedFilepath, setSavedFilepath] = useState<string | null>(null);
+  // OmniRoute path: model used for display
+  const [omniModel, setOmniModel] = useState<string | null>(null);
+
+  const [queueDepth, setQueueDepth] = useState(0);
+  const [showSource, setShowSource] = useState(false);
+
+  useEffect(() => {
+    void getQueueDepth().then(setQueueDepth);
+    // Drain any queued captures on screen open
+    void drainQueue().then(() => getQueueDepth().then(setQueueDepth));
+  }, []);
 
   const currentStatus = useMemo(
     () => parseStatusFromMarkdown(response?.preview_markdown ?? ""),
@@ -47,75 +116,194 @@ export default function CaptureScreen({ route, navigation }: Props) {
   );
 
   const canSubmit = useMemo(() => {
-    if (phase !== "input" || status !== "connected") {
-      return false;
-    }
-    if (mode === "idea") {
-      return text.trim().length > 0;
-    }
-    if (mode === "journal") {
-      return transcript.trim().length > 0 || text.trim().length > 0;
-    }
+    if (phase !== "input") return false;
+    if (mode === "idea") return text.trim().length > 0;
+    if (mode === "journal") return transcript.trim().length > 0 || text.trim().length > 0;
     return ocrText.trim().length > 0 || text.trim().length > 0;
-  }, [phase, status, mode, text, transcript, ocrText]);
+  }, [phase, mode, text, transcript, ocrText]);
+
+  /** Build an offline-or-error handler. Permanent errors (4xx) surface to
+   * the user with the actual message; transient errors (network / 5xx)
+   * enqueue silently with a "queued for sync" notice. */
+  const handleCaptureError = async (
+    e: unknown,
+    enqueueFn: () => Promise<void>,
+  ): Promise<void> => {
+    if (isPermanentError(e)) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      setPhase("input");
+      return;
+    }
+    await enqueueFn();
+    const depth = await getQueueDepth();
+    setQueueDepth(depth);
+    setError("Offline — capture queued.");
+    setPhase("input");
+  };
 
   const submit = async () => {
     setPhase("submitting");
     setError(null);
-    try {
-      const client = await getClient();
-      let result: CaptureResponse;
-      if (mode === "idea") {
-        result = await client.captureIdea({ text: text.trim() });
-      } else if (mode === "journal") {
-        const combined = [transcript, text]
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .join("\n\n");
-        result = await client.captureJournal({ transcript: combined });
-      } else {
-        result = await client.capturePerson({
-          ocr_result: ocrText.trim(),
-          context: text.trim(),
+
+    if (mode === "idea") {
+      try {
+        const result = await enrichIdea(text.trim());
+        const title = deriveTitle(result.markdown);
+        const slug = slugify(title) || "untitled";
+        setPendingIdea({ slug, markdown: result.markdown, model: result.model });
+        setOmniModel(result.model);
+        setResponse({
+          type: "capture_response",
+          request_id: "",
+          status: "ok",
+          preview_markdown: result.markdown,
         });
+        setPhase("preview");
+      } catch (e: unknown) {
+        await handleCaptureError(e, () =>
+          enqueue({ mode: "idea", text: text.trim() }),
+        );
       }
-      if (result.status !== "ok") {
-        throw new Error(result.error ?? "Unknown error");
+      return;
+    }
+
+    if (mode === "journal") {
+      const combined = [transcript, text].map((s) => s.trim()).filter(Boolean).join("\n\n");
+      try {
+        const result = await enrichJournal({ transcript: combined, notes: "" });
+        const today = todayLocal();
+        setPendingJournal({ date: today, markdown: result.markdown, model: result.model });
+        setOmniModel(result.model);
+        setResponse({
+          type: "capture_response",
+          request_id: "",
+          status: "ok",
+          preview_markdown: result.markdown,
+        });
+        setPhase("preview");
+      } catch (e: unknown) {
+        await handleCaptureError(e, () =>
+          enqueue({ mode: "journal", transcript: combined, notes: "", date: todayLocal() }),
+        );
       }
-      setResponse(result);
+      return;
+    }
+
+    // mode === "person"
+    try {
+      const result = await enrichPerson({ ocrResult: ocrText.trim(), context: text.trim() });
+      const nameField = extractNameFromMarkdown(result.markdown);
+      setPendingPerson({
+        firstName: nameField.firstName,
+        lastName: nameField.lastName,
+        markdown: result.markdown,
+        model: result.model,
+      });
+      setOmniModel(result.model);
+      setResponse({
+        type: "capture_response",
+        request_id: "",
+        status: "ok",
+        preview_markdown: result.markdown,
+      });
       setPhase("preview");
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-      setPhase("input");
+      await handleCaptureError(e, () =>
+        enqueue({ mode: "person", ocrResult: ocrText.trim(), context: text.trim() }),
+      );
     }
   };
 
   const confirmSave = async () => {
-    if (!response || !response.filepath) {
+    console.log("[confirmSave] tapped", { mode, hasPending: !!(pendingIdea || pendingJournal || pendingPerson) });
+    if (mode === "idea" && pendingIdea) {
+      try {
+        console.log("[confirmSave] writeIdea start", { slug: pendingIdea.slug });
+        const { filepath } = await writeIdea(pendingIdea.slug, pendingIdea.markdown);
+        console.log("[confirmSave] writeIdea ok", filepath);
+        setSavedFilepath(filepath);
+        const title = deriveTitle(pendingIdea.markdown);
+        await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
+        console.log("[confirmSave] recordCapture ok");
+        setPhase("saved");
+        navigation.goBack();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[confirmSave] idea failed:", msg, e);
+        setError(msg);
+      }
       return;
     }
-    const title = deriveTitle(response.preview_markdown ?? "");
-    await recordCapture({
-      id: uuidv4(),
-      mode,
-      title,
-      filepath: response.filepath,
-      createdAt: Date.now(),
-    });
-    setPhase("saved");
-    navigation.goBack();
+
+    if (mode === "journal" && pendingJournal) {
+      try {
+        console.log("[confirmSave] appendJournal start", { date: pendingJournal.date });
+        const { filepath } = await appendJournal(pendingJournal.date, pendingJournal.markdown);
+        console.log("[confirmSave] appendJournal ok", filepath);
+        setSavedFilepath(filepath);
+        const title = deriveTitle(pendingJournal.markdown);
+        await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
+        setPhase("saved");
+        navigation.goBack();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[confirmSave] journal failed:", msg, e);
+        setError(msg);
+      }
+      return;
+    }
+
+    if (mode === "person" && pendingPerson) {
+      try {
+        console.log("[confirmSave] writePerson start");
+        const { filepath } = await writePerson(
+          pendingPerson.firstName,
+          pendingPerson.lastName,
+          pendingPerson.markdown,
+        );
+        console.log("[confirmSave] writePerson ok", filepath);
+        setSavedFilepath(filepath);
+        const title = deriveTitle(pendingPerson.markdown);
+        await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
+        setPhase("saved");
+        navigation.goBack();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[confirmSave] person failed:", msg, e);
+        setError(msg);
+      }
+    }
   };
 
   const promote = async (next: IdeaStatus) => {
-    if (!response?.filepath || next === currentStatus) return;
+    if (next === currentStatus || !pendingIdea) return;
     setError(null);
+
     try {
-      const client = await getClient();
-      const updated = await client.promoteIdea(response.filepath, next);
-      if (updated.status !== "ok") {
-        throw new Error(updated.error ?? "promote failed");
+      const currentMd = response?.preview_markdown ?? pendingIdea.markdown;
+      const result = await omniPromoteIdea(currentMd, next);
+      const newSlug = slugify(deriveTitle(result.markdown)) || pendingIdea.slug;
+      setPendingIdea({ slug: newSlug, markdown: result.markdown, model: result.model });
+      setOmniModel(result.model);
+      setResponse({
+        type: "capture_response",
+        request_id: "",
+        status: "ok",
+        preview_markdown: result.markdown,
+        filepath: savedFilepath ?? undefined,
+      });
+
+      // If file was already written, update it on disk
+      if (savedFilepath) {
+        try {
+          const existing = await readNote(savedFilepath);
+          const patched = rewriteFrontmatterField(existing, "status", next);
+          await updateNote(savedFilepath, patched);
+        } catch {
+          await updateNote(savedFilepath, result.markdown);
+        }
       }
-      setResponse(updated);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -143,11 +331,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
             disabled={!canSubmit}
             style={styles.submit}
           >
-            Envoyer
+            Send
           </Button>
-          <HelperText type="info" visible>
-            navetted: {status}
-          </HelperText>
+          {queueDepth > 0 && (
+            <HelperText type="info" visible>
+              {queueDepth} capture{queueDepth > 1 ? "s" : ""} pending sync
+            </HelperText>
+          )}
           {error && (
             <HelperText type="error" visible>
               {error}
@@ -160,16 +350,29 @@ export default function CaptureScreen({ route, navigation }: Props) {
         <View style={styles.loading}>
           <ActivityIndicator animating size="large" />
           <Text variant="bodyMedium" style={styles.loadingText}>
-            Claude rédige la note…
+            OmniRoute is structuring the note…
           </Text>
         </View>
       )}
 
       {phase === "preview" && response && (
         <Card style={styles.previewCard}>
-          <Card.Title title="Aperçu" subtitle={response.filepath} />
+          <Card.Title
+            title="Preview"
+            subtitle={(() => {
+              const filename =
+                mode === "idea" && pendingIdea
+                  ? `Ideas/${pendingIdea.slug}.md`
+                  : mode === "journal" && pendingJournal
+                    ? `Journal/${pendingJournal.date}.md`
+                    : mode === "person" && pendingPerson
+                      ? `People/${pendingPerson.firstName}-${pendingPerson.lastName}.md`
+                      : "";
+              return `${filename}${omniModel ? ` • ${omniModel}` : ""}`;
+            })()}
+          />
           <Card.Content>
-            {mode === "idea" && response.filepath && (
+            {mode === "idea" && (
               <View style={styles.statusRow}>
                 {IDEA_STATUSES.map((s) => (
                   <Chip
@@ -184,15 +387,32 @@ export default function CaptureScreen({ route, navigation }: Props) {
                 ))}
               </View>
             )}
-            <Text selectable style={styles.previewText}>
+            <Text
+              selectable
+              style={showSource ? styles.previewSource : styles.previewRendered}
+            >
               {response.preview_markdown ?? ""}
             </Text>
           </Card.Content>
           <Card.Actions>
+            <Button
+              mode="text"
+              compact
+              onPress={() => setShowSource((v) => !v)}
+            >
+              {showSource ? "View rendered" : "View source"}
+            </Button>
             <Button onPress={confirmSave} mode="contained">
-              Enregistrer
+              Save
             </Button>
           </Card.Actions>
+          {error && (
+            <Card.Content>
+              <HelperText type="error" visible>
+                {error}
+              </HelperText>
+            </Card.Content>
+          )}
         </Card>
       )}
     </ScrollView>
@@ -220,15 +440,32 @@ function ModeInput({
 }: ModeInputProps) {
   if (mode === "idea") {
     return (
-      <TextInput
-        label="Ton idée"
-        mode="outlined"
-        multiline
-        numberOfLines={6}
-        value={text}
-        onChangeText={onTextChange}
-        autoFocus
-      />
+      <View style={styles.ideaBlock}>
+        <View style={styles.voiceRow}>
+          <VoiceButton
+            onTranscript={(t, isFinal) => {
+              if (isFinal) {
+                onTextChange(text ? `${text}\n${t}`.trim() : t);
+              }
+            }}
+          />
+          <Text variant="bodySmall" style={styles.voiceHint}>
+            Tap to dictate
+          </Text>
+        </View>
+        <TextInput
+          label="Your idea"
+          mode="outlined"
+          multiline
+          numberOfLines={6}
+          value={text}
+          onChangeText={onTextChange}
+          autoFocus
+        />
+        <Text variant="bodySmall" style={styles.wordCounter}>
+          {text.length} chars
+        </Text>
+      </View>
     );
   }
   if (mode === "journal") {
@@ -245,11 +482,11 @@ function ModeInput({
             }}
           />
           <Text variant="bodySmall" style={styles.voiceHint}>
-            Maintenir pour enregistrer
+            Tap to dictate
           </Text>
         </View>
         <TextInput
-          label="Transcription"
+          label="Transcript"
           mode="outlined"
           multiline
           numberOfLines={5}
@@ -257,7 +494,7 @@ function ModeInput({
           onChangeText={onTranscriptChange}
         />
         <TextInput
-          label="Notes additionnelles"
+          label="Additional notes"
           mode="outlined"
           multiline
           numberOfLines={3}
@@ -298,7 +535,7 @@ function PersonInput({
     const settings = await getSettings();
     if (!settings.omniRouteUrl.trim()) {
       setHint(
-        "OmniRoute non configuré. Saisis le texte de la carte ci-dessous, puis Envoyer.",
+        "OmniRoute not configured. Type the card text below, then tap Send.",
       );
       return;
     }
@@ -308,7 +545,7 @@ function PersonInput({
   return (
     <View style={styles.personBlock}>
       <Button icon="camera" mode="contained-tonal" onPress={open}>
-        Scanner la carte
+        Scan card
       </Button>
       {hint && (
         <HelperText type="info" visible>
@@ -316,15 +553,27 @@ function PersonInput({
         </HelperText>
       )}
       <TextInput
-        label="Texte OCR (carte de visite)"
+        label="OCR text (business card)"
         mode="outlined"
         multiline
         numberOfLines={4}
         value={ocrText}
         onChangeText={onOcrChange}
       />
+      <View style={styles.voiceRow}>
+        <VoiceButton
+          onTranscript={(t, isFinal) => {
+            if (isFinal) {
+              onContextChange(context ? `${context}\n${t}`.trim() : t);
+            }
+          }}
+        />
+        <Text variant="bodySmall" style={styles.voiceHint}>
+          Tap to dictate meeting context
+        </Text>
+      </View>
       <TextInput
-        label="Contexte de la rencontre"
+        label="Meeting context"
         mode="outlined"
         multiline
         numberOfLines={3}
@@ -349,11 +598,14 @@ const styles = StyleSheet.create({
   loading: { paddingVertical: 64, alignItems: "center", gap: 12 },
   loadingText: { opacity: 0.8 },
   previewCard: { marginTop: 8 },
-  previewText: { fontFamily: "monospace", fontSize: 12, marginTop: 12 },
+  previewSource: { fontFamily: "monospace", fontSize: 12, marginTop: 12 },
+  previewRendered: { fontSize: 13, lineHeight: 20, marginTop: 12 },
   statusRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   statusChip: {},
+  ideaBlock: { gap: 12 },
   journalBlock: { gap: 12 },
   voiceRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   voiceHint: { opacity: 0.7 },
   personBlock: { gap: 12 },
+  wordCounter: { opacity: 0.5, marginTop: 4, textAlign: "right" },
 });

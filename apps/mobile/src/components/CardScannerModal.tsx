@@ -36,7 +36,7 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
         quality: 0.6,
       });
       if (!photo?.base64) {
-        throw new Error("aucune image capturée");
+        throw new Error("no image captured");
       }
       const settings = await getSettings();
       const { text } = await ocrBusinessCard(settings.omniRouteUrl, photo.base64);
@@ -52,7 +52,7 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
   const grant = async () => {
     const result = await requestPermission();
     if (!result.granted) {
-      setError("Permission caméra refusée");
+      setError("Camera permission denied");
     }
   };
 
@@ -64,11 +64,11 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
         contentContainerStyle={styles.modal}
       >
         <View style={styles.header}>
-          <Text variant="titleMedium">Scanner la carte</Text>
+          <Text variant="titleMedium">Scan card</Text>
           <IconButton
             icon="close"
             onPress={onClose}
-            accessibilityLabel="Fermer et saisir manuellement"
+            accessibilityLabel="Close and enter manually"
           />
         </View>
 
@@ -78,9 +78,9 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
           </View>
         ) : !permission.granted ? (
           <View style={styles.body}>
-            <Text>Autorisation caméra requise.</Text>
+            <Text>Camera permission required.</Text>
             <Button mode="contained" onPress={grant} style={styles.grantBtn}>
-              Autoriser la caméra
+              Allow camera
             </Button>
           </View>
         ) : (
@@ -94,11 +94,11 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
               disabled={busy}
               style={styles.captureBtn}
             >
-              Capturer
+              Capture
             </Button>
             {busy && (
               <HelperText type="info" visible>
-                OCR en cours…
+                OCR in progress…
               </HelperText>
             )}
             {error && (

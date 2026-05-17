@@ -124,7 +124,7 @@ async function collectDiagnostics(
 ): Promise<string> {
   const lines: string[] = [];
   const ts = new Date().toISOString();
-  lines.push(`navette voice diagnostics @ ${ts}`);
+  lines.push(`carnet voice diagnostics @ ${ts}`);
   lines.push('');
   // getSpeechRecognitionServices
   try {

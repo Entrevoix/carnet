@@ -4,7 +4,7 @@
  * just string parsing.
  */
 
-import type { IdeaStatus } from "./types.js";
+import type { IdeaStatus } from "./types";
 
 export const IDEA_STATUSES: readonly IdeaStatus[] = [
   "seedling",
@@ -37,5 +37,5 @@ export function deriveTitle(markdown: string): string {
       return line.slice(2).trim();
     }
   }
-  return markdown.split("\n", 1)[0]?.slice(0, 60) ?? "Sans titre";
+  return markdown.split("\n", 1)[0]?.slice(0, 60) ?? "Untitled";
 }
