@@ -16,6 +16,7 @@
  */
 
 import * as SQLite from "expo-sqlite";
+import * as Haptics from "expo-haptics";
 import { v4 as uuidv4 } from "uuid";
 
 import { enrichIdea, enrichJournal, enrichPerson } from "./omniroute";
@@ -97,6 +98,8 @@ export async function enqueue(payload: QueuePayload): Promise<void> {
     JSON.stringify(payload),
     now,
   );
+  // Light haptic so the user feels the offline queue accept the capture.
+  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 }
 
 /**

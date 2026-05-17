@@ -72,6 +72,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const [omniModel, setOmniModel] = useState<string | null>(null);
 
   const [queueDepth, setQueueDepth] = useState(0);
+  const [showSource, setShowSource] = useState(false);
 
   useEffect(() => {
     void getQueueDepth().then(setQueueDepth);
@@ -330,11 +331,21 @@ export default function CaptureScreen({ route, navigation }: Props) {
                 ))}
               </View>
             )}
-            <Text selectable style={styles.previewText}>
+            <Text
+              selectable
+              style={showSource ? styles.previewSource : styles.previewRendered}
+            >
               {response.preview_markdown ?? ""}
             </Text>
           </Card.Content>
           <Card.Actions>
+            <Button
+              mode="text"
+              compact
+              onPress={() => setShowSource((v) => !v)}
+            >
+              {showSource ? "Voir rendu" : "Voir source"}
+            </Button>
             <Button onPress={confirmSave} mode="contained">
               Enregistrer
             </Button>
@@ -405,15 +416,20 @@ function ModeInput({
 }: ModeInputProps) {
   if (mode === "idea") {
     return (
-      <TextInput
-        label="Ton idée"
-        mode="outlined"
-        multiline
-        numberOfLines={6}
-        value={text}
-        onChangeText={onTextChange}
-        autoFocus
-      />
+      <View>
+        <TextInput
+          label="Ton idée"
+          mode="outlined"
+          multiline
+          numberOfLines={6}
+          value={text}
+          onChangeText={onTextChange}
+          autoFocus
+        />
+        <Text variant="bodySmall" style={styles.wordCounter}>
+          {text.length} car.
+        </Text>
+      </View>
     );
   }
   if (mode === "journal") {
@@ -534,11 +550,13 @@ const styles = StyleSheet.create({
   loading: { paddingVertical: 64, alignItems: "center", gap: 12 },
   loadingText: { opacity: 0.8 },
   previewCard: { marginTop: 8 },
-  previewText: { fontFamily: "monospace", fontSize: 12, marginTop: 12 },
+  previewSource: { fontFamily: "monospace", fontSize: 12, marginTop: 12 },
+  previewRendered: { fontSize: 13, lineHeight: 20, marginTop: 12 },
   statusRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   statusChip: {},
   journalBlock: { gap: 12 },
   voiceRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   voiceHint: { opacity: 0.7 },
   personBlock: { gap: 12 },
+  wordCounter: { opacity: 0.5, marginTop: 4, textAlign: "right" },
 });

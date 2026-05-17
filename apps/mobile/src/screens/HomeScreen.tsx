@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import {
   Button,
+  Card,
   Divider,
   IconButton,
   List,
@@ -79,29 +80,44 @@ export default function HomeScreen({ navigation }: Props) {
         Contact
       </Button>
 
+      {/* "Continue today's journal" shortcut — skips mode selection */}
+      <Button
+        mode="text"
+        icon="book-open-variant"
+        onPress={() => navigation.navigate("Capture", { mode: "journal" })}
+        style={styles.journalShortcut}
+        compact
+      >
+        Continuer le journal d'aujourd'hui
+      </Button>
+
       <Divider style={styles.divider} />
 
-      <Text variant="titleMedium" style={styles.recentHeader}>
-        Récents
-      </Text>
-      {recent.length === 0 ? (
-        <Text variant="bodyMedium" style={styles.emptyHint}>
-          Aucune capture pour le moment.
-        </Text>
-      ) : (
-        <View>
-          {recent.map((item) => (
-            <List.Item
-              key={item.id}
-              title={item.title}
-              description={`${formatMode(item.mode)} • ${formatDate(item.createdAt)}`}
-              left={(p) => (
-                <List.Icon {...p} icon={modeIcon(item.mode)} />
-              )}
-            />
-          ))}
-        </View>
-      )}
+      {/* Last 5 captures card */}
+      <Card style={styles.recentCard}>
+        <Card.Title title="Récents" />
+        <Card.Content>
+          {recent.length === 0 ? (
+            <Text variant="bodyMedium" style={styles.emptyHint}>
+              Aucune capture pour le moment.
+            </Text>
+          ) : (
+            <View>
+              {recent.map((item) => (
+                <List.Item
+                  key={item.id}
+                  title={item.title}
+                  description={`${formatMode(item.mode)} • ${formatDate(item.createdAt)}`}
+                  left={(p) => (
+                    <List.Icon {...p} icon={modeIcon(item.mode)} />
+                  )}
+                  style={styles.listItem}
+                />
+              ))}
+            </View>
+          )}
+        </Card.Content>
+      </Card>
     </ScrollView>
   );
 }
@@ -139,7 +155,9 @@ const styles = StyleSheet.create({
   button: { borderRadius: 12 },
   buttonContent: { paddingVertical: 16 },
   buttonLabel: { fontSize: 18 },
-  divider: { marginVertical: 16 },
-  recentHeader: { marginBottom: 8 },
-  emptyHint: { opacity: 0.6, paddingVertical: 12 },
+  journalShortcut: { alignSelf: "flex-start" },
+  divider: { marginVertical: 8 },
+  recentCard: { marginTop: 4 },
+  emptyHint: { opacity: 0.6, paddingVertical: 8 },
+  listItem: { paddingHorizontal: 0 },
 });
