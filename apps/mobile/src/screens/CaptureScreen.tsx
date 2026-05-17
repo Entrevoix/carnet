@@ -21,6 +21,7 @@ import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
 import { enrichIdea, enrichJournal, enrichPerson, promoteIdea as omniPromoteIdea } from "../lib/omniroute";
 import { slugify, writeIdea, appendJournal, writePerson, readNote, updateNote, rewriteFrontmatterField } from "../lib/writer";
+import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
 import {
   IDEA_STATUSES,
   deriveTitle,
@@ -74,9 +75,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const [omniModel, setOmniModel] = useState<string | null>(null);
 
   const status = useConnectionStatus();
+  const [queueDepth, setQueueDepth] = useState(0);
 
   useEffect(() => {
     void getSettings().then((s) => setUseOmniRoute(s.experimentalOmniRoute));
+    void getQueueDepth().then(setQueueDepth);
+    // Drain any queued captures on screen open
+    void drainQueue().then(() => getQueueDepth().then(setQueueDepth));
   }, []);
 
   const currentStatus = useMemo(
@@ -120,7 +125,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
         });
         setPhase("preview");
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
+        // Enqueue for offline retry on network/5xx errors
+        await enqueue({ mode: "idea", text: text.trim() });
+        const depth = await getQueueDepth();
+        setQueueDepth(depth);
+        setError("Pas de connexion — capture mise en file d'attente.");
         setPhase("input");
       }
       return;
@@ -142,7 +151,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
         });
         setPhase("preview");
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
+        const combined = [transcript, text].map((s) => s.trim()).filter(Boolean).join("\n\n");
+        const today = new Date().toISOString().slice(0, 10);
+        await enqueue({ mode: "journal", transcript: combined, notes: "", date: today });
+        const depth = await getQueueDepth();
+        setQueueDepth(depth);
+        setError("Pas de connexion — capture mise en file d'attente.");
         setPhase("input");
       }
       return;
@@ -152,7 +166,6 @@ export default function CaptureScreen({ route, navigation }: Props) {
     if (useOmniRoute && mode === "person") {
       try {
         const result = await enrichPerson({ ocrResult: ocrText.trim(), context: text.trim() });
-        // Extract first/last name from frontmatter or H1
         const nameField = extractNameFromMarkdown(result.markdown);
         setPendingPerson({
           firstName: nameField.firstName,
@@ -169,7 +182,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
         });
         setPhase("preview");
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
+        await enqueue({ mode: "person", ocrResult: ocrText.trim(), context: text.trim() });
+        const depth = await getQueueDepth();
+        setQueueDepth(depth);
+        setError("Pas de connexion — capture mise en file d'attente.");
         setPhase("input");
       }
       return;
@@ -352,6 +368,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
           {!useOmniRoute && (
             <HelperText type="info" visible>
               navetted: {status}
+            </HelperText>
+          )}
+          {useOmniRoute && queueDepth > 0 && (
+            <HelperText type="info" visible>
+              {queueDepth} capture{queueDepth > 1 ? "s" : ""} en attente de sync
             </HelperText>
           )}
           {error && (
