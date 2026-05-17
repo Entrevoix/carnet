@@ -46,7 +46,8 @@
             "com.google.android.tts"
           ]
         }
-      ]
+      ],
+      "./plugins/withSpeechRecognitionQueries"
     ]
   }
 }

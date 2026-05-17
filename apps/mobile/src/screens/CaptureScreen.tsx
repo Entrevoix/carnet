@@ -10,7 +10,12 @@ import {
   TextInput,
 } from "react-native-paper";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { v4 as uuidv4 } from "uuid";
+// Non-crypto local ID — only used as a key for the recents history list,
+// not for anything security-sensitive. uuid v11 requires crypto.getRandomValues
+// which RN doesn't provide without the react-native-get-random-values polyfill
+// (which would require a native rebuild). This avoids that whole detour.
+const localId = (): string =>
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 import type { RootStackParamList } from "../../App";
 import { VoiceButton } from "../voice/VoiceButton";
@@ -211,48 +216,62 @@ export default function CaptureScreen({ route, navigation }: Props) {
   };
 
   const confirmSave = async () => {
+    console.log("[confirmSave] tapped", { mode, hasPending: !!(pendingIdea || pendingJournal || pendingPerson) });
     if (mode === "idea" && pendingIdea) {
       try {
+        console.log("[confirmSave] writeIdea start", { slug: pendingIdea.slug });
         const { filepath } = await writeIdea(pendingIdea.slug, pendingIdea.markdown);
+        console.log("[confirmSave] writeIdea ok", filepath);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingIdea.markdown);
-        await recordCapture({ id: uuidv4(), mode, title, filepath, createdAt: Date.now() });
+        await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
+        console.log("[confirmSave] recordCapture ok");
         setPhase("saved");
         navigation.goBack();
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[confirmSave] idea failed:", msg, e);
+        setError(msg);
       }
       return;
     }
 
     if (mode === "journal" && pendingJournal) {
       try {
+        console.log("[confirmSave] appendJournal start", { date: pendingJournal.date });
         const { filepath } = await appendJournal(pendingJournal.date, pendingJournal.markdown);
+        console.log("[confirmSave] appendJournal ok", filepath);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingJournal.markdown);
-        await recordCapture({ id: uuidv4(), mode, title, filepath, createdAt: Date.now() });
+        await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         setPhase("saved");
         navigation.goBack();
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[confirmSave] journal failed:", msg, e);
+        setError(msg);
       }
       return;
     }
 
     if (mode === "person" && pendingPerson) {
       try {
+        console.log("[confirmSave] writePerson start");
         const { filepath } = await writePerson(
           pendingPerson.firstName,
           pendingPerson.lastName,
           pendingPerson.markdown,
         );
+        console.log("[confirmSave] writePerson ok", filepath);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingPerson.markdown);
-        await recordCapture({ id: uuidv4(), mode, title, filepath, createdAt: Date.now() });
+        await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         setPhase("saved");
         navigation.goBack();
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[confirmSave] person failed:", msg, e);
+        setError(msg);
       }
     }
   };
@@ -387,6 +406,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
               Save
             </Button>
           </Card.Actions>
+          {error && (
+            <Card.Content>
+              <HelperText type="error" visible>
+                {error}
+              </HelperText>
+            </Card.Content>
+          )}
         </Card>
       )}
     </ScrollView>
@@ -414,7 +440,19 @@ function ModeInput({
 }: ModeInputProps) {
   if (mode === "idea") {
     return (
-      <View>
+      <View style={styles.ideaBlock}>
+        <View style={styles.voiceRow}>
+          <VoiceButton
+            onTranscript={(t, isFinal) => {
+              if (isFinal) {
+                onTextChange(text ? `${text}\n${t}`.trim() : t);
+              }
+            }}
+          />
+          <Text variant="bodySmall" style={styles.voiceHint}>
+            Tap to dictate
+          </Text>
+        </View>
         <TextInput
           label="Your idea"
           mode="outlined"
@@ -444,7 +482,7 @@ function ModeInput({
             }}
           />
           <Text variant="bodySmall" style={styles.voiceHint}>
-            Hold to record
+            Tap to dictate
           </Text>
         </View>
         <TextInput
@@ -522,6 +560,18 @@ function PersonInput({
         value={ocrText}
         onChangeText={onOcrChange}
       />
+      <View style={styles.voiceRow}>
+        <VoiceButton
+          onTranscript={(t, isFinal) => {
+            if (isFinal) {
+              onContextChange(context ? `${context}\n${t}`.trim() : t);
+            }
+          }}
+        />
+        <Text variant="bodySmall" style={styles.voiceHint}>
+          Tap to dictate meeting context
+        </Text>
+      </View>
       <TextInput
         label="Meeting context"
         mode="outlined"
@@ -552,6 +602,7 @@ const styles = StyleSheet.create({
   previewRendered: { fontSize: 13, lineHeight: 20, marginTop: 12 },
   statusRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   statusChip: {},
+  ideaBlock: { gap: 12 },
   journalBlock: { gap: 12 },
   voiceRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   voiceHint: { opacity: 0.7 },
