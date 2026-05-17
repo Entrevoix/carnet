@@ -19,9 +19,8 @@ import { getClient } from "../lib/client";
 import { useConnectionStatus } from "../lib/useConnectionStatus";
 import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
-import { enrichIdea, promoteIdea as omniPromoteIdea } from "../lib/omniroute";
-import { slugify, writeIdea, readNote, updateNote } from "../lib/writer";
-import { rewriteFrontmatterField } from "../lib/writer";
+import { enrichIdea, enrichJournal, enrichPerson, promoteIdea as omniPromoteIdea } from "../lib/omniroute";
+import { slugify, writeIdea, appendJournal, writePerson, readNote, updateNote, rewriteFrontmatterField } from "../lib/writer";
 import {
   IDEA_STATUSES,
   deriveTitle,
@@ -41,6 +40,21 @@ interface PendingIdea {
   model: string;
 }
 
+/** Pending OmniRoute journal result — held until user confirms save. */
+interface PendingJournal {
+  date: string;
+  markdown: string;
+  model: string;
+}
+
+/** Pending OmniRoute person result — held until user confirms save. */
+interface PendingPerson {
+  firstName: string;
+  lastName: string;
+  markdown: string;
+  model: string;
+}
+
 export default function CaptureScreen({ route, navigation }: Props) {
   const mode: CaptureMode = route.params.mode;
   const [phase, setPhase] = useState<Phase>("input");
@@ -52,6 +66,8 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const [useOmniRoute, setUseOmniRoute] = useState(false);
   // OmniRoute path: preview data before file write
   const [pendingIdea, setPendingIdea] = useState<PendingIdea | null>(null);
+  const [pendingJournal, setPendingJournal] = useState<PendingJournal | null>(null);
+  const [pendingPerson, setPendingPerson] = useState<PendingPerson | null>(null);
   // OmniRoute path: filepath only set after confirmSave writes the file
   const [savedFilepath, setSavedFilepath] = useState<string | null>(null);
   // OmniRoute path: model used for display
@@ -70,9 +86,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
   const canSubmit = useMemo(() => {
     if (phase !== "input") return false;
-    if (useOmniRoute && mode === "idea") {
-      // OmniRoute idea path doesn't need navetted connection
-      return text.trim().length > 0;
+    if (useOmniRoute) {
+      // OmniRoute paths don't need navetted connection
+      if (mode === "idea") return text.trim().length > 0;
+      if (mode === "journal") return transcript.trim().length > 0 || text.trim().length > 0;
+      if (mode === "person") return ocrText.trim().length > 0 || text.trim().length > 0;
     }
     if (status !== "connected") return false;
     if (mode === "idea") return text.trim().length > 0;
@@ -90,12 +108,59 @@ export default function CaptureScreen({ route, navigation }: Props) {
     if (useOmniRoute && mode === "idea") {
       try {
         const result = await enrichIdea(text.trim());
-        // Derive slug from the markdown H1
         const title = deriveTitle(result.markdown);
         const slug = slugify(title) || "untitled";
         setPendingIdea({ slug, markdown: result.markdown, model: result.model });
         setOmniModel(result.model);
-        // Show preview using the same CaptureResponse shape (no filepath yet)
+        setResponse({
+          type: "capture_response",
+          request_id: "",
+          status: "ok",
+          preview_markdown: result.markdown,
+        });
+        setPhase("preview");
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPhase("input");
+      }
+      return;
+    }
+
+    // OmniRoute path: journal mode with flag enabled
+    if (useOmniRoute && mode === "journal") {
+      try {
+        const combined = [transcript, text].map((s) => s.trim()).filter(Boolean).join("\n\n");
+        const result = await enrichJournal({ transcript: combined, notes: "" });
+        const today = new Date().toISOString().slice(0, 10);
+        setPendingJournal({ date: today, markdown: result.markdown, model: result.model });
+        setOmniModel(result.model);
+        setResponse({
+          type: "capture_response",
+          request_id: "",
+          status: "ok",
+          preview_markdown: result.markdown,
+        });
+        setPhase("preview");
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPhase("input");
+      }
+      return;
+    }
+
+    // OmniRoute path: person mode with flag enabled
+    if (useOmniRoute && mode === "person") {
+      try {
+        const result = await enrichPerson({ ocrResult: ocrText.trim(), context: text.trim() });
+        // Extract first/last name from frontmatter or H1
+        const nameField = extractNameFromMarkdown(result.markdown);
+        setPendingPerson({
+          firstName: nameField.firstName,
+          lastName: nameField.lastName,
+          markdown: result.markdown,
+          model: result.model,
+        });
+        setOmniModel(result.model);
         setResponse({
           type: "capture_response",
           request_id: "",
@@ -146,13 +211,41 @@ export default function CaptureScreen({ route, navigation }: Props) {
         const { filepath } = await writeIdea(pendingIdea.slug, pendingIdea.markdown);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingIdea.markdown);
-        await recordCapture({
-          id: uuidv4(),
-          mode,
-          title,
-          filepath,
-          createdAt: Date.now(),
-        });
+        await recordCapture({ id: uuidv4(), mode, title, filepath, createdAt: Date.now() });
+        setPhase("saved");
+        navigation.goBack();
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+      return;
+    }
+
+    // OmniRoute journal path: append to today's file
+    if (useOmniRoute && mode === "journal" && pendingJournal) {
+      try {
+        const { filepath } = await appendJournal(pendingJournal.date, pendingJournal.markdown);
+        setSavedFilepath(filepath);
+        const title = deriveTitle(pendingJournal.markdown);
+        await recordCapture({ id: uuidv4(), mode, title, filepath, createdAt: Date.now() });
+        setPhase("saved");
+        navigation.goBack();
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+      return;
+    }
+
+    // OmniRoute person path: write person file
+    if (useOmniRoute && mode === "person" && pendingPerson) {
+      try {
+        const { filepath } = await writePerson(
+          pendingPerson.firstName,
+          pendingPerson.lastName,
+          pendingPerson.markdown,
+        );
+        setSavedFilepath(filepath);
+        const title = deriveTitle(pendingPerson.markdown);
+        await recordCapture({ id: uuidv4(), mode, title, filepath, createdAt: Date.now() });
         setPhase("saved");
         navigation.goBack();
       } catch (e: unknown) {
@@ -256,7 +349,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           >
             Envoyer
           </Button>
-          {!(useOmniRoute && mode === "idea") && (
+          {!useOmniRoute && (
             <HelperText type="info" visible>
               navetted: {status}
             </HelperText>
@@ -273,7 +366,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         <View style={styles.loading}>
           <ActivityIndicator animating size="large" />
           <Text variant="bodyMedium" style={styles.loadingText}>
-            {useOmniRoute && mode === "idea"
+            {useOmniRoute
               ? "OmniRoute structure la note…"
               : "Claude rédige la note…"}
           </Text>
@@ -285,8 +378,18 @@ export default function CaptureScreen({ route, navigation }: Props) {
           <Card.Title
             title="Aperçu"
             subtitle={
-              useOmniRoute && mode === "idea" && pendingIdea
-                ? `${pendingIdea.slug}.md${omniModel ? ` • ${omniModel}` : ""}`
+              useOmniRoute
+                ? (() => {
+                    const filename =
+                      mode === "idea" && pendingIdea
+                        ? `Ideas/${pendingIdea.slug}.md`
+                        : mode === "journal" && pendingJournal
+                          ? `Journal/${pendingJournal.date}.md`
+                          : mode === "person" && pendingPerson
+                            ? `People/${pendingPerson.firstName}-${pendingPerson.lastName}.md`
+                            : "";
+                    return `${filename}${omniModel ? ` • ${omniModel}` : ""}`;
+                  })()
                 : (response.filepath ?? "")
             }
           />
@@ -319,6 +422,45 @@ export default function CaptureScreen({ route, navigation }: Props) {
       )}
     </ScrollView>
   );
+}
+
+/** Extract first/last name from a person markdown note. */
+function extractNameFromMarkdown(markdown: string): { firstName: string; lastName: string } {
+  // Try `name:` frontmatter field first
+  const s = markdown.trimStart();
+  if (s.startsWith("---")) {
+    const afterFirst = s.slice(3);
+    const endIdx = afterFirst.indexOf("\n---");
+    if (endIdx !== -1) {
+      const block = afterFirst.slice(0, endIdx);
+      for (const line of block.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("name:")) {
+          const name = trimmed.slice(5).trim().replace(/^['"]|['"]$/g, "");
+          const parts = name.split(/\s+/);
+          if (parts.length >= 2) {
+            return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+          }
+          if (parts.length === 1) {
+            return { firstName: parts[0], lastName: "" };
+          }
+        }
+      }
+    }
+  }
+  // Fall back to H1
+  for (const line of markdown.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("# ")) {
+      const name = trimmed.slice(2).trim();
+      const parts = name.split(/\s+/);
+      if (parts.length >= 2) {
+        return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+      }
+      return { firstName: name, lastName: "" };
+    }
+  }
+  return { firstName: "", lastName: "" };
 }
 
 interface ModeInputProps {
