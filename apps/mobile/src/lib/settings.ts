@@ -5,11 +5,13 @@ import { v4 as uuidv4 } from "uuid";
 const SETTINGS_KEY = "carnet:settings:v1";
 const CLIENT_ID_KEY = "carnet:client_id:v1";
 const TOKEN_KEY = "carnet_navetted_token";
+const OMNIROUTE_API_KEY = "carnet_omniroute_api_key";
 
 export interface Settings {
   navettedUrl: string;
   navettedToken: string;
   omniRouteUrl: string;
+  omniRouteApiKey: string;
 }
 
 interface PersistedSettings {
@@ -48,6 +50,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
 export async function getSettings(): Promise<Settings> {
   const persisted = await readPersisted();
   let token = (await SecureStore.getItemAsync(TOKEN_KEY)) ?? "";
+  const omniRouteApiKey = (await SecureStore.getItemAsync(OMNIROUTE_API_KEY)) ?? "";
 
   // One-time migration: if the AsyncStorage blob still has a token (from
   // a pre-secure-store install), move it to SecureStore and strip from
@@ -62,6 +65,7 @@ export async function getSettings(): Promise<Settings> {
     navettedUrl: persisted.navettedUrl,
     omniRouteUrl: persisted.omniRouteUrl,
     navettedToken: token,
+    omniRouteApiKey,
   };
 }
 
@@ -74,6 +78,11 @@ export async function saveSettings(settings: Settings): Promise<void> {
     await SecureStore.setItemAsync(TOKEN_KEY, settings.navettedToken);
   } else {
     await SecureStore.deleteItemAsync(TOKEN_KEY);
+  }
+  if (settings.omniRouteApiKey) {
+    await SecureStore.setItemAsync(OMNIROUTE_API_KEY, settings.omniRouteApiKey);
+  } else {
+    await SecureStore.deleteItemAsync(OMNIROUTE_API_KEY);
   }
 }
 
