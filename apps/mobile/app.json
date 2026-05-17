@@ -2,6 +2,7 @@
   "expo": {
     "name": "Carnet",
     "slug": "carnet",
+    "scheme": "carnet",
     "version": "0.2.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -47,7 +48,13 @@
           ]
         }
       ],
-      "./plugins/withSpeechRecognitionQueries"
+      "./plugins/withSpeechRecognitionQueries",
+      [
+        "expo-share-intent",
+        {
+          "androidIntentFilters": ["text/*", "image/*"]
+        }
+      ]
     ]
   }
 }

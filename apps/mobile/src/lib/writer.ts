@@ -455,6 +455,57 @@ export async function writePerson(
   return { filepath };
 }
 
+/**
+ * Save a binary file (e.g. an image shared into carnet) under `subdir`
+ * with the given filename. base64-encoded content. Handles collision by
+ * appending -2, -3, … like the markdown writers do. Returns the URI of
+ * the written file.
+ *
+ * The two storage modes diverge here:
+ *   - SAF: createFileAsync with the mime type, then writeAsStringAsync
+ *     with base64 encoding.
+ *   - file://: writeAsStringAsync with base64 encoding directly.
+ */
+export async function writeBinary(
+  subdir: string,
+  filename: string,
+  base64: string,
+  mimeType: string,
+): Promise<{ filepath: string; finalName: string }> {
+  const root = await resolveRoot();
+  const dirUri = await findOrCreateSubdir(root, subdir);
+
+  const dot = filename.lastIndexOf(".");
+  const stem = dot >= 0 ? filename.slice(0, dot) : filename;
+  const ext = dot >= 0 ? filename.slice(dot) : "";
+
+  let actualName = filename;
+  let existing = await findFileInDir(dirUri, actualName, root.isSaf);
+  let n = 2;
+  while (existing && n < 100) {
+    actualName = `${stem}-${n}${ext}`;
+    existing = await findFileInDir(dirUri, actualName, root.isSaf);
+    n++;
+  }
+  if (existing) {
+    throw new Error(`More than 99 files with stem "${stem}" — clean up duplicates first`);
+  }
+
+  let filepath: string;
+  if (root.isSaf) {
+    filepath = await StorageAccessFramework.createFileAsync(dirUri, actualName, mimeType);
+    await StorageAccessFramework.writeAsStringAsync(filepath, base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  } else {
+    filepath = `${dirUri.replace(/\/$/, "")}/${actualName}`;
+    await FileSystem.writeAsStringAsync(filepath, base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  }
+  return { filepath, finalName: actualName };
+}
+
 /** Read the raw string content of a note file. Supports both file:// and content:// URIs. */
 export async function readNote(filepath: string): Promise<string> {
   return readByUri(filepath);
