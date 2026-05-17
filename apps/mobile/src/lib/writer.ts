@@ -68,6 +68,9 @@ export function slugify(input: string): string {
 /**
  * Derive filename stem for a person note: "Firstname-Lastname" (preserving
  * case, hyphenating spaces, stripping special chars except hyphens/apostrophes).
+ * Strict allowlist — defense in depth against an LLM-controlled name field
+ * (which could in theory contain path separators if a prompt injection
+ * survived the delimiter guard). Returns "" on bad input; callers fall back.
  */
 export function personFilename(name: string): string {
   const cleaned = name
@@ -75,7 +78,29 @@ export function personFilename(name: string): string {
     .filter((c) => /[a-zA-Z0-9\s\-']/.test(c))
     .join("");
   const parts = cleaned.split(/\s+/).filter(Boolean);
-  return parts.join("-");
+  const stem = parts.join("-");
+  // Allowlist assert: only letters / digits / hyphens / apostrophes survive.
+  // ".." or "/" can't appear, but the regex makes the invariant explicit.
+  if (!/^[A-Za-z0-9'\-]+$/.test(stem)) return "";
+  return stem;
+}
+
+/**
+ * Extract first/last name from a person markdown note. Tries `name:`
+ * frontmatter first, then the H1. Used by CaptureScreen to derive a
+ * filename stem before calling writePerson.
+ */
+export function extractNameFromMarkdown(
+  markdown: string,
+): { firstName: string; lastName: string } {
+  const fromField = extractFrontmatterField(markdown, "name");
+  const fromH1 = extractH1(markdown);
+  const raw = fromField ?? fromH1;
+  if (!raw) return { firstName: "", lastName: "" };
+  const parts = raw.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: "", lastName: "" };
+  if (parts.length === 1) return { firstName: parts[0], lastName: "" };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
 }
 
 /** Extract the first H1 title from markdown. */
@@ -170,6 +195,28 @@ export function rewriteFrontmatterField(
   return `---${newBlock}${body}`;
 }
 
+/**
+ * Per-filepath promise chain. Used to serialize concurrent reads-then-writes
+ * to the same file (the offline drain may process two journal entries for
+ * the same day back-to-back; without serialization the second read sees
+ * stale content and overwrites the first). Each entry resolves when the
+ * last queued op for that path completes.
+ */
+const _writeChain = new Map<string, Promise<unknown>>();
+
+/** Serialize work that touches `filepath`. Subsequent calls queue behind
+ * any in-flight op on the same path. */
+async function serialize<T>(filepath: string, fn: () => Promise<T>): Promise<T> {
+  const prev = _writeChain.get(filepath) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  _writeChain.set(filepath, next);
+  try {
+    return (await next) as T;
+  } finally {
+    if (_writeChain.get(filepath) === next) _writeChain.delete(filepath);
+  }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -205,6 +252,10 @@ export async function writeIdea(
 /**
  * Append a journal entry to today's file. If the file already exists, the new
  * entry's body (frontmatter stripped) is appended under a `## HH:MM` heading.
+ *
+ * Read-then-write is serialized per-filepath so two captures arriving in
+ * quick succession (e.g. during an offline drain pass) don't both read the
+ * same baseline and clobber each other.
  */
 export async function appendJournal(
   date: string,
@@ -215,31 +266,38 @@ export async function appendJournal(
   await ensureDir(dir);
 
   const filepath = `${dir}/${date}.md`;
-  const info = await FileSystem.getInfoAsync(filepath);
 
-  let finalMarkdown: string;
-  if (info.exists) {
-    const existing = await FileSystem.readAsStringAsync(filepath, {
+  return serialize(filepath, async () => {
+    const info = await FileSystem.getInfoAsync(filepath);
+
+    let finalMarkdown: string;
+    if (info.exists) {
+      const existing = await FileSystem.readAsStringAsync(filepath, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      const now = new Date();
+      const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+      const appended = stripFrontmatter(markdown);
+      finalMarkdown = `${existing.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
+    } else {
+      finalMarkdown = markdown;
+    }
+
+    await FileSystem.writeAsStringAsync(filepath, finalMarkdown, {
       encoding: FileSystem.EncodingType.UTF8,
     });
-    const now = new Date();
-    const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    const appended = stripFrontmatter(markdown);
-    finalMarkdown = `${existing.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
-  } else {
-    finalMarkdown = markdown;
-  }
-
-  await FileSystem.writeAsStringAsync(filepath, finalMarkdown, {
-    encoding: FileSystem.EncodingType.UTF8,
+    return { filepath };
   });
-  return { filepath };
 }
 
 /**
  * Write a person (contact) note. Filename derived from the `name:` frontmatter
- * field or the H1 title. Overwrites if file already exists (same person
- * captured twice is an update, not a collision).
+ * field or the H1 title.
+ *
+ * Collision behavior: if a file with the same stem exists, the new note
+ * lands as `{stem}-2.md`, `{stem}-3.md`, etc. up to -99. Same person
+ * captured twice does NOT silently overwrite — Obsidian on desktop may
+ * have edits we shouldn't destroy. The user can manually merge duplicates.
  */
 export async function writePerson(
   firstName: string,
@@ -262,7 +320,20 @@ export async function writePerson(
   }
   if (!stem) stem = "Unknown-Person";
 
-  const filepath = `${dir}/${stem}.md`;
+  let filepath = `${dir}/${stem}.md`;
+  let info = await FileSystem.getInfoAsync(filepath);
+  let n = 2;
+  while (info.exists && n < 100) {
+    filepath = `${dir}/${stem}-${n}.md`;
+    info = await FileSystem.getInfoAsync(filepath);
+    n++;
+  }
+  if (info.exists) {
+    throw new Error(
+      `More than 99 contacts with stem "${stem}" — clean up duplicates first`,
+    );
+  }
+
   await FileSystem.writeAsStringAsync(filepath, markdown, {
     encoding: FileSystem.EncodingType.UTF8,
   });

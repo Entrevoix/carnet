@@ -73,6 +73,10 @@ vi.mock("./omniroute", () => ({
     markdown: "---\nname: Jane Doe\n---\n# Jane Doe\n",
     model: "test",
   }),
+  // Tests inject network errors via mockRejectedValue. None of them throw
+  // OmniRouteError, so isPermanentError returns false → drain treats as
+  // transient and increments attempts (the existing test expectation).
+  isPermanentError: vi.fn().mockReturnValue(false),
 }));
 
 // ── Mock writer ───────────────────────────────────────────────────────────────
@@ -225,6 +229,62 @@ describe("drainQueue", () => {
 
     expect(vi.mocked(enrichPerson)).toHaveBeenCalledWith({ ocrResult: "Jane Doe CEO", context: "conference" });
     expect(vi.mocked(writePerson)).toHaveBeenCalled();
+    expect(_rows.size).toBe(0);
+  });
+
+  it("marks 4xx (permanent) errors as permanent failure immediately", async () => {
+    const { enrichIdea, isPermanentError } = await import("./omniroute");
+    vi.mocked(enrichIdea).mockRejectedValue(new Error("401 Unauthorized"));
+    // Classify this error as permanent.
+    vi.mocked(isPermanentError).mockReturnValueOnce(true);
+
+    await enqueue({ mode: "idea", text: "doomed" });
+    await drainQueue();
+
+    expect(_rows.size).toBe(1);
+    const row = Array.from(_rows.values())[0];
+    // Permanent failure sets attempts to MAX so it won't be re-tried in
+    // subsequent drains (queue depth excludes attempts >= MAX).
+    expect(row.attempts).toBe(10);
+  });
+
+  it("redacts Bearer tokens from stored last_error", async () => {
+    const { enrichIdea } = await import("./omniroute");
+    vi.mocked(enrichIdea).mockRejectedValue(
+      new Error("upstream said: Bearer sk-very-secret-token-xyz invalid"),
+    );
+
+    await enqueue({ mode: "idea", text: "leaky" });
+    await drainQueue();
+
+    const row = Array.from(_rows.values())[0];
+    expect(row.last_error).not.toContain("sk-very-secret-token-xyz");
+    expect(row.last_error).toContain("Bearer [redacted]");
+  });
+
+  it("single-flight: parallel drainQueue calls do not double-process", async () => {
+    const { enrichIdea } = await import("./omniroute");
+    const calls: string[] = [];
+    let resolveFirst!: () => void;
+    const firstHold = new Promise<void>((resolve) => { resolveFirst = resolve; });
+    vi.mocked(enrichIdea).mockImplementation(async (text: string) => {
+      calls.push(text);
+      // Hold the first call so a parallel drainQueue() runs while we're mid-process.
+      if (calls.length === 1) await firstHold;
+      return { markdown: `---\nstatus: seedling\n---\n# ${text}\n`, model: "t" };
+    });
+
+    await enqueue({ mode: "idea", text: "only-once" });
+
+    const drain1 = drainQueue();
+    // While drain1 is still mid-flight (awaiting firstHold), kick off a parallel drain.
+    const drain2 = drainQueue();
+    // Now release the first call.
+    resolveFirst();
+    await Promise.all([drain1, drain2]);
+
+    // The row should have been processed exactly once.
+    expect(calls).toEqual(["only-once"]);
     expect(_rows.size).toBe(0);
   });
 });

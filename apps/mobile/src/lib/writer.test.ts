@@ -31,7 +31,17 @@ vi.mock("expo-file-system/legacy", () => {
   };
 });
 
-import { writeIdea, appendJournal, writePerson, readNote, updateNote, slugify, rewriteFrontmatterField } from "./writer";
+import {
+  writeIdea,
+  appendJournal,
+  writePerson,
+  readNote,
+  updateNote,
+  slugify,
+  rewriteFrontmatterField,
+  personFilename,
+  extractNameFromMarkdown,
+} from "./writer";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -177,6 +187,79 @@ describe("writePerson", () => {
     const md = "---\nname: Alice Smith\n---\n# Alice Smith\n";
     const { filepath } = await writePerson("", "", md);
     expect(filepath).toMatch(/People\/Alice-Smith\.md$/);
+  });
+
+  it("appends -2 on collision instead of overwriting", async () => {
+    // Two captures of the same person must NOT silently overwrite — Obsidian
+    // may have desktop edits to the existing note that Syncthing already
+    // replicated to the phone.
+    const md1 = "---\nname: Jane Doe\n---\n# Jane Doe\n\noriginal\n";
+    const md2 = "---\nname: Jane Doe\n---\n# Jane Doe\n\nsecond capture\n";
+
+    const { filepath: fp1 } = await writePerson("Jane", "Doe", md1);
+    expect(fp1).toMatch(/Jane-Doe\.md$/);
+
+    const { filepath: fp2 } = await writePerson("Jane", "Doe", md2);
+    expect(fp2).toMatch(/Jane-Doe-2\.md$/);
+
+    // Original file should still contain the first capture, not the second
+    expect(_files.get(fp1)!.content).toContain("original");
+    expect(_files.get(fp2)!.content).toContain("second capture");
+  });
+});
+
+// ── personFilename ────────────────────────────────────────────────────────────
+
+describe("personFilename", () => {
+  it("hyphenates a normal first + last name", () => {
+    expect(personFilename("Jane Doe")).toBe("Jane-Doe");
+  });
+
+  it("preserves apostrophes and hyphens (O'Brien, Mary-Kate)", () => {
+    expect(personFilename("Sean O'Brien")).toBe("Sean-O'Brien");
+    expect(personFilename("Mary-Kate Olsen")).toBe("Mary-Kate-Olsen");
+  });
+
+  it("returns empty string for input that contains only invalid chars", () => {
+    expect(personFilename("@@@!!!")).toBe("");
+  });
+
+  it("filters out path separators (defense in depth)", () => {
+    // Even though /, \, .. are stripped by the char filter, the final
+    // regex check ensures only the allowlisted set remains.
+    expect(personFilename("../etc/passwd")).toBe("etcpasswd");
+    expect(personFilename("/")).toBe("");
+  });
+});
+
+// ── extractNameFromMarkdown ───────────────────────────────────────────────────
+
+describe("extractNameFromMarkdown", () => {
+  it("returns name from frontmatter `name:` field", () => {
+    const md = "---\nname: Jane Doe\ncompany: Acme\n---\n# Other Title\n";
+    expect(extractNameFromMarkdown(md)).toEqual({ firstName: "Jane", lastName: "Doe" });
+  });
+
+  it("falls back to H1 when frontmatter has no name field", () => {
+    const md = "---\ncompany: Acme\n---\n# Alice Smith\n";
+    expect(extractNameFromMarkdown(md)).toEqual({ firstName: "Alice", lastName: "Smith" });
+  });
+
+  it("returns single-part name as firstName only", () => {
+    const md = "---\nname: Cher\n---\n# Cher\n";
+    expect(extractNameFromMarkdown(md)).toEqual({ firstName: "Cher", lastName: "" });
+  });
+
+  it("joins multi-word last names with spaces", () => {
+    const md = "---\nname: Maria del Mar Garcia\n---\n# x\n";
+    expect(extractNameFromMarkdown(md)).toEqual({
+      firstName: "Maria",
+      lastName: "del Mar Garcia",
+    });
+  });
+
+  it("returns empty strings when neither frontmatter nor H1 has a name", () => {
+    expect(extractNameFromMarkdown("just a body\n")).toEqual({ firstName: "", lastName: "" });
   });
 });
 

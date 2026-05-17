@@ -19,11 +19,23 @@ import * as SQLite from "expo-sqlite";
 import * as Haptics from "expo-haptics";
 import { v4 as uuidv4 } from "uuid";
 
-import { enrichIdea, enrichJournal, enrichPerson } from "./omniroute";
+import {
+  enrichIdea,
+  enrichJournal,
+  enrichPerson,
+  isPermanentError,
+} from "./omniroute";
 import { writeIdea, appendJournal, writePerson, slugify } from "./writer";
 import { deriveTitle } from "@carnet/shared";
 
 export type CaptureMode = "idea" | "journal" | "person";
+
+/** Strip Bearer tokens from any error string before it's persisted or shown. */
+function sanitizeError(raw: string): string {
+  return raw
+    .replace(/Bearer\s+[A-Za-z0-9._\-+/=]+/g, "Bearer [redacted]")
+    .replace(/Authorization:\s*[^\s,;]+/gi, "Authorization: [redacted]");
+}
 
 /** Raw user input stored in the queue — no credentials. */
 export interface IdeaPayload {
@@ -57,8 +69,16 @@ export interface QueueRow {
 
 const DB_NAME = "carnet_queue.db";
 const MAX_AUTO_RETRY_ATTEMPTS = 10;
+/** Sentinel attempts value meaning "permanent failure — do not auto-retry".
+ * Set when OmniRoute returns a 4xx (auth, bad model, malformed input). */
+const PERMANENT_FAILURE_ATTEMPTS = MAX_AUTO_RETRY_ATTEMPTS;
 
 let _db: SQLite.SQLiteDatabase | null = null;
+/** Single-flight guard. CaptureScreen mounts re-trigger drainQueue and a
+ * connectivity event could fire in parallel. Without this, two drains read
+ * the same rows and both try to write — double-write to disk + double-charge
+ * OmniRoute. */
+let _draining = false;
 
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (_db) return _db;
@@ -106,39 +126,53 @@ export async function enqueue(payload: QueuePayload): Promise<void> {
  * Drain the queue: process all pending captures oldest-first.
  * Resolves when the drain pass is complete (or queue is empty).
  * Each successful item writes its file and removes the row.
- * Permanent failures (too many attempts) are left in place for inspection.
+ *
+ * Single-flight: parallel callers are a no-op once one drain is in flight.
+ * Errors are classified — 4xx from OmniRoute marks the row as permanent
+ * failure (won't auto-retry), network/5xx increments attempts normally.
  */
 export async function drainQueue(): Promise<void> {
-  const db = await getDb();
-  const rows = await db.getAllAsync<QueueRow>(
-    "SELECT * FROM pending_captures WHERE attempts < ? ORDER BY created_at ASC",
-    MAX_AUTO_RETRY_ATTEMPTS,
-  );
+  if (_draining) return;
+  _draining = true;
+  try {
+    const db = await getDb();
+    const rows = await db.getAllAsync<QueueRow>(
+      "SELECT * FROM pending_captures WHERE attempts < ? ORDER BY created_at ASC",
+      MAX_AUTO_RETRY_ATTEMPTS,
+    );
 
-  for (const row of rows) {
-    let payload: QueuePayload;
-    try {
-      payload = JSON.parse(row.payload_json) as QueuePayload;
-    } catch {
-      // Corrupt row — remove it
-      await db.runAsync("DELETE FROM pending_captures WHERE id = ?", row.id);
-      continue;
-    }
+    for (const row of rows) {
+      let payload: QueuePayload;
+      try {
+        payload = JSON.parse(row.payload_json) as QueuePayload;
+      } catch {
+        // Corrupt row — remove it
+        await db.runAsync("DELETE FROM pending_captures WHERE id = ?", row.id);
+        continue;
+      }
 
-    try {
-      await processRow(payload);
-      // Success: remove from queue
-      await db.runAsync("DELETE FROM pending_captures WHERE id = ?", row.id);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      const newAttempts = row.attempts + 1;
-      await db.runAsync(
-        "UPDATE pending_captures SET attempts = ?, last_error = ? WHERE id = ?",
-        newAttempts,
-        msg,
-        row.id,
-      );
+      try {
+        await processRow(payload);
+        // Success: remove from queue
+        await db.runAsync("DELETE FROM pending_captures WHERE id = ?", row.id);
+      } catch (e: unknown) {
+        const raw = e instanceof Error ? e.message : String(e);
+        const msg = sanitizeError(raw);
+        // 4xx → mark as permanent failure immediately. Retrying a 401 ten
+        // times in seconds doesn't help — the user needs to fix the cause.
+        const newAttempts = isPermanentError(e)
+          ? PERMANENT_FAILURE_ATTEMPTS
+          : row.attempts + 1;
+        await db.runAsync(
+          "UPDATE pending_captures SET attempts = ?, last_error = ? WHERE id = ?",
+          newAttempts,
+          msg,
+          row.id,
+        );
+      }
     }
+  } finally {
+    _draining = false;
   }
 }
 

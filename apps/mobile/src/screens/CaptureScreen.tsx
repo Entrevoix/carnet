@@ -17,8 +17,23 @@ import { VoiceButton } from "../voice/VoiceButton";
 import { CardScannerModal } from "../components/CardScannerModal";
 import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
-import { enrichIdea, enrichJournal, enrichPerson, promoteIdea as omniPromoteIdea } from "../lib/omniroute";
-import { slugify, writeIdea, appendJournal, writePerson, readNote, updateNote, rewriteFrontmatterField } from "../lib/writer";
+import {
+  enrichIdea,
+  enrichJournal,
+  enrichPerson,
+  isPermanentError,
+  promoteIdea as omniPromoteIdea,
+} from "../lib/omniroute";
+import {
+  slugify,
+  writeIdea,
+  appendJournal,
+  writePerson,
+  readNote,
+  updateNote,
+  rewriteFrontmatterField,
+  extractNameFromMarkdown,
+} from "../lib/writer";
 import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
 import {
   IDEA_STATUSES,
@@ -29,6 +44,16 @@ import {
 } from "@carnet/shared";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Capture">;
+
+/** Local-date YYYY-MM-DD (NOT UTC). Late-evening captures in UTC- timezones
+ * must land in today's journal, not tomorrow's. */
+function todayLocal(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 type Phase = "input" | "submitting" | "preview" | "saved";
 
@@ -92,6 +117,26 @@ export default function CaptureScreen({ route, navigation }: Props) {
     return ocrText.trim().length > 0 || text.trim().length > 0;
   }, [phase, mode, text, transcript, ocrText]);
 
+  /** Build an offline-or-error handler. Permanent errors (4xx) surface to
+   * the user with the actual message; transient errors (network / 5xx)
+   * enqueue silently with a "queued for sync" notice. */
+  const handleCaptureError = async (
+    e: unknown,
+    enqueueFn: () => Promise<void>,
+  ): Promise<void> => {
+    if (isPermanentError(e)) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      setPhase("input");
+      return;
+    }
+    await enqueueFn();
+    const depth = await getQueueDepth();
+    setQueueDepth(depth);
+    setError("Pas de connexion — capture mise en file d'attente.");
+    setPhase("input");
+  };
+
   const submit = async () => {
     setPhase("submitting");
     setError(null);
@@ -111,20 +156,18 @@ export default function CaptureScreen({ route, navigation }: Props) {
         });
         setPhase("preview");
       } catch (e: unknown) {
-        await enqueue({ mode: "idea", text: text.trim() });
-        const depth = await getQueueDepth();
-        setQueueDepth(depth);
-        setError("Pas de connexion — capture mise en file d'attente.");
-        setPhase("input");
+        await handleCaptureError(e, () =>
+          enqueue({ mode: "idea", text: text.trim() }),
+        );
       }
       return;
     }
 
     if (mode === "journal") {
+      const combined = [transcript, text].map((s) => s.trim()).filter(Boolean).join("\n\n");
       try {
-        const combined = [transcript, text].map((s) => s.trim()).filter(Boolean).join("\n\n");
         const result = await enrichJournal({ transcript: combined, notes: "" });
-        const today = new Date().toISOString().slice(0, 10);
+        const today = todayLocal();
         setPendingJournal({ date: today, markdown: result.markdown, model: result.model });
         setOmniModel(result.model);
         setResponse({
@@ -135,13 +178,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
         });
         setPhase("preview");
       } catch (e: unknown) {
-        const combined = [transcript, text].map((s) => s.trim()).filter(Boolean).join("\n\n");
-        const today = new Date().toISOString().slice(0, 10);
-        await enqueue({ mode: "journal", transcript: combined, notes: "", date: today });
-        const depth = await getQueueDepth();
-        setQueueDepth(depth);
-        setError("Pas de connexion — capture mise en file d'attente.");
-        setPhase("input");
+        await handleCaptureError(e, () =>
+          enqueue({ mode: "journal", transcript: combined, notes: "", date: todayLocal() }),
+        );
       }
       return;
     }
@@ -165,11 +204,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
       });
       setPhase("preview");
     } catch (e: unknown) {
-      await enqueue({ mode: "person", ocrResult: ocrText.trim(), context: text.trim() });
-      const depth = await getQueueDepth();
-      setQueueDepth(depth);
-      setError("Pas de connexion — capture mise en file d'attente.");
-      setPhase("input");
+      await handleCaptureError(e, () =>
+        enqueue({ mode: "person", ocrResult: ocrText.trim(), context: text.trim() }),
+      );
     }
   };
 
@@ -354,45 +391,6 @@ export default function CaptureScreen({ route, navigation }: Props) {
       )}
     </ScrollView>
   );
-}
-
-/** Extract first/last name from a person markdown note. */
-function extractNameFromMarkdown(markdown: string): { firstName: string; lastName: string } {
-  // Try `name:` frontmatter field first
-  const s = markdown.trimStart();
-  if (s.startsWith("---")) {
-    const afterFirst = s.slice(3);
-    const endIdx = afterFirst.indexOf("\n---");
-    if (endIdx !== -1) {
-      const block = afterFirst.slice(0, endIdx);
-      for (const line of block.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith("name:")) {
-          const name = trimmed.slice(5).trim().replace(/^['"]|['"]$/g, "");
-          const parts = name.split(/\s+/);
-          if (parts.length >= 2) {
-            return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
-          }
-          if (parts.length === 1) {
-            return { firstName: parts[0], lastName: "" };
-          }
-        }
-      }
-    }
-  }
-  // Fall back to H1
-  for (const line of markdown.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("# ")) {
-      const name = trimmed.slice(2).trim();
-      const parts = name.split(/\s+/);
-      if (parts.length >= 2) {
-        return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
-      }
-      return { firstName: name, lastName: "" };
-    }
-  }
-  return { firstName: "", lastName: "" };
 }
 
 interface ModeInputProps {
