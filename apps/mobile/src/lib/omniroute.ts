@@ -18,6 +18,8 @@ import {
   buildJournalPrompt,
   buildPersonPrompt,
   buildPromoteIdeaPrompt,
+  buildSharedImagePrompt,
+  buildSharedLinkPrompt,
   type PromptPair,
 } from "./prompts";
 import type { IdeaStatus } from "@carnet/shared";
@@ -27,9 +29,15 @@ export interface EnrichResult {
   model: string;
 }
 
+/** OpenAI-compatible content part for multimodal messages. */
+type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 interface OpenAIMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  /** String for text-only, array for multimodal (image + text). */
+  content: string | ContentPart[];
 }
 
 interface OpenAIChoice {
@@ -77,14 +85,20 @@ function sanitizeErrorMessage(raw: string): string {
 }
 
 /**
- * Low-level POST to /v1/chat/completions. Sends `messages` as
- * [system, user] when the PromptPair has both, plus the configured `model`.
+ * Low-level POST to /v1/chat/completions. Sends arbitrary OpenAI-compatible
+ * messages — text or multimodal. Used both for the text-only modes
+ * (idea/journal/person) and for vision-enabled share-target enrichment.
+ *
+ * stream: false is REQUIRED. OmniRoute (LiteLLM-style proxy) defaults to
+ * text/event-stream even when stream is omitted. RN's fetch then hangs on
+ * `await response.json()` because the SSE body never closes into a parseable
+ * JSON document.
  */
-async function chatCompletion(
+async function executeChat(
   baseUrl: string,
   apiKey: string,
   model: string,
-  prompt: PromptPair,
+  messages: OpenAIMessage[],
 ): Promise<EnrichResult> {
   // Enforce HTTPS. An http:// URL would leak the bearer token in cleartext.
   // Allow http://localhost / 127.0.0.1 / 10.x for dev convenience.
@@ -100,17 +114,6 @@ async function chatCompletion(
   }
 
   const url = `${trimmed}/v1/chat/completions`;
-
-  const messages: OpenAIMessage[] = [
-    { role: "system", content: prompt.system },
-    { role: "user", content: prompt.user },
-  ];
-
-  // stream: false is REQUIRED. OmniRoute (LiteLLM-style proxy) defaults to
-  // text/event-stream even when stream is omitted. RN's fetch then hangs on
-  // `await response.json()` because the SSE body never closes into a parseable
-  // JSON document. Explicitly opting out of streaming returns application/json
-  // with a single chat.completion object.
   const body = JSON.stringify({ model, messages, stream: false });
 
   const controller = new AbortController();
@@ -131,7 +134,6 @@ async function chatCompletion(
     clearTimeout(timer);
     const raw = e instanceof Error ? e.message : String(e);
     const msg = sanitizeErrorMessage(raw);
-    // Abort or network failure: status 0 → caller treats as transient.
     throw new OmniRouteError(`OmniRoute network error — ${msg}`, 0);
   }
   clearTimeout(timer);
@@ -160,8 +162,24 @@ async function chatCompletion(
 
   const markdown = stripCodeFences(content);
   const modelUsed = json.model ?? model;
-
   return { markdown, model: modelUsed };
+}
+
+/**
+ * Text-only chat completion. Builds [system, user] from a PromptPair and
+ * delegates to executeChat. Used for the idea / journal / person modes.
+ */
+async function chatCompletion(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  prompt: PromptPair,
+): Promise<EnrichResult> {
+  const messages: OpenAIMessage[] = [
+    { role: "system", content: prompt.system },
+    { role: "user", content: prompt.user },
+  ];
+  return executeChat(baseUrl, apiKey, model, messages);
 }
 
 /** Strip a leading ``` fence (and matching trailer). Does not trim unfenced content. */
@@ -309,6 +327,64 @@ export async function enrichPerson(input: {
     apiKey,
     model,
     buildPersonPrompt(input.ocrResult, input.context),
+  );
+}
+
+/**
+ * Vision-enabled enrichment for an image shared into carnet. Sends the
+ * image inline as a base64 data URL alongside a curator-style prompt that
+ * asks the model to give the note a real title, describe what's in the
+ * image, and weave in the user's context. Requires a vision-capable
+ * model — most defaults on this provider (Gemini Flash, Claude Haiku,
+ * openrouter/openai/gpt-4o-mini) handle images.
+ */
+export async function enrichSharedImage(input: {
+  base64: string;
+  mimeType: string;
+  context: string;
+}): Promise<EnrichResult> {
+  // Allowlist mime — defends against pathological values being interpolated
+  // into a data: URL. Falls back to image/jpeg for the common case where
+  // the share intent didn't carry a precise type.
+  const safeMime = /^image\/(jpe?g|png|webp|gif|heic|heif)$/.test(input.mimeType)
+    ? input.mimeType
+    : "image/jpeg";
+  const [baseUrl, apiKey, model] = await Promise.all([
+    getBaseUrl(),
+    getApiKey(),
+    getModel(),
+  ]);
+  const { system, userText } = buildSharedImagePrompt(input.context);
+  const dataUrl = `data:${safeMime};base64,${input.base64}`;
+  const messages: OpenAIMessage[] = [
+    { role: "system", content: system },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: userText },
+        { type: "image_url", image_url: { url: dataUrl } },
+      ],
+    },
+  ];
+  return executeChat(baseUrl, apiKey, model, messages);
+}
+
+/** Text-only enrichment for a URL or raw text shared into carnet. */
+export async function enrichSharedLink(input: {
+  url: string;
+  text: string;
+  context: string;
+}): Promise<EnrichResult> {
+  const [baseUrl, apiKey, model] = await Promise.all([
+    getBaseUrl(),
+    getApiKey(),
+    getModel(),
+  ]);
+  return chatCompletion(
+    baseUrl,
+    apiKey,
+    model,
+    buildSharedLinkPrompt(input.url, input.text, input.context),
   );
 }
 

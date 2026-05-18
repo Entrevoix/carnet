@@ -10,15 +10,39 @@ interface FileEntry {
 
 const _files: Map<string, FileEntry> = new Map();
 
+// Mock ./settings before importing writer.ts so vite-node never loads
+// the real settings.ts → expo-secure-store → expo-modules-core → react-native
+// chain — react-native ships Flow source rollup's native parser can't handle.
+vi.mock("./settings", () => ({
+  getSettings: vi.fn().mockResolvedValue({
+    omniRouteUrl: "",
+    omniRouteApiKey: "",
+    omniRouteModel: "",
+    captureFolderPath: "",
+  }),
+}));
+
 vi.mock("expo-file-system/legacy", () => {
   return {
     documentDirectory: "file:///data/",
-    EncodingType: { UTF8: "utf8" },
+    EncodingType: { UTF8: "utf8", Base64: "base64" },
     getInfoAsync: vi.fn(async (uri: string) => {
       return { exists: _files.has(uri), uri, isDirectory: false };
     }),
     makeDirectoryAsync: vi.fn(async (_uri: string, _opts?: unknown) => {
       // no-op for directories — we track files only
+    }),
+    readDirectoryAsync: vi.fn(async (parentUri: string) => {
+      // Return the basenames of files whose URI starts with parentUri/.
+      const prefix = parentUri.replace(/\/$/, "") + "/";
+      const out: string[] = [];
+      for (const uri of _files.keys()) {
+        if (uri.startsWith(prefix)) {
+          const rest = uri.slice(prefix.length);
+          if (!rest.includes("/")) out.push(rest);
+        }
+      }
+      return out;
     }),
     readAsStringAsync: vi.fn(async (uri: string) => {
       const entry = _files.get(uri);
@@ -28,11 +52,23 @@ vi.mock("expo-file-system/legacy", () => {
     writeAsStringAsync: vi.fn(async (uri: string, content: string) => {
       _files.set(uri, { content });
     }),
+    // StorageAccessFramework is only touched on the SAF branch. We never
+    // exercise that branch in these tests (the default capture folder is
+    // empty → file:// branch), but stub it out so the property access in
+    // writer.ts doesn't blow up on module load.
+    StorageAccessFramework: {
+      readDirectoryAsync: vi.fn(),
+      makeDirectoryAsync: vi.fn(),
+      createFileAsync: vi.fn(),
+      readAsStringAsync: vi.fn(),
+      writeAsStringAsync: vi.fn(),
+    },
   };
 });
 
 import {
   writeIdea,
+  writeBinary,
   appendJournal,
   writePerson,
   readNote,
@@ -41,6 +77,8 @@ import {
   rewriteFrontmatterField,
   personFilename,
   extractNameFromMarkdown,
+  extFromMime,
+  safLastSegment,
 } from "./writer";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -260,6 +298,110 @@ describe("extractNameFromMarkdown", () => {
 
   it("returns empty strings when neither frontmatter nor H1 has a name", () => {
     expect(extractNameFromMarkdown("just a body\n")).toEqual({ firstName: "", lastName: "" });
+  });
+});
+
+// ── extFromMime ───────────────────────────────────────────────────────────────
+
+describe("extFromMime", () => {
+  it("maps the common image types", () => {
+    expect(extFromMime("image/jpeg")).toBe("jpg");
+    expect(extFromMime("image/jpg")).toBe("jpg");
+    expect(extFromMime("image/png")).toBe("png");
+    expect(extFromMime("image/webp")).toBe("webp");
+    expect(extFromMime("image/heic")).toBe("heic");
+  });
+
+  it("is case-insensitive", () => {
+    expect(extFromMime("IMAGE/JPEG")).toBe("jpg");
+  });
+
+  it("maps audio + pdf", () => {
+    expect(extFromMime("audio/mpeg")).toBe("mp3");
+    expect(extFromMime("audio/m4a")).toBe("m4a");
+    expect(extFromMime("application/pdf")).toBe("pdf");
+  });
+
+  it("falls back to the type/subtype slash split for unknowns", () => {
+    expect(extFromMime("video/mp4")).toBe("mp4");
+    expect(extFromMime("application/zip")).toBe("zip");
+  });
+
+  it("returns bin for empty / null / no slash", () => {
+    expect(extFromMime(undefined)).toBe("bin");
+    expect(extFromMime("")).toBe("bin");
+    expect(extFromMime("garbage")).toBe("bin");
+  });
+});
+
+// ── safLastSegment ────────────────────────────────────────────────────────────
+
+describe("safLastSegment", () => {
+  it("extracts the filename from a typical SAF document URI", () => {
+    const uri =
+      "content://com.android.externalstorage.documents/tree/primary%3ADownload%2FCarnet/document/primary%3ADownload%2FCarnet%2FIdeas%2Fmyidea.md";
+    expect(safLastSegment(uri)).toBe("myidea.md");
+  });
+
+  it("extracts the leaf from a tree URI (no document segment)", () => {
+    const uri =
+      "content://com.android.externalstorage.documents/tree/primary%3ADownload%2FCarnet";
+    expect(safLastSegment(uri)).toBe("Carnet");
+  });
+
+  it("handles a root-of-volume tree URI (no slash inside id)", () => {
+    const uri =
+      "content://com.android.externalstorage.documents/tree/primary%3ACarnet";
+    expect(safLastSegment(uri)).toBe("Carnet");
+  });
+
+  it("does not split the URL authority's slashes", () => {
+    // A naive decode-then-lastIndexOf would split on the //com.android slash
+    // because decode preserves /. The marker-aware impl skips that.
+    const uri =
+      "content://some-authority-with/slashes/tree/primary%3AVault/document/primary%3AVault%2Fnote.md";
+    expect(safLastSegment(uri)).toBe("note.md");
+  });
+
+  it("returns the input verbatim when no SAF marker is present", () => {
+    expect(safLastSegment("file:///data/carnet/Ideas/foo.md")).toBe(
+      "file:///data/carnet/Ideas/foo.md",
+    );
+  });
+});
+
+// ── writeBinary collision logic ───────────────────────────────────────────────
+
+describe("writeBinary", () => {
+  beforeEach(clearFiles);
+
+  it("writes a single binary file to the chosen subdir with the given name", async () => {
+    const { filepath, finalName } = await writeBinary(
+      "Photos",
+      "shot.jpg",
+      "dGVzdA==",
+      "image/jpeg",
+    );
+    expect(filepath).toMatch(/Photos\/shot\.jpg$/);
+    expect(finalName).toBe("shot.jpg");
+    expect(_files.has(filepath)).toBe(true);
+    expect(_files.get(filepath)!.content).toBe("dGVzdA==");
+  });
+
+  it("bumps -2, -3 on collision, preserving the extension", async () => {
+    const { finalName: n1 } = await writeBinary("Photos", "p.jpg", "AAA", "image/jpeg");
+    const { finalName: n2 } = await writeBinary("Photos", "p.jpg", "BBB", "image/jpeg");
+    const { finalName: n3 } = await writeBinary("Photos", "p.jpg", "CCC", "image/jpeg");
+    expect(n1).toBe("p.jpg");
+    expect(n2).toBe("p-2.jpg");
+    expect(n3).toBe("p-3.jpg");
+  });
+
+  it("handles extensionless input by bumping the bare stem", async () => {
+    const { finalName: n1 } = await writeBinary("Photos", "raw", "X", "application/octet-stream");
+    const { finalName: n2 } = await writeBinary("Photos", "raw", "Y", "application/octet-stream");
+    expect(n1).toBe("raw");
+    expect(n2).toBe("raw-2");
   });
 });
 

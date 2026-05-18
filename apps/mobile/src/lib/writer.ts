@@ -1,28 +1,244 @@
 /**
- * Local markdown writer for carnet v0.2.
+ * Local markdown writer for carnet v0.2+.
  *
- * Writes notes to the local file system under the carnet folder
- * (default: ${FileSystem.documentDirectory}carnet/). Directory structure:
+ * Writes notes under the user-configured `captureFolderPath` setting, or
+ * the app sandbox `${FileSystem.documentDirectory}carnet/` if unset.
+ * Directory structure inside that root:
  *   Ideas/{slug}.md            — one file per idea
  *   Journal/YYYY-MM-DD.md      — daily journal, append-on-existing
  *   People/{Firstname-Lastname}.md — one file per contact
  *
- * Uses expo-file-system (legacy API) which is available in Expo 54 React Native.
+ * Storage paths come in two flavors:
+ *   - `file://...` — direct filesystem path inside the app sandbox or a
+ *     legacy raw Android path. Uses the regular expo-file-system API.
+ *   - `content://...tree/...` — Android Storage Access Framework URI granted
+ *     persistently by the OS document picker. Uses StorageAccessFramework
+ *     API (createFileAsync, readDirectoryAsync, etc.) because raw
+ *     concatenation doesn't work on SAF URIs.
+ *
+ * The branching is concentrated in resolveRoot/findOrCreateSubdir/
+ * findFileInDir/writeNewFile/readByUri/writeByUri so the public API
+ * (writeIdea, appendJournal, writePerson, readNote, updateNote) stays the
+ * same shape callers depend on.
  */
 
 import * as FileSystem from "expo-file-system/legacy";
+import { getSettings } from "./settings";
 
-/** Returns the root carnet folder URI (trailing slash). */
-function carnetRoot(): string {
-  const base = FileSystem.documentDirectory ?? "file:///data/user/0/carnet/files/";
-  return `${base.replace(/\/$/, "")}/carnet`;
+const { StorageAccessFramework } = FileSystem;
+
+/** Upper bound on collision-bumped filename variants ({stem}-2.md … {stem}-99.md).
+ * If 99 variants are taken, the user has a real cleanup problem and we throw
+ * rather than silently overwriting. Same ceiling for ideas / people / binaries. */
+const MAX_COLLISION_VARIANTS = 100;
+
+interface Root {
+  /** Either a `file://` URI or a `content://...tree/...` SAF tree URI. */
+  uri: string;
+  /** True when `uri` is a SAF URI and SAF APIs must be used. */
+  isSaf: boolean;
 }
 
-async function ensureDir(uri: string): Promise<void> {
-  const info = await FileSystem.getInfoAsync(uri);
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(uri, { intermediates: true });
+/**
+ * Resolve the root folder URI from settings.
+ *   - empty / default → app sandbox carnet/
+ *   - content://...tree/... → SAF tree URI as-is
+ *   - anything else → treat as a file:// URI (legacy raw Android path)
+ */
+async function resolveRoot(): Promise<Root> {
+  const { captureFolderPath } = await getSettings();
+  const trimmed = captureFolderPath.trim();
+  if (!trimmed) {
+    const base = FileSystem.documentDirectory ?? "file:///data/user/0/carnet/files/";
+    return { uri: `${base.replace(/\/$/, "")}/carnet`, isSaf: false };
   }
+  if (trimmed.startsWith("content://")) {
+    return { uri: trimmed, isSaf: true };
+  }
+  // Best-effort: file:// or raw path. Ensure file:// prefix for FileSystem API.
+  const uri = trimmed.startsWith("file://") ? trimmed : `file://${trimmed}`;
+  return { uri, isSaf: false };
+}
+
+/** Map a MIME type to a sensible file extension for binary writes. Covers
+ * the image types we accept on share intent + a few common audio/document
+ * types we'll grow into. Falls back to `bin` rather than guessing wrong. */
+export function extFromMime(mime?: string): string {
+  if (!mime) return "bin";
+  const m = mime.toLowerCase();
+  if (m === "image/jpeg" || m === "image/jpg") return "jpg";
+  if (m === "image/png") return "png";
+  if (m === "image/webp") return "webp";
+  if (m === "image/gif") return "gif";
+  if (m === "image/heic") return "heic";
+  if (m === "image/heif") return "heif";
+  if (m === "audio/mpeg" || m === "audio/mp3") return "mp3";
+  if (m === "audio/wav" || m === "audio/x-wav") return "wav";
+  if (m === "audio/mp4" || m === "audio/m4a") return "m4a";
+  if (m === "application/pdf") return "pdf";
+  const slash = m.indexOf("/");
+  return slash >= 0 ? m.slice(slash + 1) : "bin";
+}
+
+/**
+ * Extract the filename/subdir name from a SAF document or tree URI. SAF URIs:
+ *   tree:     content://authority/tree/{encoded-tree-id}
+ *   document: content://authority/tree/{encoded-tree-id}/document/{encoded-document-id}
+ *
+ * The encoded id (after `/document/` or `/tree/`) decodes into something like
+ * `primary:Download/Carnet/Ideas/myidea.md` — the filename is the last `/`
+ * segment of that decoded id. We deliberately do NOT decode the whole URI,
+ * which would mangle the authority component that contains its own `/`s.
+ */
+export function safLastSegment(uri: string): string {
+  const docMarker = uri.indexOf("/document/");
+  const treeMarker = uri.indexOf("/tree/");
+  let encodedId: string;
+  if (docMarker >= 0) {
+    encodedId = uri.slice(docMarker + "/document/".length);
+  } else if (treeMarker >= 0) {
+    encodedId = uri.slice(treeMarker + "/tree/".length);
+  } else {
+    return uri;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(encodedId);
+  } catch {
+    decoded = encodedId;
+  }
+  const slash = decoded.lastIndexOf("/");
+  if (slash >= 0) return decoded.slice(slash + 1);
+  // No slash — handle root-of-volume case like "primary:foldername"
+  const colon = decoded.indexOf(":");
+  return colon >= 0 ? decoded.slice(colon + 1) : decoded;
+}
+
+/**
+ * List the names of all children in `parentUri`. Single IPC call on SAF
+ * (vs. one per collision probe), single readDirectory on file://. Callers
+ * use the returned Set to probe many candidate names in O(1) each.
+ */
+async function listChildNames(parentUri: string, isSaf: boolean): Promise<Set<string>> {
+  if (isSaf) {
+    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
+    return new Set(children.map(safLastSegment));
+  }
+  try {
+    const names = await FileSystem.readDirectoryAsync(parentUri);
+    return new Set(names);
+  } catch {
+    // Directory may not exist yet — first write into a fresh subdir.
+    return new Set();
+  }
+}
+
+/**
+ * Resolve a collision-free filename of shape `{base}{ext}` or `{base}-N{ext}`.
+ * Lists the directory once and probes against an in-memory Set so the SAF
+ * branch doesn't pay one IPC round-trip per probe.
+ */
+async function findCollisionFreeName(
+  parentUri: string,
+  base: string,
+  ext: string,
+  isSaf: boolean,
+): Promise<string> {
+  const existing = await listChildNames(parentUri, isSaf);
+  const first = `${base}${ext}`;
+  if (!existing.has(first)) return first;
+  for (let n = 2; n < MAX_COLLISION_VARIANTS; n++) {
+    const candidate = `${base}-${n}${ext}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  throw new Error(
+    `More than ${MAX_COLLISION_VARIANTS - 1} files with stem "${base}" — clean up duplicates first`,
+  );
+}
+
+/** Find an existing child file in `parentUri` whose name matches, or null.
+ * Used by appendJournal where we need the URI to read+rewrite. Other
+ * collision checks should use findCollisionFreeName which lists once. */
+async function findFileInDir(
+  parentUri: string,
+  filename: string,
+  isSaf: boolean,
+): Promise<string | null> {
+  if (isSaf) {
+    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
+    return children.find((u) => safLastSegment(u) === filename) ?? null;
+  }
+  const fileUri = `${parentUri.replace(/\/$/, "")}/${filename}`;
+  const info = await FileSystem.getInfoAsync(fileUri);
+  return info.exists ? fileUri : null;
+}
+
+/** Get or create a named subdirectory, returning its URI. */
+async function findOrCreateSubdir(root: Root, name: string): Promise<string> {
+  if (root.isSaf) {
+    const children = await StorageAccessFramework.readDirectoryAsync(root.uri);
+    const existing = children.find((u) => safLastSegment(u) === name);
+    if (existing) return existing;
+    return await StorageAccessFramework.makeDirectoryAsync(root.uri, name);
+  }
+  const dir = `${root.uri.replace(/\/$/, "")}/${name}`;
+  const info = await FileSystem.getInfoAsync(dir);
+  if (!info.exists) {
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+  }
+  return dir;
+}
+
+/** Create a new file in `parentUri` with `filename` and write `content`.
+ * Returns the URI of the new file. Caller must guarantee `filename` is
+ * collision-free (i.e. has already been verified via findFileInDir). */
+async function writeNewFile(
+  parentUri: string,
+  filename: string,
+  content: string,
+  isSaf: boolean,
+): Promise<string> {
+  if (isSaf) {
+    const fileUri = await StorageAccessFramework.createFileAsync(
+      parentUri,
+      filename,
+      "text/markdown",
+    );
+    await StorageAccessFramework.writeAsStringAsync(fileUri, content, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    return fileUri;
+  }
+  const fileUri = `${parentUri.replace(/\/$/, "")}/${filename}`;
+  await FileSystem.writeAsStringAsync(fileUri, content, {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
+  return fileUri;
+}
+
+/** Read a file by its URI (handles both file:// and content://). */
+async function readByUri(uri: string): Promise<string> {
+  if (uri.startsWith("content://")) {
+    return await StorageAccessFramework.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+  }
+  return await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
+}
+
+/** Overwrite a file by its URI. */
+async function writeByUri(uri: string, content: string): Promise<void> {
+  if (uri.startsWith("content://")) {
+    await StorageAccessFramework.writeAsStringAsync(uri, content, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    return;
+  }
+  await FileSystem.writeAsStringAsync(uri, content, {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
 }
 
 /**
@@ -227,25 +443,10 @@ export async function writeIdea(
   slug: string,
   markdown: string,
 ): Promise<{ filepath: string }> {
-  const root = carnetRoot();
-  const dir = `${root}/Ideas`;
-  await ensureDir(dir);
-
-  let filepath = `${dir}/${slug}.md`;
-  let info = await FileSystem.getInfoAsync(filepath);
-  let n = 2;
-  while (info.exists && n < 100) {
-    filepath = `${dir}/${slug}-${n}.md`;
-    info = await FileSystem.getInfoAsync(filepath);
-    n++;
-  }
-  if (info.exists) {
-    throw new Error(`More than 99 ideas with slug "${slug}" — pick a more distinctive title`);
-  }
-
-  await FileSystem.writeAsStringAsync(filepath, markdown, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  const root = await resolveRoot();
+  const ideasUri = await findOrCreateSubdir(root, "Ideas");
+  const filename = await findCollisionFreeName(ideasUri, slug, ".md", root.isSaf);
+  const filepath = await writeNewFile(ideasUri, filename, markdown, root.isSaf);
   return { filepath };
 }
 
@@ -261,31 +462,30 @@ export async function appendJournal(
   date: string,
   markdown: string,
 ): Promise<{ filepath: string }> {
-  const root = carnetRoot();
-  const dir = `${root}/Journal`;
-  await ensureDir(dir);
+  const root = await resolveRoot();
+  const journalUri = await findOrCreateSubdir(root, "Journal");
+  const filename = `${date}.md`;
 
-  const filepath = `${dir}/${date}.md`;
+  // Serialize per (journalUri + filename) so two concurrent appends to today's
+  // file (e.g. an offline drain pass) don't read the same baseline and clobber.
+  // The journalUri may be a content:// URI when SAF is in play; that's fine —
+  // it's still unique per file.
+  const lockKey = `${journalUri}/${filename}`;
 
-  return serialize(filepath, async () => {
-    const info = await FileSystem.getInfoAsync(filepath);
+  return serialize(lockKey, async () => {
+    const existingUri = await findFileInDir(journalUri, filename, root.isSaf);
 
-    let finalMarkdown: string;
-    if (info.exists) {
-      const existing = await FileSystem.readAsStringAsync(filepath, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
+    if (existingUri) {
+      const existing = await readByUri(existingUri);
       const now = new Date();
       const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
       const appended = stripFrontmatter(markdown);
-      finalMarkdown = `${existing.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
-    } else {
-      finalMarkdown = markdown;
+      const finalMarkdown = `${existing.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
+      await writeByUri(existingUri, finalMarkdown);
+      return { filepath: existingUri };
     }
 
-    await FileSystem.writeAsStringAsync(filepath, finalMarkdown, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
+    const filepath = await writeNewFile(journalUri, filename, markdown, root.isSaf);
     return { filepath };
   });
 }
@@ -304,9 +504,8 @@ export async function writePerson(
   lastName: string,
   markdown: string,
 ): Promise<{ filepath: string }> {
-  const root = carnetRoot();
-  const dir = `${root}/People`;
-  await ensureDir(dir);
+  const root = await resolveRoot();
+  const peopleUri = await findOrCreateSubdir(root, "People");
 
   // Use provided names if non-empty; fall back to frontmatter/H1.
   let stem: string;
@@ -320,36 +519,58 @@ export async function writePerson(
   }
   if (!stem) stem = "Unknown-Person";
 
-  let filepath = `${dir}/${stem}.md`;
-  let info = await FileSystem.getInfoAsync(filepath);
-  let n = 2;
-  while (info.exists && n < 100) {
-    filepath = `${dir}/${stem}-${n}.md`;
-    info = await FileSystem.getInfoAsync(filepath);
-    n++;
-  }
-  if (info.exists) {
-    throw new Error(
-      `More than 99 contacts with stem "${stem}" — clean up duplicates first`,
-    );
-  }
-
-  await FileSystem.writeAsStringAsync(filepath, markdown, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  const filename = await findCollisionFreeName(peopleUri, stem, ".md", root.isSaf);
+  const filepath = await writeNewFile(peopleUri, filename, markdown, root.isSaf);
   return { filepath };
 }
 
-/** Read the raw string content of a note file. */
-export async function readNote(filepath: string): Promise<string> {
-  return FileSystem.readAsStringAsync(filepath, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+/**
+ * Save a binary file (e.g. an image shared into carnet) under `subdir`
+ * with the given filename. base64-encoded content. Handles collision by
+ * appending -2, -3, … like the markdown writers do. Returns the URI of
+ * the written file.
+ *
+ * The two storage modes diverge here:
+ *   - SAF: createFileAsync with the mime type, then writeAsStringAsync
+ *     with base64 encoding.
+ *   - file://: writeAsStringAsync with base64 encoding directly.
+ */
+export async function writeBinary(
+  subdir: string,
+  filename: string,
+  base64: string,
+  mimeType: string,
+): Promise<{ filepath: string; finalName: string }> {
+  const root = await resolveRoot();
+  const dirUri = await findOrCreateSubdir(root, subdir);
+
+  const dot = filename.lastIndexOf(".");
+  const stem = dot >= 0 ? filename.slice(0, dot) : filename;
+  const ext = dot >= 0 ? filename.slice(dot) : "";
+
+  const finalName = await findCollisionFreeName(dirUri, stem, ext, root.isSaf);
+
+  let filepath: string;
+  if (root.isSaf) {
+    filepath = await StorageAccessFramework.createFileAsync(dirUri, finalName, mimeType);
+    await StorageAccessFramework.writeAsStringAsync(filepath, base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  } else {
+    filepath = `${dirUri.replace(/\/$/, "")}/${finalName}`;
+    await FileSystem.writeAsStringAsync(filepath, base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  }
+  return { filepath, finalName };
 }
 
-/** Overwrite a note file with new content. */
+/** Read the raw string content of a note file. Supports both file:// and content:// URIs. */
+export async function readNote(filepath: string): Promise<string> {
+  return readByUri(filepath);
+}
+
+/** Overwrite a note file with new content. Supports both file:// and content:// URIs. */
 export async function updateNote(filepath: string, markdown: string): Promise<void> {
-  await FileSystem.writeAsStringAsync(filepath, markdown, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  await writeByUri(filepath, markdown);
 }

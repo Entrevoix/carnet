@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { FlatList, ScrollView, StyleSheet, View } from "react-native";
+import { FlatList, Platform, ScrollView, StyleSheet, View } from "react-native";
+import { StorageAccessFramework } from "expo-file-system/legacy";
 import {
   ActivityIndicator,
   Banner,
@@ -52,6 +53,10 @@ export default function SettingsScreen() {
   const [pendingKey, setPendingKey] = useState<string>("");
   const [saved, setSaved] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
+  /** Surfaced via Snackbar when the SAF folder picker fails. Previous
+   * behavior wrote "error: ..." into the path field, which then got
+   * persisted on Save as a broken capture folder. */
+  const [pickerError, setPickerError] = useState<string | null>(null);
 
   // Model browser state — opens a modal that lists available models from
   // GET /v1/models so the user can pick from the actual catalog instead of
@@ -161,6 +166,47 @@ export default function SettingsScreen() {
     }
   };
 
+  /**
+   * Open Android's Storage Access Framework folder picker. Returns a
+   * `content://...tree/...` URI the OS has granted persistent permission
+   * to. Typically the user picks their Syncthing-watched folder so
+   * captures land where the workstation can see them.
+   *
+   * iOS has no SAF equivalent; the text field is the only path there.
+   * Carnet is Android-first per the README.
+   */
+  const pickCaptureFolder = async () => {
+    if (!form) return;
+    if (Platform.OS !== "android") return;
+    try {
+      const res = await StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (res.granted && res.directoryUri) {
+        setForm({ ...form, captureFolderPath: res.directoryUri });
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Surface via Snackbar — do NOT write the error into the path field
+      // (that would persist a broken capture folder on the next Save).
+      setPickerError(`Folder picker failed: ${msg.slice(0, 120)}`);
+    }
+  };
+
+  /** Best-effort human-readable label for a `content://` tree URI. SAF
+   * URIs look like `content://com.android.externalstorage.documents/tree/primary%3AObsidian%2FCarnet`
+   * — show the tail after `tree/` decoded so the user sees `primary:Obsidian/Carnet`. */
+  const captureFolderLabel = (raw: string): string => {
+    if (!raw) return "";
+    if (!raw.startsWith("content://")) return raw;
+    try {
+      const decoded = decodeURIComponent(raw);
+      const idx = decoded.lastIndexOf("tree/");
+      if (idx >= 0) return decoded.slice(idx + 5);
+      return decoded;
+    } catch {
+      return raw;
+    }
+  };
+
   const pickModel = (id: string) => {
     if (!form) return;
     setForm({ ...form, omniRouteModel: id });
@@ -243,13 +289,37 @@ export default function SettingsScreen() {
         mode="outlined"
         autoCapitalize="none"
         autoCorrect={false}
-        value={form.captureFolderPath}
+        value={captureFolderLabel(form.captureFolderPath)}
         onChangeText={(v) => update({ captureFolderPath: v })}
         placeholder="(app sandbox folder by default)"
       />
       <HelperText type="info" visible>
-        Syncthing folder path on Android (e.g. /storage/emulated/0/carnet)
+        Tap Pick folder to choose via the Android system picker, or type a
+        path directly (e.g. /storage/emulated/0/carnet). Carnet will create
+        Ideas/, Journal/, People/, Photos/ directly inside the chosen folder
+        — pick the folder you want those to live in, not the parent.
       </HelperText>
+      <View style={styles.folderRow}>
+        <Button
+          mode="text"
+          icon="folder-open"
+          compact
+          onPress={pickCaptureFolder}
+          style={styles.folderBtn}
+        >
+          Pick folder
+        </Button>
+        {form.captureFolderPath.length > 0 && (
+          <Button
+            mode="text"
+            compact
+            onPress={() => update({ captureFolderPath: "" })}
+            style={styles.folderBtn}
+          >
+            Reset to default
+          </Button>
+        )}
+      </View>
 
       <Button mode="contained" onPress={save} style={styles.save}>
         Save
@@ -261,6 +331,14 @@ export default function SettingsScreen() {
         duration={2500}
       >
         Settings saved
+      </Snackbar>
+
+      <Snackbar
+        visible={pickerError !== null}
+        onDismiss={() => setPickerError(null)}
+        duration={5000}
+      >
+        {pickerError ?? ""}
       </Snackbar>
 
       <Portal>
@@ -370,6 +448,8 @@ const styles = StyleSheet.create({
   save: { marginTop: 12 },
   clearKey: { alignSelf: "flex-start", marginTop: 4 },
   browseBtn: { alignSelf: "flex-start", marginTop: 4 },
+  folderRow: { flexDirection: "row", gap: 8, marginTop: 4, flexWrap: "wrap" },
+  folderBtn: { alignSelf: "flex-start" },
   browseModal: {
     backgroundColor: "white",
     margin: 16,

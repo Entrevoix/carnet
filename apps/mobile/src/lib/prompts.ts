@@ -121,6 +121,101 @@ tags: [person, networking]
   return { system, user };
 }
 
+/**
+ * Prompt for an image shared into carnet. Returns the system instruction
+ * AND the text-half of the multimodal user message — the caller pairs
+ * userText with the base64 image_url part when assembling the API
+ * payload.
+ */
+export function buildSharedImagePrompt(context: string): {
+  system: string;
+  userText: string;
+} {
+  const today = todayLocal();
+  const system = `You are a personal knowledge curator. The user has shared an image into
+their Obsidian-style vault. Look at the image and the user's optional
+context, then produce an Obsidian markdown note that lets future-them
+find this again.
+
+Required output:
+1. A concise descriptive title (5–8 words, not a generic timestamp)
+2. 2–4 sentences describing what's in the image — objects, text, scene,
+   anything notable. If there's legible text, transcribe the key parts.
+3. 3–5 relevant tags
+4. Surface the user's context if they provided any
+
+${INJECTION_GUARD}
+
+Respond ONLY with valid Obsidian markdown in this exact format:
+---
+created: ${today}
+kind: shared-image
+tags: [shared, image, {tag1}, {tag2}]
+---
+# {Concise descriptive title}
+
+## What's in this
+{2–4 sentences describing the image, naming entities, transcribing
+visible text when relevant.}
+
+## Context
+{User's context, or "(none provided)"}`;
+  const userText = context.trim().length > 0
+    ? `<USER_INPUT>\n${context.trim()}\n</USER_INPUT>`
+    : `<USER_INPUT>(no context provided — base the note on the image alone)</USER_INPUT>`;
+  return { system, userText };
+}
+
+/**
+ * Prompt for a URL / plain text payload shared into carnet. The model
+ * cannot fetch the URL itself — it works from the URL string, any
+ * accompanying snippet of text, and the user's context.
+ */
+export function buildSharedLinkPrompt(url: string, text: string, context: string): PromptPair {
+  const today = todayLocal();
+  const kind = url ? "shared-link" : "shared-text";
+  const system = `You are a personal knowledge curator. The user has shared ${url ? "a URL" : "a piece of text"} into
+their Obsidian-style vault. Produce a note that will let them remember
+why they saved this. You cannot fetch the URL — work from the URL string
+(domain, path slug), any shared text snippet, and the user's context.
+
+Required output:
+1. A concise descriptive title (5–8 words, not a generic timestamp).
+   Use what's evident from the URL or text — domain, page title slug,
+   topic from the snippet.
+2. 1–3 sentences summarising what this likely is and why it's worth
+   remembering, based on URL/text/context.
+3. 3–5 relevant tags
+
+${INJECTION_GUARD}
+
+Respond ONLY with valid Obsidian markdown. Use this skeleton, omitting
+any section whose source is empty (no leading/trailing blank lines):
+---
+created: ${today}
+kind: ${kind}
+tags: [shared, ${url ? "link" : "text"}, {tag1}, {tag2}]
+---
+# {Concise descriptive title}
+
+${url ? `## Source\n<${url}>` : ""}
+
+## Summary
+{1–3 sentences}
+
+## Context
+{User's context, or "(none provided)"}
+
+${text && text !== url ? "## Excerpt\n{The shared text, lightly cleaned}" : ""}`.replace(/\n{3,}/g, "\n\n");
+  const bodyParts = [
+    url ? `URL: ${url}` : "",
+    text && text !== url ? `Text: ${text}` : "",
+    context ? `Context: ${context}` : "",
+  ].filter(Boolean).join("\n");
+  const user = `<USER_INPUT>\n${bodyParts}\n</USER_INPUT>`;
+  return { system, user };
+}
+
 /** Prompt for promoting an idea's status. */
 export function buildPromoteIdeaPrompt(
   currentMarkdown: string,
