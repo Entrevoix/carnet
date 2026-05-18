@@ -31,6 +31,8 @@ import type { RootStackParamList } from "../../App";
 import { VoiceButton } from "../voice/VoiceButton";
 import { recordCapture } from "../lib/storage";
 import { writeBinary, writeIdea, slugify } from "../lib/writer";
+import { enrichSharedImage, enrichSharedLink } from "../lib/omniroute";
+import { deriveTitle } from "@carnet/shared";
 
 type Props = NativeStackScreenProps<RootStackParamList, "ShareReceive">;
 
@@ -74,6 +76,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
   const [transcript, setTranscript] = useState("");
   const [phase, setPhase] = useState<Phase>("input");
   const [error, setError] = useState<string | null>(null);
+  const [savedFilepath, setSavedFilepath] = useState<string | null>(null);
 
   /** Combined text from typed context + accepted voice transcript. */
   const combinedContext = useMemo(() => {
@@ -91,7 +94,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
     setError(null);
     setPhase("saving");
     try {
-      const slug = timestampSlug();
+      const slugFallback = timestampSlug();
       const files = shareIntent.files ?? [];
       const text = shareIntent.text ?? "";
       const url = shareIntent.webUrl ?? "";
@@ -101,68 +104,58 @@ export default function ShareReceiveScreen({ navigation }: Props) {
 
       let filepath: string;
       let title: string;
-      let mode: "idea" = "idea";
+      const mode: "idea" = "idea";
 
       if (imageFile) {
-        // Image share: copy binary into vault, then write a markdown stub.
+        // Image share: enrich via vision model, then write photo + markdown.
         const base64 = await FileSystem.readAsStringAsync(imageFile.path, {
           encoding: FileSystem.EncodingType.Base64,
         });
-        const ext = extFromMime(imageFile.mimeType);
-        const sourceName = imageFile.fileName?.replace(/[^a-zA-Z0-9._-]/g, "-") ?? `${slug}.${ext}`;
-        const binFilename = sourceName.includes(".") ? sourceName : `${sourceName}.${ext}`;
-        const { finalName } = await writeBinary(
-          "Photos",
-          binFilename,
-          base64,
-          imageFile.mimeType ?? "application/octet-stream",
+        const mime = imageFile.mimeType ?? "image/jpeg";
+
+        // Get a real title + description from the vision model. If it
+        // fails (no key, wrong model, offline), fall back to a stub note
+        // — better to save with a generic title than to drop the share.
+        let enrichedMd: string;
+        try {
+          const result = await enrichSharedImage({ base64, mimeType: mime, context: ctx });
+          enrichedMd = result.markdown;
+        } catch (e: unknown) {
+          console.warn("[ShareReceive] vision enrichment failed:", e);
+          enrichedMd = `---\ncreated: ${new Date().toISOString()}\nkind: shared-image\ntags: [shared, image]\n---\n# Shared image ${slugFallback}\n\n## What's in this\n(Vision enrichment unavailable — see image.)\n\n## Context\n${ctx || "(none provided)"}`;
+        }
+
+        title = deriveTitle(enrichedMd) || `Shared image ${slugFallback}`;
+        const slug = slugify(title) || `shared-image-${slugFallback}`;
+
+        const ext = extFromMime(mime);
+        const binFilename = `${slug}.${ext}`;
+        const { finalName } = await writeBinary("Photos", binFilename, base64, mime);
+
+        // Inject the photo reference under the H1 — model can't know the
+        // final filename ahead of time, we add it here.
+        const withImage = enrichedMd.replace(
+          /^(#\s+.+\n)/m,
+          `$1\n![](../Photos/${finalName})\n`,
         );
-        title = `Shared image ${slug}`;
-        const md = [
-          `---`,
-          `title: ${title}`,
-          `kind: shared-image`,
-          `source: ${imageFile.fileName ?? "(unknown)"}`,
-          `mime: ${imageFile.mimeType ?? "?"}`,
-          `created: ${new Date().toISOString()}`,
-          `---`,
-          ``,
-          `# ${title}`,
-          ``,
-          `![](./${finalName})`,
-          ``,
-          ctx ? `## Context\n\n${ctx}\n` : "",
-        ]
-          .filter((line) => line !== "")
-          .join("\n");
-        // Save the markdown stub via writeIdea-equivalent path under Photos/.
-        // Reuse writeBinary just for collision-safe placement of the .md file.
-        // (Markdown is utf-8 text; writeBinary writes raw bytes, which would
-        // mangle the encoding. So instead we use the public writeIdea API
-        // and accept that the .md lands in Ideas/ rather than next to the
-        // photo. The frontmatter `kind: shared-image` is the cross-reference.)
-        const { filepath: mdPath } = await writeIdea(`${slugify(title)}`, md);
+
+        const { filepath: mdPath } = await writeIdea(slug, withImage);
         filepath = mdPath;
       } else if (url || text) {
-        // URL/text share → idea-shaped markdown note.
-        const head = url ? `Shared link` : `Shared text`;
-        title = `${head} ${slug}`;
-        const md = [
-          `---`,
-          `title: ${title}`,
-          `kind: ${url ? "shared-link" : "shared-text"}`,
-          `created: ${new Date().toISOString()}`,
-          `---`,
-          ``,
-          `# ${title}`,
-          ``,
-          url ? `<${url}>` : "",
-          text && text !== url ? `\n${text}\n` : "",
-          ctx ? `\n## Context\n\n${ctx}\n` : "",
-        ]
-          .filter((line) => line !== "")
-          .join("\n");
-        const { filepath: mdPath } = await writeIdea(slugify(title), md);
+        // URL/text share: text-only enrichment.
+        let enrichedMd: string;
+        try {
+          const result = await enrichSharedLink({ url, text, context: ctx });
+          enrichedMd = result.markdown;
+        } catch (e: unknown) {
+          console.warn("[ShareReceive] link enrichment failed:", e);
+          const head = url ? "Shared link" : "Shared text";
+          enrichedMd = `---\ncreated: ${new Date().toISOString()}\nkind: ${url ? "shared-link" : "shared-text"}\ntags: [shared]\n---\n# ${head} ${slugFallback}\n\n${url ? `## Source\n<${url}>\n\n` : ""}${text && text !== url ? `## Excerpt\n${text}\n\n` : ""}## Context\n${ctx || "(none provided)"}`;
+        }
+
+        title = deriveTitle(enrichedMd) || (url ? `Shared link ${slugFallback}` : `Shared text ${slugFallback}`);
+        const slug = slugify(title) || `shared-${slugFallback}`;
+        const { filepath: mdPath } = await writeIdea(slug, enrichedMd);
         filepath = mdPath;
       } else {
         throw new Error("Nothing to save — empty share payload");
@@ -175,9 +168,8 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         filepath,
         createdAt: Date.now(),
       });
+      setSavedFilepath(filepath);
       setPhase("saved");
-      resetShareIntent();
-      navigation.goBack();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[ShareReceive] save failed:", msg, e);
@@ -272,8 +264,34 @@ export default function ShareReceiveScreen({ navigation }: Props) {
       {phase === "saving" ? (
         <View style={styles.loading}>
           <ActivityIndicator />
-          <Text variant="bodyMedium" style={styles.dim}>Saving to vault…</Text>
+          <Text variant="bodyMedium" style={styles.dim}>
+            OmniRoute is enriching + saving…
+          </Text>
         </View>
+      ) : phase === "saved" ? (
+        <Card style={styles.card}>
+          <Card.Title title="Saved to vault" />
+          <Card.Content>
+            <Text variant="bodySmall" selectable style={styles.body}>
+              {savedFilepath ?? "(no path)"}
+            </Text>
+            <HelperText type="info" visible>
+              Open Obsidian (or your editor) on the synced folder to read
+              and edit. Carnet is intake-only.
+            </HelperText>
+          </Card.Content>
+          <Card.Actions>
+            <Button
+              mode="contained"
+              onPress={() => {
+                resetShareIntent();
+                navigation.goBack();
+              }}
+            >
+              Done
+            </Button>
+          </Card.Actions>
+        </Card>
       ) : (
         <View style={styles.actions}>
           <Button mode="text" onPress={cancel}>
