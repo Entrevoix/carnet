@@ -22,6 +22,7 @@ import {
   buildSharedLinkPrompt,
   type PromptPair,
 } from "./prompts";
+import { fetchUrlPreview } from "./urlpreview";
 import type { IdeaStatus } from "@carnet/shared";
 
 export interface EnrichResult {
@@ -397,22 +398,30 @@ export async function enrichSharedImage(input: {
   return executeChat(baseUrl, apiKey, model, messages);
 }
 
-/** Text-only enrichment for a URL or raw text shared into carnet. */
+/**
+ * Text-only enrichment for a URL or raw text shared into carnet. When
+ * a URL is present, we fetch the page first (best-effort, in parallel
+ * with the settings reads) and thread the resulting title /
+ * description / site name through the prompt. On any fetch failure
+ * the preview is null and the prompt falls back to URL-string-only
+ * reasoning — never blocks the enrichment call.
+ */
 export async function enrichSharedLink(input: {
   url: string;
   text: string;
   context: string;
 }): Promise<EnrichResult> {
-  const [baseUrl, apiKey, model] = await Promise.all([
+  const [baseUrl, apiKey, model, preview] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
     getModel(),
+    input.url ? fetchUrlPreview(input.url) : Promise.resolve(null),
   ]);
   return chatCompletion(
     baseUrl,
     apiKey,
     model,
-    buildSharedLinkPrompt(input.url, input.text, input.context),
+    buildSharedLinkPrompt(input.url, input.text, input.context, preview),
   );
 }
 

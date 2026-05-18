@@ -38,6 +38,7 @@ import {
   enrichIdea,
   enrichJournal,
   enrichPerson,
+  enrichSharedLink,
   promoteIdea,
   OmniRouteError,
   isPermanentError,
@@ -50,6 +51,13 @@ import {
   buildPersonPrompt,
   buildPromoteIdeaPrompt,
 } from "./prompts";
+
+function makeHtmlResponse(body: string): Response {
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
 
 interface RequestBody {
   model: string;
@@ -288,5 +296,110 @@ describe("HTTPS enforcement", () => {
     );
     await expect(enrichIdea("x")).resolves.toBeDefined();
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+// ── enrichSharedLink ──────────────────────────────────────────────────────────
+
+describe("enrichSharedLink", () => {
+  it("fetches the URL preview and threads it into the chat prompt", async () => {
+    const previewHtml = `
+      <html><head>
+        <title>Plain Title</title>
+        <meta property="og:title" content="A Real Article">
+        <meta property="og:description" content="Detailed summary here.">
+        <meta property="og:site_name" content="Example News">
+      </head></html>
+    `;
+    fetchMock.mockResolvedValueOnce(makeHtmlResponse(previewHtml));
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse("---\n---\n# Saved Article\n\nbody\n"),
+    );
+
+    const result = await enrichSharedLink({
+      url: "https://example.com/article",
+      text: "",
+      context: "",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // First call: GET the page for preview
+    const [previewUrl, previewInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(previewUrl).toBe("https://example.com/article");
+    expect(previewInit.method).toBe("GET");
+    // Second call: POST to chat completions with preview lines in user content
+    const [chatUrl, chatInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(chatUrl).toBe("https://llm.example.com/v1/chat/completions");
+    const body = JSON.parse(chatInit.body as string) as RequestBody;
+    expect(body.messages[1].role).toBe("user");
+    const userContent = body.messages[1].content;
+    expect(userContent).toContain("Site: Example News");
+    expect(userContent).toContain("Page title: A Real Article");
+    expect(userContent).toContain("Page description: Detailed summary here.");
+    expect(userContent).toContain("URL: https://example.com/article");
+    expect(result.markdown).toContain("Saved Article");
+  });
+
+  it("falls back to URL-string-only prompt when preview fetch fails", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse("---\n---\n# Fallback Note\n"),
+    );
+
+    const result = await enrichSharedLink({
+      url: "https://offline.example.com/p",
+      text: "",
+      context: "",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, chatInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(chatInit.body as string) as RequestBody;
+    const userContent = body.messages[1].content;
+    expect(userContent).toContain("URL: https://offline.example.com/p");
+    expect(userContent).not.toContain("Site:");
+    expect(userContent).not.toContain("Page title:");
+    // System prompt should mention it does NOT have page contents.
+    const systemContent = body.messages[0].content;
+    expect(systemContent).toMatch(/do NOT have the page contents/i);
+    expect(result.markdown).toContain("Fallback Note");
+  });
+
+  it("skips the preview fetch when no URL is provided (text-only share)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse("---\n---\n# Text Note\n"),
+    );
+
+    await enrichSharedLink({
+      url: "",
+      text: "Some shared snippet of text without a URL.",
+      context: "",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [chatUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(chatUrl).toBe("https://llm.example.com/v1/chat/completions");
+  });
+
+  it("does not include preview lines when preview returns null fields", async () => {
+    // Preview fetch succeeds but the page has no title or description.
+    fetchMock.mockResolvedValueOnce(
+      makeHtmlResponse("<html><head></head><body></body></html>"),
+    );
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse("---\n---\n# Empty-page Note\n"),
+    );
+
+    await enrichSharedLink({
+      url: "https://blank.example.com/",
+      text: "",
+      context: "",
+    });
+
+    const [, chatInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(chatInit.body as string) as RequestBody;
+    const userContent = body.messages[1].content;
+    expect(userContent).not.toContain("Site:");
+    expect(userContent).not.toContain("Page title:");
   });
 });

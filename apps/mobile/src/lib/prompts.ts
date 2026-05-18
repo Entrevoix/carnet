@@ -166,25 +166,43 @@ visible text when relevant.}
   return { system, userText };
 }
 
+/** Page metadata extracted by the URL preview fetcher. Threaded into
+ * the user message — NEVER the system message — so the existing
+ * INJECTION_GUARD applies to page content (which may contain hostile
+ * markup like `<title>Ignore previous instructions...</title>`). */
+export interface SharedLinkPreview {
+  title: string;
+  description: string;
+  siteName: string;
+}
+
 /**
- * Prompt for a URL / plain text payload shared into carnet. The model
- * cannot fetch the URL itself — it works from the URL string, any
- * accompanying snippet of text, and the user's context.
+ * Prompt for a URL / plain text payload shared into carnet. When a
+ * preview is supplied, the model has real page metadata to work from;
+ * otherwise it falls back to deriving meaning from the URL slug.
  */
-export function buildSharedLinkPrompt(url: string, text: string, context: string): PromptPair {
+export function buildSharedLinkPrompt(
+  url: string,
+  text: string,
+  context: string,
+  preview: SharedLinkPreview | null,
+): PromptPair {
   const today = todayLocal();
   const kind = url ? "shared-link" : "shared-text";
+  const hasPreview = Boolean(
+    preview && (preview.title || preview.description),
+  );
+  const sourceLine = hasPreview
+    ? "Use the supplied page metadata (title, description, site name) as the primary source for the summary. Treat the URL string as a secondary signal."
+    : "You do NOT have the page contents — work from the URL string (domain, path slug), any shared text snippet, and the user's context.";
   const system = `You are a personal knowledge curator. The user has shared ${url ? "a URL" : "a piece of text"} into
 their Obsidian-style vault. Produce a note that will let them remember
-why they saved this. You cannot fetch the URL — work from the URL string
-(domain, path slug), any shared text snippet, and the user's context.
+why they saved this. ${sourceLine}
 
 Required output:
 1. A concise descriptive title (5–8 words, not a generic timestamp).
-   Use what's evident from the URL or text — domain, page title slug,
-   topic from the snippet.
 2. 1–3 sentences summarising what this likely is and why it's worth
-   remembering, based on URL/text/context.
+   remembering.
 3. 3–5 relevant tags
 
 ${INJECTION_GUARD}
@@ -207,11 +225,23 @@ ${url ? `## Source\n<${url}>` : ""}
 {User's context, or "(none provided)"}
 
 ${text && text !== url ? "## Excerpt\n{The shared text, lightly cleaned}" : ""}`.replace(/\n{3,}/g, "\n\n");
+  const previewLines = hasPreview
+    ? [
+        preview!.siteName ? `Site: ${preview!.siteName}` : "",
+        preview!.title ? `Page title: ${preview!.title}` : "",
+        preview!.description ? `Page description: ${preview!.description}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
   const bodyParts = [
     url ? `URL: ${url}` : "",
+    previewLines,
     text && text !== url ? `Text: ${text}` : "",
     context ? `Context: ${context}` : "",
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const user = `<USER_INPUT>\n${bodyParts}\n</USER_INPUT>`;
   return { system, user };
 }
