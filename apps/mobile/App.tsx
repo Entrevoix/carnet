@@ -1,7 +1,11 @@
 import "react-native-gesture-handler";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
-import { NavigationContainer, useNavigationContainerRef } from "@react-navigation/native";
+import {
+  NavigationContainer,
+  useNavigationContainerRef,
+  type NavigationContainerRefWithCurrent,
+} from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { PaperProvider } from "react-native-paper";
 import { StatusBar } from "expo-status-bar";
@@ -30,13 +34,19 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 function ShareIntentRouter({
   navigation,
 }: {
-  navigation: ReturnType<typeof useNavigationContainerRef<RootStackParamList>>;
+  navigation: NavigationContainerRefWithCurrent<RootStackParamList>;
 }) {
   const { hasShareIntent, shareIntent } = useShareIntentContext();
   const routedKey = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!hasShareIntent || !shareIntent) return;
+    if (!hasShareIntent || !shareIntent) {
+      // Share was reset (Cancel / Done) — clear the dedup key so a *second*
+      // identical share later in the session still routes. Without this,
+      // the same image shared twice in a row is silently dropped.
+      routedKey.current = null;
+      return;
+    }
     // Synthesize a stable key from the payload — re-routes only when a
     // genuinely new share lands.
     const key = `${shareIntent.text ?? ""}|${shareIntent.webUrl ?? ""}|${(shareIntent.files ?? []).map((f) => f.path).join(",")}`;

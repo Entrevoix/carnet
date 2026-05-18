@@ -27,6 +27,11 @@ import { getSettings } from "./settings";
 
 const { StorageAccessFramework } = FileSystem;
 
+/** Upper bound on collision-bumped filename variants ({stem}-2.md … {stem}-99.md).
+ * If 99 variants are taken, the user has a real cleanup problem and we throw
+ * rather than silently overwriting. Same ceiling for ideas / people / binaries. */
+const MAX_COLLISION_VARIANTS = 100;
+
 interface Root {
   /** Either a `file://` URI or a `content://...tree/...` SAF tree URI. */
   uri: string;
@@ -55,16 +60,105 @@ async function resolveRoot(): Promise<Root> {
   return { uri, isSaf: false };
 }
 
-/** Extract the last path segment (filename or subdir name) from a SAF URI.
- * SAF URIs look like `content://...document/primary%3Acarnet%2FIdeas%2Fmyidea.md`;
- * the filename is whatever follows the last `/` in the decoded path part. */
-function safLastSegment(uri: string): string {
-  const decoded = decodeURIComponent(uri);
-  const slash = decoded.lastIndexOf("/");
-  return slash >= 0 ? decoded.slice(slash + 1) : decoded;
+/** Map a MIME type to a sensible file extension for binary writes. Covers
+ * the image types we accept on share intent + a few common audio/document
+ * types we'll grow into. Falls back to `bin` rather than guessing wrong. */
+export function extFromMime(mime?: string): string {
+  if (!mime) return "bin";
+  const m = mime.toLowerCase();
+  if (m === "image/jpeg" || m === "image/jpg") return "jpg";
+  if (m === "image/png") return "png";
+  if (m === "image/webp") return "webp";
+  if (m === "image/gif") return "gif";
+  if (m === "image/heic") return "heic";
+  if (m === "image/heif") return "heif";
+  if (m === "audio/mpeg" || m === "audio/mp3") return "mp3";
+  if (m === "audio/wav" || m === "audio/x-wav") return "wav";
+  if (m === "audio/mp4" || m === "audio/m4a") return "m4a";
+  if (m === "application/pdf") return "pdf";
+  const slash = m.indexOf("/");
+  return slash >= 0 ? m.slice(slash + 1) : "bin";
 }
 
-/** Find a child file in `parentUri` whose name matches, or null. */
+/**
+ * Extract the filename/subdir name from a SAF document or tree URI. SAF URIs:
+ *   tree:     content://authority/tree/{encoded-tree-id}
+ *   document: content://authority/tree/{encoded-tree-id}/document/{encoded-document-id}
+ *
+ * The encoded id (after `/document/` or `/tree/`) decodes into something like
+ * `primary:Download/Carnet/Ideas/myidea.md` — the filename is the last `/`
+ * segment of that decoded id. We deliberately do NOT decode the whole URI,
+ * which would mangle the authority component that contains its own `/`s.
+ */
+export function safLastSegment(uri: string): string {
+  const docMarker = uri.indexOf("/document/");
+  const treeMarker = uri.indexOf("/tree/");
+  let encodedId: string;
+  if (docMarker >= 0) {
+    encodedId = uri.slice(docMarker + "/document/".length);
+  } else if (treeMarker >= 0) {
+    encodedId = uri.slice(treeMarker + "/tree/".length);
+  } else {
+    return uri;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(encodedId);
+  } catch {
+    decoded = encodedId;
+  }
+  const slash = decoded.lastIndexOf("/");
+  if (slash >= 0) return decoded.slice(slash + 1);
+  // No slash — handle root-of-volume case like "primary:foldername"
+  const colon = decoded.indexOf(":");
+  return colon >= 0 ? decoded.slice(colon + 1) : decoded;
+}
+
+/**
+ * List the names of all children in `parentUri`. Single IPC call on SAF
+ * (vs. one per collision probe), single readDirectory on file://. Callers
+ * use the returned Set to probe many candidate names in O(1) each.
+ */
+async function listChildNames(parentUri: string, isSaf: boolean): Promise<Set<string>> {
+  if (isSaf) {
+    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
+    return new Set(children.map(safLastSegment));
+  }
+  try {
+    const names = await FileSystem.readDirectoryAsync(parentUri);
+    return new Set(names);
+  } catch {
+    // Directory may not exist yet — first write into a fresh subdir.
+    return new Set();
+  }
+}
+
+/**
+ * Resolve a collision-free filename of shape `{base}{ext}` or `{base}-N{ext}`.
+ * Lists the directory once and probes against an in-memory Set so the SAF
+ * branch doesn't pay one IPC round-trip per probe.
+ */
+async function findCollisionFreeName(
+  parentUri: string,
+  base: string,
+  ext: string,
+  isSaf: boolean,
+): Promise<string> {
+  const existing = await listChildNames(parentUri, isSaf);
+  const first = `${base}${ext}`;
+  if (!existing.has(first)) return first;
+  for (let n = 2; n < MAX_COLLISION_VARIANTS; n++) {
+    const candidate = `${base}-${n}${ext}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  throw new Error(
+    `More than ${MAX_COLLISION_VARIANTS - 1} files with stem "${base}" — clean up duplicates first`,
+  );
+}
+
+/** Find an existing child file in `parentUri` whose name matches, or null.
+ * Used by appendJournal where we need the URI to read+rewrite. Other
+ * collision checks should use findCollisionFreeName which lists once. */
 async function findFileInDir(
   parentUri: string,
   filename: string,
@@ -351,19 +445,7 @@ export async function writeIdea(
 ): Promise<{ filepath: string }> {
   const root = await resolveRoot();
   const ideasUri = await findOrCreateSubdir(root, "Ideas");
-
-  let filename = `${slug}.md`;
-  let existing = await findFileInDir(ideasUri, filename, root.isSaf);
-  let n = 2;
-  while (existing && n < 100) {
-    filename = `${slug}-${n}.md`;
-    existing = await findFileInDir(ideasUri, filename, root.isSaf);
-    n++;
-  }
-  if (existing) {
-    throw new Error(`More than 99 ideas with slug "${slug}" — pick a more distinctive title`);
-  }
-
+  const filename = await findCollisionFreeName(ideasUri, slug, ".md", root.isSaf);
   const filepath = await writeNewFile(ideasUri, filename, markdown, root.isSaf);
   return { filepath };
 }
@@ -437,20 +519,7 @@ export async function writePerson(
   }
   if (!stem) stem = "Unknown-Person";
 
-  let filename = `${stem}.md`;
-  let existing = await findFileInDir(peopleUri, filename, root.isSaf);
-  let n = 2;
-  while (existing && n < 100) {
-    filename = `${stem}-${n}.md`;
-    existing = await findFileInDir(peopleUri, filename, root.isSaf);
-    n++;
-  }
-  if (existing) {
-    throw new Error(
-      `More than 99 contacts with stem "${stem}" — clean up duplicates first`,
-    );
-  }
-
+  const filename = await findCollisionFreeName(peopleUri, stem, ".md", root.isSaf);
   const filepath = await writeNewFile(peopleUri, filename, markdown, root.isSaf);
   return { filepath };
 }
@@ -479,31 +548,21 @@ export async function writeBinary(
   const stem = dot >= 0 ? filename.slice(0, dot) : filename;
   const ext = dot >= 0 ? filename.slice(dot) : "";
 
-  let actualName = filename;
-  let existing = await findFileInDir(dirUri, actualName, root.isSaf);
-  let n = 2;
-  while (existing && n < 100) {
-    actualName = `${stem}-${n}${ext}`;
-    existing = await findFileInDir(dirUri, actualName, root.isSaf);
-    n++;
-  }
-  if (existing) {
-    throw new Error(`More than 99 files with stem "${stem}" — clean up duplicates first`);
-  }
+  const finalName = await findCollisionFreeName(dirUri, stem, ext, root.isSaf);
 
   let filepath: string;
   if (root.isSaf) {
-    filepath = await StorageAccessFramework.createFileAsync(dirUri, actualName, mimeType);
+    filepath = await StorageAccessFramework.createFileAsync(dirUri, finalName, mimeType);
     await StorageAccessFramework.writeAsStringAsync(filepath, base64, {
       encoding: FileSystem.EncodingType.Base64,
     });
   } else {
-    filepath = `${dirUri.replace(/\/$/, "")}/${actualName}`;
+    filepath = `${dirUri.replace(/\/$/, "")}/${finalName}`;
     await FileSystem.writeAsStringAsync(filepath, base64, {
       encoding: FileSystem.EncodingType.Base64,
     });
   }
-  return { filepath, finalName: actualName };
+  return { filepath, finalName };
 }
 
 /** Read the raw string content of a note file. Supports both file:// and content:// URIs. */

@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Image, ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
+  Banner,
   Button,
   Card,
   HelperText,
@@ -30,9 +31,17 @@ import * as FileSystem from "expo-file-system/legacy";
 import type { RootStackParamList } from "../../App";
 import { VoiceButton } from "../voice/VoiceButton";
 import { recordCapture } from "../lib/storage";
-import { writeBinary, writeIdea, slugify } from "../lib/writer";
+import { extFromMime, writeBinary, writeIdea, slugify } from "../lib/writer";
 import { enrichSharedImage, enrichSharedLink } from "../lib/omniroute";
 import { deriveTitle } from "@carnet/shared";
+
+const { StorageAccessFramework } = FileSystem;
+
+/** Hard cap on shared image size. Vision models reject >10 MB payloads and
+ * keeping the base64 in JS memory on a phone past ~8 MB is dangerous (the
+ * data: URL inflates by 33%, then JSON.stringify duplicates it for the
+ * request body). Surface a helpful error rather than OOM the app. */
+const MAX_SHARED_IMAGE_BYTES = 8 * 1024 * 1024;
 
 type Props = NativeStackScreenProps<RootStackParamList, "ShareReceive">;
 
@@ -43,18 +52,6 @@ function timestampSlug(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-}
-
-/** Best-effort extension from a mime type — falls back to bin. */
-function extFromMime(mime?: string): string {
-  if (!mime) return "bin";
-  if (mime === "image/jpeg" || mime === "image/jpg") return "jpg";
-  if (mime === "image/png") return "png";
-  if (mime === "image/webp") return "webp";
-  if (mime === "image/gif") return "gif";
-  if (mime === "image/heic") return "heic";
-  const slash = mime.indexOf("/");
-  return slash >= 0 ? mime.slice(slash + 1) : "bin";
 }
 
 /** Generate non-crypto local id for the recents history. */
@@ -77,6 +74,10 @@ export default function ShareReceiveScreen({ navigation }: Props) {
   const [phase, setPhase] = useState<Phase>("input");
   const [error, setError] = useState<string | null>(null);
   const [savedFilepath, setSavedFilepath] = useState<string | null>(null);
+  /** Surfaced as a banner on the saved screen when AI enrichment failed and
+   * we fell back to a stub note. Carries the sanitized error message so the
+   * user can see auth / model issues they can act on. */
+  const [degradedReason, setDegradedReason] = useState<string | null>(null);
 
   /** Combined text from typed context + accepted voice transcript. */
   const combinedContext = useMemo(() => {
@@ -92,6 +93,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
   const save = async () => {
     if (!shareIntent) return;
     setError(null);
+    setDegradedReason(null);
     setPhase("saving");
     try {
       const slugFallback = timestampSlug();
@@ -107,39 +109,61 @@ export default function ShareReceiveScreen({ navigation }: Props) {
       const mode: "idea" = "idea";
 
       if (imageFile) {
-        // Image share: enrich via vision model, then write photo + markdown.
-        const base64 = await FileSystem.readAsStringAsync(imageFile.path, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+        // Cap up-front: vision models reject large payloads and the in-memory
+        // peak (base64 + JSON-encoded data URL) can OOM the phone.
+        if (imageFile.size && imageFile.size > MAX_SHARED_IMAGE_BYTES) {
+          const mb = Math.round(imageFile.size / 1024 / 1024);
+          throw new Error(
+            `Image is ${mb} MB — carnet caps shares at ${Math.round(MAX_SHARED_IMAGE_BYTES / 1024 / 1024)} MB. Downscale or crop before sharing.`,
+          );
+        }
         const mime = imageFile.mimeType ?? "image/jpeg";
 
-        // Get a real title + description from the vision model. If it
-        // fails (no key, wrong model, offline), fall back to a stub note
-        // — better to save with a generic title than to drop the share.
+        // Some share sources hand carnet a `content://` URI (Photos via
+        // FileProvider, etc.) — read accordingly. file:// goes through the
+        // legacy FileSystem API; content:// goes through SAF.
+        let base64: string;
+        if (imageFile.path.startsWith("content://")) {
+          base64 = await StorageAccessFramework.readAsStringAsync(imageFile.path, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        } else {
+          base64 = await FileSystem.readAsStringAsync(imageFile.path, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        }
+
+        // Vision enrichment. If it fails (auth, missing key, wrong model,
+        // offline), surface the reason via a degraded-banner on the saved
+        // screen — still save a stub so the share isn't dropped, but never
+        // silently.
         let enrichedMd: string;
         try {
           const result = await enrichSharedImage({ base64, mimeType: mime, context: ctx });
           enrichedMd = result.markdown;
         } catch (e: unknown) {
-          console.warn("[ShareReceive] vision enrichment failed:", e);
+          const reason = e instanceof Error ? e.message : String(e);
+          console.warn("[ShareReceive] vision enrichment failed:", reason);
+          setDegradedReason(reason);
           enrichedMd = `---\ncreated: ${new Date().toISOString()}\nkind: shared-image\ntags: [shared, image]\n---\n# Shared image ${slugFallback}\n\n## What's in this\n(Vision enrichment unavailable — see image.)\n\n## Context\n${ctx || "(none provided)"}`;
         }
 
         title = deriveTitle(enrichedMd) || `Shared image ${slugFallback}`;
-        const slug = slugify(title) || `shared-image-${slugFallback}`;
+        const desiredSlug = slugify(title) || `shared-image-${slugFallback}`;
 
         const ext = extFromMime(mime);
-        const binFilename = `${slug}.${ext}`;
-        const { finalName } = await writeBinary("Photos", binFilename, base64, mime);
+        const { finalName } = await writeBinary("Photos", `${desiredSlug}.${ext}`, base64, mime);
 
-        // Inject the photo reference under the H1 — model can't know the
-        // final filename ahead of time, we add it here.
+        // Share the collision-bumped stem so .jpg and .md stay paired. If
+        // writeBinary returned `foo-3.jpg`, the .md is forced to start from
+        // `foo-3` (Ideas/ may still collide independently and bump further,
+        // but the link to the photo is preserved correctly).
+        const sharedStem = finalName.replace(/\.[^.]+$/, "");
         const withImage = enrichedMd.replace(
           /^(#\s+.+\n)/m,
           `$1\n![](../Photos/${finalName})\n`,
         );
-
-        const { filepath: mdPath } = await writeIdea(slug, withImage);
+        const { filepath: mdPath } = await writeIdea(sharedStem, withImage);
         filepath = mdPath;
       } else if (url || text) {
         // URL/text share: text-only enrichment.
@@ -148,7 +172,9 @@ export default function ShareReceiveScreen({ navigation }: Props) {
           const result = await enrichSharedLink({ url, text, context: ctx });
           enrichedMd = result.markdown;
         } catch (e: unknown) {
-          console.warn("[ShareReceive] link enrichment failed:", e);
+          const reason = e instanceof Error ? e.message : String(e);
+          console.warn("[ShareReceive] link enrichment failed:", reason);
+          setDegradedReason(reason);
           const head = url ? "Shared link" : "Shared text";
           enrichedMd = `---\ncreated: ${new Date().toISOString()}\nkind: ${url ? "shared-link" : "shared-text"}\ntags: [shared]\n---\n# ${head} ${slugFallback}\n\n${url ? `## Source\n<${url}>\n\n` : ""}${text && text !== url ? `## Excerpt\n${text}\n\n` : ""}## Context\n${ctx || "(none provided)"}`;
         }
@@ -272,6 +298,11 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         <Card style={styles.card}>
           <Card.Title title="Saved to vault" />
           <Card.Content>
+            {degradedReason ? (
+              <Banner visible icon="alert" actions={[]} style={styles.degradedBanner}>
+                {`AI enrichment failed — saved as a stub note. ${degradedReason}`}
+              </Banner>
+            ) : null}
             <Text variant="bodySmall" selectable style={styles.body}>
               {savedFilepath ?? "(no path)"}
             </Text>
@@ -326,4 +357,5 @@ const styles = StyleSheet.create({
   actions: { flexDirection: "row", justifyContent: "flex-end", gap: 8, marginTop: 8 },
   loading: { paddingVertical: 32, alignItems: "center", gap: 8 },
   errMsg: { textAlign: "center" },
+  degradedBanner: { marginBottom: 8 },
 });

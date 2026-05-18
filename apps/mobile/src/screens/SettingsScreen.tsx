@@ -53,6 +53,10 @@ export default function SettingsScreen() {
   const [pendingKey, setPendingKey] = useState<string>("");
   const [saved, setSaved] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
+  /** Surfaced via Snackbar when the SAF folder picker fails. Previous
+   * behavior wrote "error: ..." into the path field, which then got
+   * persisted on Save as a broken capture folder. */
+  const [pickerError, setPickerError] = useState<string | null>(null);
 
   // Model browser state — opens a modal that lists available models from
   // GET /v1/models so the user can pick from the actual catalog instead of
@@ -181,7 +185,9 @@ export default function SettingsScreen() {
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setForm({ ...form, captureFolderPath: `error: ${msg.slice(0, 80)}` });
+      // Surface via Snackbar — do NOT write the error into the path field
+      // (that would persist a broken capture folder on the next Save).
+      setPickerError(`Folder picker failed: ${msg.slice(0, 120)}`);
     }
   };
 
@@ -289,7 +295,9 @@ export default function SettingsScreen() {
       />
       <HelperText type="info" visible>
         Tap Pick folder to choose via the Android system picker, or type a
-        path directly (e.g. /storage/emulated/0/carnet).
+        path directly (e.g. /storage/emulated/0/carnet). Carnet will create
+        Ideas/, Journal/, People/, Photos/ directly inside the chosen folder
+        — pick the folder you want those to live in, not the parent.
       </HelperText>
       <View style={styles.folderRow}>
         <Button
@@ -323,6 +331,14 @@ export default function SettingsScreen() {
         duration={2500}
       >
         Settings saved
+      </Snackbar>
+
+      <Snackbar
+        visible={pickerError !== null}
+        onDismiss={() => setPickerError(null)}
+        duration={5000}
+      >
+        {pickerError ?? ""}
       </Snackbar>
 
       <Portal>

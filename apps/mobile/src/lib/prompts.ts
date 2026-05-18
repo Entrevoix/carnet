@@ -189,7 +189,8 @@ Required output:
 
 ${INJECTION_GUARD}
 
-Respond ONLY with valid Obsidian markdown in this exact format:
+Respond ONLY with valid Obsidian markdown. Use this skeleton, omitting
+any section whose source is empty (no leading/trailing blank lines):
 ---
 created: ${today}
 kind: ${kind}
@@ -197,14 +198,15 @@ tags: [shared, ${url ? "link" : "text"}, {tag1}, {tag2}]
 ---
 # {Concise descriptive title}
 
-${url ? `## Source\n<${url}>\n` : ""}
+${url ? `## Source\n<${url}>` : ""}
+
 ## Summary
 {1–3 sentences}
 
 ## Context
 {User's context, or "(none provided)"}
 
-${text && text !== url ? "## Excerpt\n{The shared text, lightly cleaned}" : ""}`;
+${text && text !== url ? "## Excerpt\n{The shared text, lightly cleaned}" : ""}`.replace(/\n{3,}/g, "\n\n");
   const bodyParts = [
     url ? `URL: ${url}` : "",
     text && text !== url ? `Text: ${text}` : "",

@@ -343,13 +343,19 @@ export async function enrichSharedImage(input: {
   mimeType: string;
   context: string;
 }): Promise<EnrichResult> {
+  // Allowlist mime — defends against pathological values being interpolated
+  // into a data: URL. Falls back to image/jpeg for the common case where
+  // the share intent didn't carry a precise type.
+  const safeMime = /^image\/(jpe?g|png|webp|gif|heic|heif)$/.test(input.mimeType)
+    ? input.mimeType
+    : "image/jpeg";
   const [baseUrl, apiKey, model] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
     getModel(),
   ]);
   const { system, userText } = buildSharedImagePrompt(input.context);
-  const dataUrl = `data:${input.mimeType};base64,${input.base64}`;
+  const dataUrl = `data:${safeMime};base64,${input.base64}`;
   const messages: OpenAIMessage[] = [
     { role: "system", content: system },
     {
