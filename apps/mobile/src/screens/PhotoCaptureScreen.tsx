@@ -30,7 +30,13 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import type { RootStackParamList } from "../../App";
 import { VoiceButton } from "../voice/VoiceButton";
 import { recordCapture } from "../lib/storage";
-import { injectImageEmbed, writeBinary, writeIdea, slugify } from "../lib/writer";
+import {
+  injectImageEmbed,
+  slugify,
+  updateNote,
+  writeBinary,
+  writeIdea,
+} from "../lib/writer";
 import { assertBase64UnderLimit, enrichSharedImage } from "../lib/omniroute";
 import { deriveTitle } from "@carnet/shared";
 
@@ -66,6 +72,10 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
   const [transcript, setTranscript] = useState("");
   const [enrichedMd, setEnrichedMd] = useState<string>("");
   const [savedFilepath, setSavedFilepath] = useState<string | null>(null);
+  /** Image filename in the Photos/ subdir at the time of save. Kept so the
+   * saved-phase Re-enrich can rebuild the correct `../Photos/{name}` embed
+   * — the .md may have been collision-bumped independently of the .jpg. */
+  const [savedImageName, setSavedImageName] = useState<string | null>(null);
   /** Surfaced as a banner on the saved screen when AI enrichment failed and
    * we fell back to a stub note. */
   const [degradedReason, setDegradedReason] = useState<string | null>(null);
@@ -194,6 +204,7 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
         console.warn("[PhotoCapture] recordCapture failed (files saved):", msg);
       }
       setSavedFilepath(filepath);
+      setSavedImageName(finalName);
       setPhase("saved");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -201,6 +212,38 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
       setPhase("preview");
     } finally {
       savingRef.current = false;
+    }
+  };
+
+  /** Re-run vision enrichment after a stub-fallback save. Overwrites the
+   * existing .md in place via updateNote; the .jpg on disk is untouched.
+   * Useful when the first enrichment failed because the LLM endpoint was
+   * unreachable (e.g. VPN dropped) and the user has since fixed it. */
+  const reEnrichSaved = async (): Promise<void> => {
+    if (!base64 || !savedFilepath || !savedImageName) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setError(null);
+    setPhase("submitting");
+    try {
+      const result = await enrichSharedImage({
+        base64,
+        mimeType: "image/jpeg",
+        context: combinedContext,
+      });
+      const withImage = injectImageEmbed(
+        result.markdown,
+        `../Photos/${savedImageName}`,
+      );
+      await updateNote(savedFilepath, withImage);
+      setEnrichedMd(withImage);
+      setDegradedReason(null);
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      setDegradedReason(reason);
+    } finally {
+      savingRef.current = false;
+      setPhase("saved");
     }
   };
 
@@ -268,6 +311,11 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
             </HelperText>
           </Card.Content>
           <Card.Actions>
+            {degradedReason ? (
+              <Button mode="text" onPress={reEnrichSaved}>
+                Re-enrich
+              </Button>
+            ) : null}
             <Button mode="contained" onPress={() => navigation.goBack()}>
               Done
             </Button>
