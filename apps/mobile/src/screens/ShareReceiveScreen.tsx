@@ -34,9 +34,10 @@ import { recordCapture } from "../lib/storage";
 import {
   extFromMime,
   injectImageEmbed,
+  slugify,
+  updateNote,
   writeBinary,
   writeIdea,
-  slugify,
 } from "../lib/writer";
 import {
   assertBase64UnderLimit,
@@ -51,6 +52,13 @@ const { StorageAccessFramework } = FileSystem;
 type Props = NativeStackScreenProps<RootStackParamList, "ShareReceive">;
 
 type Phase = "input" | "saving" | "saved";
+
+/** Captured inputs for a save() pass — kept in state so the saved-phase
+ * Re-enrich can re-run the same enrichment without re-reading from the
+ * source share intent (which the user may have already cancelled). */
+type SaveSource =
+  | { kind: "image"; base64: string; mime: string; imageName: string }
+  | { kind: "link"; url: string; text: string };
 
 /** YYYYMMDD-HHMMSS local-time stamp used as the slug for shared captures. */
 function timestampSlug(): string {
@@ -88,6 +96,9 @@ export default function ShareReceiveScreen({ navigation }: Props) {
    * tap before the unmount can trigger writeBinary+writeIdea twice and land
    * two paired notes for one share. */
   const savingRef = useRef(false);
+  /** Snapshot of the inputs used by the most recent enrichment, kept in
+   * state so the saved-phase Re-enrich can replay them. */
+  const [saveSource, setSaveSource] = useState<SaveSource | null>(null);
 
   /** Combined text from typed context + accepted voice transcript. */
   const combinedContext = useMemo(() => {
@@ -179,6 +190,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         const withImage = injectImageEmbed(enrichedMd, `../Photos/${finalName}`);
         const { filepath: mdPath } = await writeIdea(sharedStem, withImage);
         filepath = mdPath;
+        setSaveSource({ kind: "image", base64, mime, imageName: finalName });
       } else if (url || text) {
         // URL/text share: text-only enrichment.
         let enrichedMd: string;
@@ -197,6 +209,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         const slug = slugify(title) || `shared-${slugFallback}`;
         const { filepath: mdPath } = await writeIdea(slug, enrichedMd);
         filepath = mdPath;
+        setSaveSource({ kind: "link", url, text });
       } else {
         throw new Error("Nothing to save — empty share payload");
       }
@@ -226,6 +239,49 @@ export default function ShareReceiveScreen({ navigation }: Props) {
       setPhase("input");
     } finally {
       savingRef.current = false;
+    }
+  };
+
+  /** Re-run enrichment after a stub-fallback save. Overwrites the saved
+   * .md in place via updateNote; the .jpg on disk is untouched. Mirrors
+   * PhotoCaptureScreen's reEnrichSaved — useful when the first enrichment
+   * failed because the LLM endpoint was unreachable (e.g. VPN dropped). */
+  const reEnrichSaved = async (): Promise<void> => {
+    if (!saveSource || !savedFilepath) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setError(null);
+    setPhase("saving");
+    try {
+      const ctx = combinedContext;
+      let newMd: string;
+      if (saveSource.kind === "image") {
+        const result = await enrichSharedImage({
+          base64: saveSource.base64,
+          mimeType: saveSource.mime,
+          context: ctx,
+        });
+        newMd = injectImageEmbed(
+          result.markdown,
+          `../Photos/${saveSource.imageName}`,
+        );
+      } else {
+        const result = await enrichSharedLink({
+          url: saveSource.url,
+          text: saveSource.text,
+          context: ctx,
+        });
+        newMd = result.markdown;
+      }
+      await updateNote(savedFilepath, newMd);
+      setDegradedReason(null);
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.warn("[ShareReceive] re-enrich failed:", reason);
+      setDegradedReason(reason);
+    } finally {
+      savingRef.current = false;
+      setPhase("saved");
     }
   };
 
@@ -337,6 +393,11 @@ export default function ShareReceiveScreen({ navigation }: Props) {
             </HelperText>
           </Card.Content>
           <Card.Actions>
+            {degradedReason ? (
+              <Button mode="text" onPress={reEnrichSaved}>
+                Re-enrich
+              </Button>
+            ) : null}
             <Button
               mode="contained"
               onPress={() => {
