@@ -79,6 +79,7 @@ import {
   extractNameFromMarkdown,
   extFromMime,
   safLastSegment,
+  injectImageEmbed,
 } from "./writer";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -112,6 +113,53 @@ describe("slugify", () => {
     // Only drops chars it can't map — at minimum no crash
     const result = slugify("🚀");
     expect(typeof result).toBe("string");
+  });
+});
+
+// ── injectImageEmbed ──────────────────────────────────────────────────────────
+
+describe("injectImageEmbed", () => {
+  it("inserts embed under H1 with trailing newline", () => {
+    const md = "# Title\n\nbody\n";
+    expect(injectImageEmbed(md, "../Photos/a.jpg")).toBe(
+      "# Title\n\n![](../Photos/a.jpg)\n\nbody\n",
+    );
+  });
+
+  it("inserts embed under H1 even when H1 is the last line (no trailing newline)", () => {
+    const md = "# Lonely Title";
+    expect(injectImageEmbed(md, "../Photos/a.jpg")).toBe(
+      "# Lonely Title\n\n![](../Photos/a.jpg)\n",
+    );
+  });
+
+  it("inserts embed under H1 with CRLF line ending", () => {
+    const md = "# Title\r\nbody\r\n";
+    expect(injectImageEmbed(md, "../Photos/a.jpg")).toBe(
+      "# Title\n\n![](../Photos/a.jpg)\nbody\r\n",
+    );
+  });
+
+  it("prepends embed when no H1 is present", () => {
+    const md = "no heading here\n\njust prose.\n";
+    expect(injectImageEmbed(md, "../Photos/a.jpg")).toBe(
+      "![](../Photos/a.jpg)\n\nno heading here\n\njust prose.\n",
+    );
+  });
+
+  it("picks the first H1 when multiple are present", () => {
+    const md = "# First\n\nbody\n\n# Second\n\nmore\n";
+    const out = injectImageEmbed(md, "../Photos/a.jpg");
+    expect(out.indexOf("![](../Photos/a.jpg)")).toBeLessThan(out.indexOf("# Second"));
+    expect(out.indexOf("![](../Photos/a.jpg)")).toBeGreaterThan(out.indexOf("# First"));
+  });
+
+  it("ignores frontmatter and only matches body H1", () => {
+    const md = "---\nkind: photo\n---\n# Body Title\n\nbody\n";
+    const out = injectImageEmbed(md, "../Photos/a.jpg");
+    expect(out).toContain("# Body Title\n\n![](../Photos/a.jpg)\n");
+    // frontmatter preserved
+    expect(out.startsWith("---\nkind: photo\n---\n")).toBe(true);
   });
 });
 

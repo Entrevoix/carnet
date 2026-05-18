@@ -13,7 +13,7 @@
  * so the offline path is solid before we layer LLM calls on top.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Image, ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
@@ -31,17 +31,22 @@ import * as FileSystem from "expo-file-system/legacy";
 import type { RootStackParamList } from "../../App";
 import { VoiceButton } from "../voice/VoiceButton";
 import { recordCapture } from "../lib/storage";
-import { extFromMime, writeBinary, writeIdea, slugify } from "../lib/writer";
-import { enrichSharedImage, enrichSharedLink } from "../lib/omniroute";
+import {
+  extFromMime,
+  injectImageEmbed,
+  writeBinary,
+  writeIdea,
+  slugify,
+} from "../lib/writer";
+import {
+  assertBase64UnderLimit,
+  enrichSharedImage,
+  enrichSharedLink,
+  MAX_SHARED_IMAGE_BYTES,
+} from "../lib/omniroute";
 import { deriveTitle } from "@carnet/shared";
 
 const { StorageAccessFramework } = FileSystem;
-
-/** Hard cap on shared image size. Vision models reject >10 MB payloads and
- * keeping the base64 in JS memory on a phone past ~8 MB is dangerous (the
- * data: URL inflates by 33%, then JSON.stringify duplicates it for the
- * request body). Surface a helpful error rather than OOM the app. */
-const MAX_SHARED_IMAGE_BYTES = 8 * 1024 * 1024;
 
 type Props = NativeStackScreenProps<RootStackParamList, "ShareReceive">;
 
@@ -78,6 +83,11 @@ export default function ShareReceiveScreen({ navigation }: Props) {
    * we fell back to a stub note. Carries the sanitized error message so the
    * user can see auth / model issues they can act on. */
   const [degradedReason, setDegradedReason] = useState<string | null>(null);
+  /** Guards against fast double-taps on Save. `setPhase("saving")` schedules
+   * a re-render but does not block the next event synchronously — a second
+   * tap before the unmount can trigger writeBinary+writeIdea twice and land
+   * two paired notes for one share. */
+  const savingRef = useRef(false);
 
   /** Combined text from typed context + accepted voice transcript. */
   const combinedContext = useMemo(() => {
@@ -92,6 +102,8 @@ export default function ShareReceiveScreen({ navigation }: Props) {
 
   const save = async () => {
     if (!shareIntent) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
     setError(null);
     setDegradedReason(null);
     setPhase("saving");
@@ -132,6 +144,11 @@ export default function ShareReceiveScreen({ navigation }: Props) {
             encoding: FileSystem.EncodingType.Base64,
           });
         }
+        // Belt-and-suspenders: some content:// providers don't populate
+        // `imageFile.size`, so the early check above is skipped. Recheck
+        // against the actual decoded byte count before sending to the
+        // vision model.
+        assertBase64UnderLimit(base64);
 
         // Vision enrichment. If it fails (auth, missing key, wrong model,
         // offline), surface the reason via a degraded-banner on the saved
@@ -159,10 +176,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         // `foo-3` (Ideas/ may still collide independently and bump further,
         // but the link to the photo is preserved correctly).
         const sharedStem = finalName.replace(/\.[^.]+$/, "");
-        const withImage = enrichedMd.replace(
-          /^(#\s+.+\n)/m,
-          `$1\n![](../Photos/${finalName})\n`,
-        );
+        const withImage = injectImageEmbed(enrichedMd, `../Photos/${finalName}`);
         const { filepath: mdPath } = await writeIdea(sharedStem, withImage);
         filepath = mdPath;
       } else if (url || text) {
@@ -187,13 +201,22 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         throw new Error("Nothing to save — empty share payload");
       }
 
-      await recordCapture({
-        id: localId(),
-        mode,
-        title,
-        filepath,
-        createdAt: Date.now(),
-      });
+      // Recents history is best-effort. If AsyncStorage fails after the
+      // files are already on disk, surface a console warning but still
+      // transition to "saved" — retrying would re-write the binary +
+      // markdown as a duplicate (collision-bumped to slug-2.jpg/.md).
+      try {
+        await recordCapture({
+          id: localId(),
+          mode,
+          title,
+          filepath,
+          createdAt: Date.now(),
+        });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("[ShareReceive] recordCapture failed (files saved):", msg);
+      }
       setSavedFilepath(filepath);
       setPhase("saved");
     } catch (e: unknown) {
@@ -201,6 +224,8 @@ export default function ShareReceiveScreen({ navigation }: Props) {
       console.error("[ShareReceive] save failed:", msg, e);
       setError(msg);
       setPhase("input");
+    } finally {
+      savingRef.current = false;
     }
   };
 

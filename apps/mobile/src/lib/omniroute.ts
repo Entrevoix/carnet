@@ -75,6 +75,34 @@ export function isPermanentError(err: unknown): boolean {
 
 const FETCH_TIMEOUT_MS = 60_000;
 
+/** Hard cap on image payload sent to a vision model. Vision providers reject
+ * >10 MB payloads and the in-memory peak on a phone (base64 inflates by 33%,
+ * then JSON.stringify duplicates it for the request body) can OOM the app.
+ * Both share-target and in-app photo capture enforce this ceiling.
+ *
+ * Note: `quality: 0.6` on expo-camera caps JPEG compression but NOT
+ * resolution — a 50 MP sensor can still produce >8 MB at q=0.6. So callers
+ * MUST gate on `assertBase64UnderLimit` rather than trusting quality alone. */
+export const MAX_SHARED_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/** Throw a user-friendly OmniRouteError if `base64` decodes to more than
+ * `MAX_SHARED_IMAGE_BYTES`. Avoids materialising the binary — base64 length
+ * × 0.75 is exact enough (off-by-≤2 bytes from padding `=`).
+ *
+ * Uses HTTP 413 (Payload Too Large) so `isPermanentError` correctly
+ * classifies this as non-retryable — the image will never magically shrink. */
+export function assertBase64UnderLimit(base64: string): void {
+  const approxBytes = Math.floor(base64.length * 0.75);
+  if (approxBytes > MAX_SHARED_IMAGE_BYTES) {
+    const mb = Math.round(approxBytes / 1024 / 1024);
+    const capMb = Math.round(MAX_SHARED_IMAGE_BYTES / 1024 / 1024);
+    throw new OmniRouteError(
+      `Image is ${mb} MB — carnet caps at ${capMb} MB. Downscale or crop before sending.`,
+      413,
+    );
+  }
+}
+
 /** Strip any "Bearer ..." substring from an error message so the API key
  * never lands in stored error logs or on-screen toasts. Also strip the
  * Authorization header form just in case. */

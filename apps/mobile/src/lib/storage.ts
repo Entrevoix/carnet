@@ -3,7 +3,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 const HISTORY_KEY = "carnet:history:v1";
 const HISTORY_LIMIT = 5;
 
-export type CaptureMode = "idea" | "journal" | "person";
+export type CaptureMode = "idea" | "journal" | "person" | "photo";
 
 export interface CaptureEntry {
   id: string;
