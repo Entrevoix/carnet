@@ -242,6 +242,25 @@ async function writeByUri(uri: string, content: string): Promise<void> {
 }
 
 /**
+ * Inject a markdown image embed `![](relPath)` immediately under the first
+ * H1 line of `markdown`. If there is no H1, prepend the embed at the top.
+ *
+ * The earlier inline `/^(#\s+.+\n)/m` regex silently no-op'd when the H1
+ * had no trailing newline (e.g. last line of a model response), dropping
+ * the embed. This helper handles `\n` and end-of-string equally.
+ */
+export function injectImageEmbed(markdown: string, relPath: string): string {
+  const embed = `![](${relPath})`;
+  // Match the H1 line and capture its trailing newline (if any).
+  const match = markdown.match(/^(#\s+.+?)(\r?\n|$)/m);
+  if (!match) return `${embed}\n\n${markdown}`;
+  const idx = match.index ?? 0;
+  const before = markdown.slice(0, idx + match[1].length);
+  const after = markdown.slice(idx + match[0].length);
+  return `${before}\n\n${embed}\n${after}`;
+}
+
+/**
  * Lowercase ASCII slug with hyphens. Transliterates common French accents
  * so "Mémoire" → "memoire". Non-ASCII non-accent chars are dropped.
  * Unicode-aware slugifier tracked in TODO.md for later.

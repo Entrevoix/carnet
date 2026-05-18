@@ -41,6 +41,8 @@ import {
   promoteIdea,
   OmniRouteError,
   isPermanentError,
+  assertBase64UnderLimit,
+  MAX_SHARED_IMAGE_BYTES,
 } from "./omniroute";
 import {
   buildIdeaPrompt,
@@ -56,6 +58,53 @@ interface RequestBody {
 
 beforeEach(() => {
   fetchMock.mockReset();
+});
+
+// ── assertBase64UnderLimit ────────────────────────────────────────────────────
+
+describe("assertBase64UnderLimit", () => {
+  it("does not throw for a clearly small payload", () => {
+    expect(() => assertBase64UnderLimit("abcd")).not.toThrow();
+  });
+
+  it("does not throw at exactly the cap", () => {
+    // base64.length × 0.75 must equal MAX_SHARED_IMAGE_BYTES, not exceed it.
+    // length = ceil(MAX / 0.75) such that floor(length * 0.75) === MAX.
+    // 8 * 1024 * 1024 / 0.75 = 11_184_810.67 → length 11_184_811 → 8_388_608.
+    const cappedLen = Math.ceil(MAX_SHARED_IMAGE_BYTES / 0.75);
+    const base64 = "A".repeat(cappedLen);
+    expect(() => assertBase64UnderLimit(base64)).not.toThrow();
+  });
+
+  it("throws OmniRouteError when payload exceeds the cap", () => {
+    // 16 MB worth of base64 chars — decodes to 12 MB, clearly over the 8 MB cap.
+    const base64 = "A".repeat(16 * 1024 * 1024);
+    expect(() => assertBase64UnderLimit(base64)).toThrow(OmniRouteError);
+  });
+
+  it("error carries status 413 and a descriptive MB message", () => {
+    const base64 = "A".repeat(16 * 1024 * 1024);
+    try {
+      assertBase64UnderLimit(base64);
+      throw new Error("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(OmniRouteError);
+      const err = e as OmniRouteError;
+      expect(err.status).toBe(413);
+      expect(err.message).toMatch(/MB/);
+      expect(err.message).toMatch(/caps at/);
+    }
+  });
+
+  it("is classified as a permanent error by isPermanentError", () => {
+    const base64 = "A".repeat(16 * 1024 * 1024);
+    try {
+      assertBase64UnderLimit(base64);
+      throw new Error("should have thrown");
+    } catch (e: unknown) {
+      expect(isPermanentError(e)).toBe(true);
+    }
+  });
 });
 
 // ── enrichIdea ────────────────────────────────────────────────────────────────

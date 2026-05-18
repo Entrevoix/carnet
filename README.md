@@ -7,14 +7,15 @@ Mobile-first knowledge capture for Obsidian, with LLM enrichment via OmniRoute a
 ```
 ANDROID MOBILE (Expo + RN)                  WORKSTATION
 ┌───────────────────────────────┐          ┌──────────────────────────┐
-│ CaptureScreen.tsx             │          │                          │
+│ Capture screens               │          │                          │
 │  ├ Idea (text)                │          │  ~/Obsidian/Carnet/      │
 │  ├ Journal (voice→text)       │  HTTPS   │     Ideas/{slug}.md      │
-│  └ Person (camera→OCR)        │ ───────► │     Journal/YYYY-MM-DD.md│
-│         │                     │          │     People/F-L.md        │
+│  ├ Person (camera→OCR)        │ ───────► │     Journal/YYYY-MM-DD.md│
+│  └ Photo (camera→vision)      │          │     People/F-L.md        │
+│         │                     │          │     Photos/{slug}.jpg    │
 │         ▼                     │          │            ▲             │
 │  lib/omniroute.ts (LLM)       │          │            │             │
-│  lib/prompts.ts (3 modes)     │          │     Syncthing daemon     │
+│  lib/prompts.ts               │          │     Syncthing daemon     │
 │  lib/writer.ts (md to disk)   │          │            ▲             │
 │  lib/queue.ts (offline)       │          │            │             │
 │         │                     │          │            │             │
@@ -29,15 +30,16 @@ ANDROID MOBILE (Expo + RN)                  WORKSTATION
    NO DAEMON. NO CUSTOM RUST. NO HMAC HANDSHAKE.
 ```
 
-Three capture modes:
+Four capture modes:
 
 | Mode | Input | Output |
 |------|-------|--------|
 | `idea`    | text                        | `Ideas/{slug}.md` |
 | `journal` | voice transcript (+ text)   | `Journal/{YYYY-MM-DD}.md` (appends to existing) |
 | `person`  | OCR'd business card + text  | `People/{Firstname-Lastname}.md` |
+| `photo`   | in-app camera (+ voice/text context) | `Photos/{slug}.jpg` + paired `Ideas/{slug}.md` (via OmniRoute vision) |
 
-All three modes go through OmniRoute for LLM enrichment, then write directly to the local capture folder. Offline captures are queued in SQLite and drained on reconnect.
+All four modes go through OmniRoute for LLM enrichment, then write directly to the local capture folder. Offline captures are queued in SQLite and drained on reconnect. Photo capture shares the same vision pipeline used by the Android share-target (Share → carnet on an image).
 
 ## Layout
 

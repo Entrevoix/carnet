@@ -79,6 +79,16 @@ export default function HomeScreen({ navigation }: Props) {
       >
         Contact
       </Button>
+      <Button
+        mode="outlined"
+        icon="camera"
+        onPress={() => navigation.navigate("PhotoCapture")}
+        style={styles.button}
+        contentStyle={styles.buttonContent}
+        labelStyle={styles.buttonLabel}
+      >
+        Photo
+      </Button>
 
       {/* "Continue today's journal" shortcut — skips mode selection */}
       <Button
@@ -130,6 +140,8 @@ function formatMode(mode: CaptureEntry["mode"]): string {
       return "Journal";
     case "person":
       return "Contact";
+    case "photo":
+      return "Photo";
   }
 }
 
@@ -141,6 +153,8 @@ function modeIcon(mode: CaptureEntry["mode"]): string {
       return "microphone";
     case "person":
       return "account";
+    case "photo":
+      return "camera";
   }
 }
 
