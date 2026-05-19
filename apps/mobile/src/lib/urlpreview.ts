@@ -29,7 +29,11 @@
  */
 
 const FETCH_TIMEOUT_MS = 8_000;
-const MAX_BODY_BYTES = 256 * 1024;
+/** Body cap measured in UTF-16 code units (JS `string.length`), NOT
+ * bytes — a multibyte-heavy page can occupy ~2× this in actual bytes,
+ * but the head we care about always sits in the first few thousand
+ * chars regardless of encoding. */
+const MAX_BODY_CHARS = 256 * 1024;
 const FIELD_CHAR_LIMIT = 500;
 const USER_AGENT =
   "Mozilla/5.0 (compatible; carnet/0.2; +https://github.com/Entrevoix/carnet)";
@@ -45,8 +49,15 @@ export interface UrlPreview {
   contentType: string;
 }
 
+/** Maximum valid Unicode code point. `String.fromCodePoint` throws
+ * `RangeError` for anything above this, so numeric entities are
+ * clamp-checked rather than passed through blindly. */
+const MAX_CODE_POINT = 0x10ffff;
+
 /** Decode the most common HTML entities. We don't pull in a full
- * decoder because the fields we extract are short and predictable. */
+ * decoder because the fields we extract are short and predictable.
+ * Out-of-range numeric entities (`&#1114112;` and friends) decode to
+ * the empty string instead of bubbling a `RangeError`. */
 function decodeEntities(s: string): string {
   return s
     .replace(/&amp;/gi, "&")
@@ -58,11 +69,13 @@ function decodeEntities(s: string): string {
     .replace(/&nbsp;/gi, " ")
     .replace(/&#(\d+);/g, (_, code: string) => {
       const n = parseInt(code, 10);
-      return Number.isFinite(n) ? String.fromCodePoint(n) : "";
+      if (!Number.isFinite(n) || n < 0 || n > MAX_CODE_POINT) return "";
+      return String.fromCodePoint(n);
     })
     .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => {
       const n = parseInt(hex, 16);
-      return Number.isFinite(n) ? String.fromCodePoint(n) : "";
+      if (!Number.isFinite(n) || n < 0 || n > MAX_CODE_POINT) return "";
+      return String.fromCodePoint(n);
     });
 }
 
@@ -84,22 +97,32 @@ function firstMatch(html: string, re: RegExp): string {
 
 /** Extract a `<meta>` value where the attribute order may be
  * `property|name="X" content="Y"` OR `content="Y" property|name="X"`.
- * Both shapes are common in the wild. */
+ * Both shapes are common in the wild. Quote characters are captured
+ * and backreferenced so mismatched pairs (`content="foo'`) don't
+ * match — protects against unbalanced markup. */
 function metaContent(html: string, key: string): string {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // attr-first: <meta property="og:title" content="...">
+  // Capture group 1 = key quote, 2 = key, 3 = content quote, 4 = content value.
   const a = new RegExp(
-    `<meta[^>]*(?:property|name)\\s*=\\s*["']${escaped}["'][^>]*content\\s*=\\s*["']([^"']*)["']`,
+    `<meta[^>]*(?:property|name)\\s*=\\s*(["'])${escaped}\\1[^>]*content\\s*=\\s*(["'])([^"']*)\\2`,
     "i",
   );
-  const hitA = firstMatch(html, a);
-  if (hitA) return hitA;
+  const matchA = html.match(a);
+  if (matchA && typeof matchA[3] === "string") {
+    const cleaned = clean(matchA[3]);
+    if (cleaned) return cleaned;
+  }
   // content-first: <meta content="..." property="og:title">
   const b = new RegExp(
-    `<meta[^>]*content\\s*=\\s*["']([^"']*)["'][^>]*(?:property|name)\\s*=\\s*["']${escaped}["']`,
+    `<meta[^>]*content\\s*=\\s*(["'])([^"']*)\\1[^>]*(?:property|name)\\s*=\\s*(["'])${escaped}\\3`,
     "i",
   );
-  return firstMatch(html, b);
+  const matchB = html.match(b);
+  if (matchB && typeof matchB[2] === "string") {
+    return clean(matchB[2]);
+  }
+  return "";
 }
 
 /** Pull the textual content of the first `<p>` tag, stripping nested
@@ -115,6 +138,32 @@ function firstParagraph(html: string): string {
   if (!m || typeof m[1] !== "string") return "";
   const stripped = m[1].replace(/<[^>]+>/g, " ");
   return clean(stripped);
+}
+
+/** SSRF guard: hosts that should NEVER be reached by a URL preview
+ * fetch, even though the device's network position could otherwise
+ * reach them.
+ *
+ *   - loopback (`localhost`, `127.0.0.0/8`, `::1`, `0.0.0.0`) — pointing
+ *     a preview at the user's own device serves no legitimate purpose
+ *     and exposes any locally-bound dev servers.
+ *   - link-local cloud metadata (`169.254.169.254`) — the AWS/GCP/Azure
+ *     instance metadata service. Hardcoded high-value SSRF target.
+ *
+ * General RFC1918 private ranges (`10.*`, `172.16-31.*`, `192.168.*`)
+ * are deliberately NOT blocked: the user may legitimately bookmark
+ * self-hosted services on their LAN. The user's threat model here is
+ * "I am sharing my own URLs", not "an attacker is pivoting through
+ * my shares". A blocked-hosts list lives at the boundary; a wider
+ * deny-list belongs in a future explicit setting. */
+function isBlockedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  if (h === "localhost" || h === "0.0.0.0" || h === "::1" || h === "[::1]") {
+    return true;
+  }
+  if (/^127(?:\.\d{1,3}){3}$/.test(h)) return true;
+  if (h === "169.254.169.254") return true;
+  return false;
 }
 
 /** Internal: do the fetch with a timeout. Throws AbortError on
@@ -155,6 +204,10 @@ export async function fetchUrlPreview(url: string): Promise<UrlPreview | null> {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return null;
   }
+  // SSRF guard — see isBlockedHost JSDoc for the threat model.
+  if (isBlockedHost(parsed.hostname)) {
+    return null;
+  }
 
   let response: Response;
   try {
@@ -177,7 +230,7 @@ export async function fetchUrlPreview(url: string): Promise<UrlPreview | null> {
   }
   // Cap memory: many sites serve multi-MB HTML; the head we care about
   // sits in the first few KB.
-  const html = body.length > MAX_BODY_BYTES ? body.slice(0, MAX_BODY_BYTES) : body;
+  const html = body.length > MAX_BODY_CHARS ? body.slice(0, MAX_BODY_CHARS) : body;
 
   try {
     const ogTitle = metaContent(html, "og:title");

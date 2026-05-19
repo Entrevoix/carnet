@@ -22,7 +22,7 @@ import {
   buildSharedLinkPrompt,
   type PromptPair,
 } from "./prompts";
-import { fetchUrlPreview } from "./urlpreview";
+import { fetchUrlPreview, type UrlPreview } from "./urlpreview";
 import type { IdeaStatus } from "@carnet/shared";
 
 export interface EnrichResult {
@@ -405,17 +405,36 @@ export async function enrichSharedImage(input: {
  * description / site name through the prompt. On any fetch failure
  * the preview is null and the prompt falls back to URL-string-only
  * reasoning — never blocks the enrichment call.
+ *
+ * Optional `onPreviewSettled` callback fires once the preview promise
+ * resolves (with success or null), enabling a UI sub-state transition
+ * from "Fetching link preview…" to "Enriching with OmniRoute…" so the
+ * spinner gives honest progress on slow networks.
  */
 export async function enrichSharedLink(input: {
   url: string;
   text: string;
   context: string;
+  onPreviewSettled?: () => void;
 }): Promise<EnrichResult> {
+  const previewPromise: Promise<UrlPreview | null> = input.url
+    ? fetchUrlPreview(input.url)
+    : Promise.resolve(null);
+  if (input.onPreviewSettled) {
+    // Fire-and-forget — never let a callback throw bubble up here.
+    previewPromise.finally(() => {
+      try {
+        input.onPreviewSettled?.();
+      } catch {
+        // swallow — caller's UI state is best-effort
+      }
+    });
+  }
   const [baseUrl, apiKey, model, preview] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
     getModel(),
-    input.url ? fetchUrlPreview(input.url) : Promise.resolve(null),
+    previewPromise,
   ]);
   return chatCompletion(
     baseUrl,

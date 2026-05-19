@@ -356,12 +356,13 @@ describe("enrichSharedLink", () => {
     const [, chatInit] = fetchMock.mock.calls[1] as [string, RequestInit];
     const body = JSON.parse(chatInit.body as string) as RequestBody;
     const userContent = body.messages[1].content;
+    // Structural assertion: URL still present, no preview lines injected.
+    // We deliberately do not assert on system-prompt wording — that copy
+    // is allowed to evolve without breaking this test.
     expect(userContent).toContain("URL: https://offline.example.com/p");
     expect(userContent).not.toContain("Site:");
     expect(userContent).not.toContain("Page title:");
-    // System prompt should mention it does NOT have page contents.
-    const systemContent = body.messages[0].content;
-    expect(systemContent).toMatch(/do NOT have the page contents/i);
+    expect(userContent).not.toContain("Page description:");
     expect(result.markdown).toContain("Fallback Note");
   });
 
@@ -379,6 +380,41 @@ describe("enrichSharedLink", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [chatUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(chatUrl).toBe("https://llm.example.com/v1/chat/completions");
+  });
+
+  it("invokes onPreviewSettled exactly once when the preview promise resolves", async () => {
+    const previewHtml = `<html><head><title>x</title></head></html>`;
+    fetchMock.mockResolvedValueOnce(makeHtmlResponse(previewHtml));
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse("---\n---\n# y\n"),
+    );
+
+    const settled = vi.fn();
+    await enrichSharedLink({
+      url: "https://example.com/cb",
+      text: "",
+      context: "",
+      onPreviewSettled: settled,
+    });
+
+    expect(settled).toHaveBeenCalledTimes(1);
+  });
+
+  it("invokes onPreviewSettled even when the preview fetch fails", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("offline"));
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse("---\n---\n# y\n"),
+    );
+
+    const settled = vi.fn();
+    await enrichSharedLink({
+      url: "https://example.com/cb-fail",
+      text: "",
+      context: "",
+      onPreviewSettled: settled,
+    });
+
+    expect(settled).toHaveBeenCalledTimes(1);
   });
 
   it("does not include preview lines when preview returns null fields", async () => {

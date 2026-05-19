@@ -173,4 +173,58 @@ describe("fetchUrlPreview", () => {
 
     expect(result!.title.length).toBeLessThanOrEqual(500);
   });
+
+  it("does not throw on numeric entities above U+10FFFF", async () => {
+    // &#1114112; is exactly one beyond the max code point —
+    // String.fromCodePoint would throw RangeError without the guard.
+    const html = `<html><head><title>safe &#1114112; title</title></head></html>`;
+    fetchMock.mockResolvedValueOnce(htmlResponse(html));
+
+    const result = await fetchUrlPreview("https://example.com/oob");
+
+    expect(result).not.toBeNull();
+    // The entity decodes to "" and clean() collapses the surrounding
+    // whitespace to a single space.
+    expect(result!.title).toBe("safe title");
+  });
+
+  it("rejects meta tags with mismatched quote pairs", async () => {
+    // Opening `"` paired with closing `'` — unbalanced markup.
+    const html = `<html><head>
+      <meta property="og:title" content="mismatch'>
+      <title>Fallback OK</title>
+    </head></html>`;
+    fetchMock.mockResolvedValueOnce(htmlResponse(html));
+
+    const result = await fetchUrlPreview("https://example.com/quotes");
+
+    // og:title is unbalanced, so the parser falls through to <title>.
+    expect(result!.title).toBe("Fallback OK");
+  });
+
+  it("blocks loopback hosts without fetching (SSRF guard)", async () => {
+    expect(await fetchUrlPreview("http://localhost:8081/")).toBeNull();
+    expect(await fetchUrlPreview("http://127.0.0.1/admin")).toBeNull();
+    expect(await fetchUrlPreview("http://127.0.0.5/")).toBeNull();
+    expect(await fetchUrlPreview("http://0.0.0.0/")).toBeNull();
+    expect(await fetchUrlPreview("http://[::1]/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks cloud metadata service without fetching (SSRF guard)", async () => {
+    expect(
+      await fetchUrlPreview("http://169.254.169.254/latest/meta-data/"),
+    ).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allows general private RFC1918 ranges (self-hosted is legitimate)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      htmlResponse("<html><head><title>Internal Wiki</title></head></html>"),
+    );
+    const result = await fetchUrlPreview("http://192.168.1.10/wiki");
+    expect(result).not.toBeNull();
+    expect(result!.title).toBe("Internal Wiki");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
