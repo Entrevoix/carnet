@@ -87,6 +87,12 @@ export default function ShareReceiveScreen({ navigation }: Props) {
   const [phase, setPhase] = useState<Phase>("input");
   const [error, setError] = useState<string | null>(null);
   const [savedFilepath, setSavedFilepath] = useState<string | null>(null);
+  /** Honest sub-state shown under the "saving" spinner. Starts at
+   * "Fetching link preview…" for URL shares, flips to the enrichment
+   * message once the preview promise settles. */
+  const [savingDetail, setSavingDetail] = useState<string>(
+    "OmniRoute is enriching + saving…",
+  );
   /** Surfaced as a banner on the saved screen when AI enrichment failed and
    * we fell back to a stub note. Carries the sanitized error message so the
    * user can see auth / model issues they can act on. */
@@ -117,6 +123,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
     savingRef.current = true;
     setError(null);
     setDegradedReason(null);
+    setSavingDetail("OmniRoute is enriching + saving…");
     setPhase("saving");
     try {
       const slugFallback = timestampSlug();
@@ -195,7 +202,19 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         // URL/text share: text-only enrichment.
         let enrichedMd: string;
         try {
-          const result = await enrichSharedLink({ url, text, context: ctx });
+          // Honest spinner copy: previews can take up to 8s on slow
+          // networks. Once the preview settles, flip the message so
+          // the user knows the slower model call is now in flight.
+          if (url) {
+            setSavingDetail("Fetching link preview…");
+          }
+          const result = await enrichSharedLink({
+            url,
+            text,
+            context: ctx,
+            onPreviewSettled: () =>
+              setSavingDetail("OmniRoute is enriching + saving…"),
+          });
           enrichedMd = result.markdown;
         } catch (e: unknown) {
           const reason = e instanceof Error ? e.message : String(e);
@@ -372,7 +391,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         <View style={styles.loading}>
           <ActivityIndicator />
           <Text variant="bodyMedium" style={styles.dim}>
-            OmniRoute is enriching + saving…
+            {savingDetail}
           </Text>
         </View>
       ) : phase === "saved" ? (
