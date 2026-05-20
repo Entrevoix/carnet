@@ -241,6 +241,59 @@ async function writeByUri(uri: string, content: string): Promise<void> {
   });
 }
 
+/** Read a binary file (image, audio, generic file) as base64 from either
+ * storage backend. Used by the archive flow when relocating a paired binary. */
+async function readBinaryByUri(uri: string, isSaf: boolean): Promise<string> {
+  if (isSaf) {
+    return StorageAccessFramework.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  }
+  return FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+}
+
+/** Write a base64-encoded binary into `parentUri/filename`. Mime is generic
+ * — Android attaches it but the file extension is what consumers actually
+ * use. SAF requires createFileAsync first; file:// can write directly. */
+async function writeBinaryBytes(
+  parentUri: string,
+  filename: string,
+  base64: string,
+  isSaf: boolean,
+): Promise<string> {
+  if (isSaf) {
+    const fileUri = await StorageAccessFramework.createFileAsync(
+      parentUri,
+      filename,
+      "application/octet-stream",
+    );
+    await StorageAccessFramework.writeAsStringAsync(fileUri, base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    return fileUri;
+  }
+  const fileUri = `${parentUri.replace(/\/$/, "")}/${filename}`;
+  await FileSystem.writeAsStringAsync(fileUri, base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  return fileUri;
+}
+
+/** Delete a file by URI. The file:// branch passes `idempotent: true` so a
+ * retry after a partial archive doesn't crash. SAF deleteAsync is NOT
+ * idempotent — it throws when the user revoked the tree permission AND
+ * when the file is already gone. Callers should wrap in try/catch and
+ * accept a stranded source (the archive copy still exists). */
+async function deleteByUri(uri: string, isSaf: boolean): Promise<void> {
+  if (isSaf) {
+    await StorageAccessFramework.deleteAsync(uri);
+    return;
+  }
+  await FileSystem.deleteAsync(uri, { idempotent: true });
+}
+
 /**
  * Inject a markdown image embed `![](relPath)` immediately under the first
  * H1 line of `markdown`. If there is no H1, prepend the embed at the top.
@@ -369,8 +422,9 @@ function extractFrontmatterField(markdown: string, field: string): string | null
   return null;
 }
 
-/** Strip frontmatter block, returning only the body. */
-function stripFrontmatter(markdown: string): string {
+/** Strip frontmatter block, returning only the body. Exported so screens
+ * that preview a saved note can render the body without the YAML noise. */
+export function stripFrontmatter(markdown: string): string {
   const s = markdown.trimStart();
   if (!s.startsWith("---")) return markdown;
   const afterFirst = s.slice(3);
@@ -592,4 +646,107 @@ export async function readNote(filepath: string): Promise<string> {
 /** Overwrite a note file with new content. Supports both file:// and content:// URIs. */
 export async function updateNote(filepath: string, markdown: string): Promise<void> {
   await writeByUri(filepath, markdown);
+}
+
+/**
+ * Soft-delete a note. Copies the .md (and any paired binary referenced by a
+ * relative `../{Photos|Audio|Files}/{name}.{ext}` link in the body) into the
+ * vault's `Archive/` subdir with collision-bumped names, then removes the
+ * originals. Used by RecentDetail's Delete button so a misfire can be
+ * recovered by browsing the vault in Obsidian.
+ *
+ * Returns the new .md path and, when a paired binary was found and moved,
+ * its new path. `archivedBinaryPath` is null when the body has no recognized
+ * relative link or the link's target didn't exist on disk (broken link from
+ * a prior external edit — archive the .md, accept the orphan).
+ *
+ * Single-binary by design: only the FIRST `../{Photos|Audio|Files}/{name}`
+ * link in the body is followed. Today's writers (photo capture, share-image,
+ * share-audio, share-file) emit exactly one such link per note. If a future
+ * code path emits multiple paired binaries, switch this to `matchAll` and
+ * fan out the archive/delete operations.
+ *
+ * Delete failures (SAF revoked the tree permission, file already gone) are
+ * swallowed — the archive copy succeeded and is the source of truth for
+ * recovery; the stranded original is acceptable.
+ */
+export async function moveToArchive(
+  filepath: string,
+): Promise<{ archivedMdPath: string; archivedBinaryPath: string | null }> {
+  const root = await resolveRoot();
+  const archiveUri = await findOrCreateSubdir(root, "Archive");
+
+  const content = await readByUri(filepath);
+
+  // Detect paired binary via the relative-link convention used by the
+  // image / audio / file share branches and the photo capture mode.
+  // The captured filename rejects `/` so a markdown body containing a
+  // crafted `[link](../Photos/../../sensitive)` link can't traverse out of
+  // the recognized subdir. All writers today emit slugified ASCII
+  // filenames, so this is defense-in-depth, not a fix to a live bug.
+  const linkMatch = content.match(/\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/);
+  let pairedBinaryUri: string | null = null;
+  let pairedFilename: string | null = null;
+  if (linkMatch) {
+    const pairedSubdir = linkMatch[1];
+    pairedFilename = linkMatch[2];
+    const subdirUri = await findOrCreateSubdir(root, pairedSubdir);
+    pairedBinaryUri = await findFileInDir(subdirUri, pairedFilename, root.isSaf);
+  }
+
+  // Build collision-free archive name for the .md.
+  const mdName = filepath.split("/").pop() ?? "note.md";
+  const mdDot = mdName.lastIndexOf(".");
+  const mdStem = mdDot >= 0 ? mdName.slice(0, mdDot) : mdName;
+  const mdExt = mdDot >= 0 ? mdName.slice(mdDot) : ".md";
+  const mdArchiveName = await findCollisionFreeName(
+    archiveUri,
+    mdStem,
+    mdExt,
+    root.isSaf,
+  );
+  const archivedMdPath = await writeNewFile(
+    archiveUri,
+    mdArchiveName,
+    content,
+    root.isSaf,
+  );
+
+  // Archive the paired binary if present and resolvable.
+  let archivedBinaryPath: string | null = null;
+  if (pairedBinaryUri && pairedFilename) {
+    const binDot = pairedFilename.lastIndexOf(".");
+    const binStem =
+      binDot >= 0 ? pairedFilename.slice(0, binDot) : pairedFilename;
+    const binExt = binDot >= 0 ? pairedFilename.slice(binDot) : "";
+    const binArchiveName = await findCollisionFreeName(
+      archiveUri,
+      binStem,
+      binExt,
+      root.isSaf,
+    );
+    const binBase64 = await readBinaryByUri(pairedBinaryUri, root.isSaf);
+    archivedBinaryPath = await writeBinaryBytes(
+      archiveUri,
+      binArchiveName,
+      binBase64,
+      root.isSaf,
+    );
+  }
+
+  // Best-effort delete of the originals — see jsdoc.
+  try {
+    await deleteByUri(filepath, root.isSaf);
+  } catch {
+    /* leave the original; archive copy is canonical */
+  }
+  if (pairedBinaryUri) {
+    try {
+      await deleteByUri(pairedBinaryUri, root.isSaf);
+    } catch {
+      /* leave the original binary */
+    }
+  }
+
+  return { archivedMdPath, archivedBinaryPath };
 }

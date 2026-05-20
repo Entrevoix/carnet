@@ -16,7 +16,8 @@ import CaptureScreen from "./src/screens/CaptureScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import ShareReceiveScreen from "./src/screens/ShareReceiveScreen";
 import PhotoCaptureScreen from "./src/screens/PhotoCaptureScreen";
-import type { CaptureMode } from "./src/lib/storage";
+import RecentDetailScreen from "./src/screens/RecentDetailScreen";
+import type { CaptureEntry, CaptureMode } from "./src/lib/storage";
 
 export type RootStackParamList = {
   Home: undefined;
@@ -24,6 +25,7 @@ export type RootStackParamList = {
   Settings: undefined;
   ShareReceive: undefined;
   PhotoCapture: undefined;
+  RecentDetail: { entry: CaptureEntry };
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -122,6 +124,11 @@ export default function App() {
               name="PhotoCapture"
               component={PhotoCaptureScreen}
               options={{ title: "Photo" }}
+            />
+            <Stack.Screen
+              name="RecentDetail"
+              component={RecentDetailScreen}
+              options={({ route }) => ({ title: route.params.entry.title })}
             />
           </Stack.Navigator>
           <ShareIntentRouter navigation={navRef} />

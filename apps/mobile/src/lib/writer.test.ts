@@ -52,6 +52,9 @@ vi.mock("expo-file-system/legacy", () => {
     writeAsStringAsync: vi.fn(async (uri: string, content: string) => {
       _files.set(uri, { content });
     }),
+    deleteAsync: vi.fn(async (uri: string) => {
+      _files.delete(uri);
+    }),
     // StorageAccessFramework is only touched on the SAF branch. We never
     // exercise that branch in these tests (the default capture folder is
     // empty → file:// branch), but stub it out so the property access in
@@ -73,6 +76,7 @@ import {
   writePerson,
   readNote,
   updateNote,
+  moveToArchive,
   slugify,
   rewriteFrontmatterField,
   personFilename,
@@ -80,6 +84,7 @@ import {
   extFromMime,
   safLastSegment,
   injectImageEmbed,
+  stripFrontmatter,
 } from "./writer";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -466,5 +471,88 @@ describe("readNote / updateNote", () => {
     await updateNote(filepath, "# Updated\n");
     const updated = await readNote(filepath);
     expect(updated).toBe("# Updated\n");
+  });
+});
+
+// ── stripFrontmatter (exported helper used by RecentDetail render path) ──────
+
+describe("stripFrontmatter", () => {
+  it("removes a YAML frontmatter block at the head of the document", () => {
+    const md = "---\nkind: idea\ntags: [a, b]\n---\n# Title\n\nbody\n";
+    expect(stripFrontmatter(md)).toBe("# Title\n\nbody\n");
+  });
+
+  it("returns input unchanged when there is no frontmatter", () => {
+    expect(stripFrontmatter("# Title\n\nbody\n")).toBe("# Title\n\nbody\n");
+  });
+
+  it("returns input unchanged on an unterminated frontmatter block", () => {
+    const md = "---\nkind: idea\n\nno closing fence\n";
+    expect(stripFrontmatter(md)).toBe(md);
+  });
+});
+
+// ── moveToArchive (soft-delete) ──────────────────────────────────────────────
+
+describe("moveToArchive", () => {
+  beforeEach(clearFiles);
+
+  it("archives a standalone idea note and removes the source", async () => {
+    const { filepath } = await writeIdea("standalone", "# Standalone\n\nbody\n");
+    expect(_files.has(filepath)).toBe(true);
+
+    const { archivedMdPath, archivedBinaryPath } = await moveToArchive(filepath);
+    expect(archivedMdPath).toMatch(/\/Archive\/standalone\.md$/);
+    expect(archivedBinaryPath).toBeNull();
+    // Source removed
+    expect(_files.has(filepath)).toBe(false);
+    // Archive copy contains the content
+    expect(_files.get(archivedMdPath)!.content).toBe("# Standalone\n\nbody\n");
+  });
+
+  it("archives a note + its paired Audio binary (referenced via ../Audio/)", async () => {
+    // Pre-populate the binary
+    const { filepath: binPath } = await writeBinary(
+      "Audio",
+      "meeting.mp3",
+      "QkFTRTY0",
+      "audio/mpeg",
+    );
+    const md =
+      "---\nkind: shared-audio\n---\n# Shared audio: meeting.mp3\n\n## File\n[meeting.mp3](../Audio/meeting.mp3)\n";
+    const { filepath: mdPath } = await writeIdea("shared-audio-1", md);
+
+    const result = await moveToArchive(mdPath);
+    expect(result.archivedMdPath).toMatch(/\/Archive\/shared-audio-1\.md$/);
+    expect(result.archivedBinaryPath).toMatch(/\/Archive\/meeting\.mp3$/);
+
+    // Originals removed
+    expect(_files.has(mdPath)).toBe(false);
+    expect(_files.has(binPath)).toBe(false);
+    // Archive binary copy preserved bytes
+    expect(_files.get(result.archivedBinaryPath!)!.content).toBe("QkFTRTY0");
+  });
+
+  it("archives just the .md when the paired binary link is broken", async () => {
+    // Note body references a binary that was never written
+    const md =
+      "---\nkind: shared-audio\n---\n# Lost\n\n## File\n[ghost.mp3](../Audio/ghost.mp3)\n";
+    const { filepath: mdPath } = await writeIdea("orphan", md);
+
+    const result = await moveToArchive(mdPath);
+    expect(result.archivedMdPath).toMatch(/\/Archive\/orphan\.md$/);
+    expect(result.archivedBinaryPath).toBeNull();
+    expect(_files.has(mdPath)).toBe(false);
+  });
+
+  it("collision-bumps the archive name when an entry with the same stem already exists there", async () => {
+    const m1 = await writeIdea("dup", "# v1\n");
+    await moveToArchive(m1.filepath);
+
+    const m2 = await writeIdea("dup", "# v2\n");
+    const result = await moveToArchive(m2.filepath);
+    expect(result.archivedMdPath).toMatch(/\/Archive\/dup-2\.md$/);
+    // First archive copy still intact
+    expect(_files.get(result.archivedMdPath.replace("dup-2", "dup"))!.content).toBe("# v1\n");
   });
 });

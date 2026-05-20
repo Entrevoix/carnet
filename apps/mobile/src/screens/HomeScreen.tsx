@@ -121,6 +121,9 @@ export default function HomeScreen({ navigation }: Props) {
                   left={(p) => (
                     <List.Icon {...p} icon={modeIcon(item.mode)} />
                   )}
+                  onPress={() =>
+                    navigation.navigate("RecentDetail", { entry: item })
+                  }
                   style={styles.listItem}
                 />
               ))}
