@@ -26,7 +26,6 @@ import {
 } from "react-native-paper";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useShareIntentContext } from "expo-share-intent";
-import * as FileSystem from "expo-file-system/legacy";
 
 import type { RootStackParamList } from "../../App";
 import { VoiceButton } from "../voice/VoiceButton";
@@ -45,9 +44,14 @@ import {
   enrichSharedLink,
   MAX_SHARED_IMAGE_BYTES,
 } from "../lib/omniroute";
+import {
+  BASE64_EXPANSION,
+  MAX_SAFE_SHARE_BYTES,
+  readShareFileAsBase64,
+  sanitizeShareString,
+  yamlQuote,
+} from "../lib/shareHelpers";
 import { deriveTitle } from "@carnet/shared";
-
-const { StorageAccessFramework } = FileSystem;
 
 type Props = NativeStackScreenProps<RootStackParamList, "ShareReceive">;
 
@@ -133,6 +137,13 @@ export default function ShareReceiveScreen({ navigation }: Props) {
       const ctx = combinedContext;
 
       const imageFile = files.find((f) => f.mimeType?.startsWith("image/"));
+      const audioFile = files.find((f) => f.mimeType?.startsWith("audio/"));
+      // Generic-file: anything carrying bytes that isn't image or audio.
+      // Falsy mimeType also lands here so shares that arrive without a
+      // declared type still get persisted (ext falls back to "bin").
+      const otherFile = files.find(
+        (f) => !f.mimeType?.startsWith("image/") && !f.mimeType?.startsWith("audio/"),
+      );
 
       let filepath: string;
       let title: string;
@@ -150,18 +161,9 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         const mime = imageFile.mimeType ?? "image/jpeg";
 
         // Some share sources hand carnet a `content://` URI (Photos via
-        // FileProvider, etc.) — read accordingly. file:// goes through the
-        // legacy FileSystem API; content:// goes through SAF.
-        let base64: string;
-        if (imageFile.path.startsWith("content://")) {
-          base64 = await StorageAccessFramework.readAsStringAsync(imageFile.path, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-        } else {
-          base64 = await FileSystem.readAsStringAsync(imageFile.path, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-        }
+        // FileProvider, etc.) — readShareFileAsBase64 picks SAF vs the
+        // legacy FileSystem API based on the scheme.
+        const base64 = await readShareFileAsBase64(imageFile.path);
         // Belt-and-suspenders: some content:// providers don't populate
         // `imageFile.size`, so the early check above is skipped. Recheck
         // against the actual decoded byte count before sending to the
@@ -198,6 +200,113 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         const { filepath: mdPath } = await writeIdea(sharedStem, withImage);
         filepath = mdPath;
         setSaveSource({ kind: "image", base64, mime, imageName: finalName });
+      } else if (audioFile) {
+        // Audio share: persist the binary + a deterministic stub note. No LLM
+        // enrichment — keeps latency low and avoids sending audio bytes to a
+        // vision-only model. Transcription is the planned v0.3 follow-up.
+        //
+        // mime + fileName come from a third-party app via the share intent.
+        // sanitize once at the top so every downstream interpolation (H1,
+        // link text, YAML frontmatter, recordCapture title) sees safe values.
+        const mime = sanitizeShareString(audioFile.mimeType ?? "application/octet-stream");
+        const fileName = sanitizeShareString(audioFile.fileName ?? `audio-${slugFallback}`);
+
+        // Pre-check known size. base64 read + writeBinary serialization can
+        // peak above 3× file size in JS heap, enough to OOM-kill the process
+        // on a 4GB phone with no error surfaced. Hard-throw above the cap
+        // with a user-actionable message.
+        if (typeof audioFile.size === "number" && audioFile.size > MAX_SAFE_SHARE_BYTES) {
+          const mb = Math.round(audioFile.size / 1024 / 1024);
+          const capMb = MAX_SAFE_SHARE_BYTES / 1024 / 1024;
+          throw new Error(
+            `File is ${mb} MB — carnet caps shares at ${capMb} MB to avoid running out of memory. Save the file locally and link to it instead.`,
+          );
+        }
+
+        const base64 = await readShareFileAsBase64(audioFile.path);
+        // Belt-and-suspenders: some content:// providers don't populate
+        // audioFile.size, so the early check above is skipped. Recheck
+        // against the decoded byte count expressed via base64 inflation.
+        if (base64.length > MAX_SAFE_SHARE_BYTES * BASE64_EXPANSION) {
+          const capMb = MAX_SAFE_SHARE_BYTES / 1024 / 1024;
+          throw new Error(
+            `File exceeds the ${capMb} MB share cap (size only known after reading). Save locally and link instead.`,
+          );
+        }
+
+        const ext = extFromMime(mime);
+        const baseName = fileName.replace(/\.[^.]+$/, "");
+        const desiredSlug = slugify(baseName) || `shared-audio-${slugFallback}`;
+        const { finalName } = await writeBinary("Audio", `${desiredSlug}.${ext}`, base64, mime);
+        const sharedStem = finalName.replace(/\.[^.]+$/, "");
+
+        title = `Shared audio: ${fileName}`;
+        // size=0 is a real value (empty file), not unknown — strict typeof
+        // check distinguishes it from undefined.
+        const sizeStr =
+          typeof audioFile.size === "number" ? String(audioFile.size) : "unknown";
+        const mdNote =
+          `---\n` +
+          `created: ${new Date().toISOString()}\n` +
+          `kind: shared-audio\n` +
+          `source: ${yamlQuote(fileName)}\n` +
+          `mime: ${yamlQuote(mime)}\n` +
+          `size: ${sizeStr}\n` +
+          `tags: [shared, audio]\n` +
+          `---\n` +
+          `# Shared audio: ${fileName}\n\n` +
+          `## File\n[${fileName}](../Audio/${finalName})\n\n` +
+          `## Context\n${ctx || "(none provided)"}\n`;
+
+        const { filepath: mdPath } = await writeIdea(sharedStem, mdNote);
+        filepath = mdPath;
+      } else if (otherFile) {
+        // Generic-file share: PDFs, docs, archives, anything that isn't an
+        // image or audio file. Same shape as the audio branch — see comments
+        // there for the sanitization, size-cap, and YAML-quoting rationale.
+        const mime = sanitizeShareString(otherFile.mimeType ?? "application/octet-stream");
+        const fileName = sanitizeShareString(otherFile.fileName ?? `file-${slugFallback}`);
+
+        if (typeof otherFile.size === "number" && otherFile.size > MAX_SAFE_SHARE_BYTES) {
+          const mb = Math.round(otherFile.size / 1024 / 1024);
+          const capMb = MAX_SAFE_SHARE_BYTES / 1024 / 1024;
+          throw new Error(
+            `File is ${mb} MB — carnet caps shares at ${capMb} MB to avoid running out of memory. Save the file locally and link to it instead.`,
+          );
+        }
+
+        const base64 = await readShareFileAsBase64(otherFile.path);
+        if (base64.length > MAX_SAFE_SHARE_BYTES * BASE64_EXPANSION) {
+          const capMb = MAX_SAFE_SHARE_BYTES / 1024 / 1024;
+          throw new Error(
+            `File exceeds the ${capMb} MB share cap (size only known after reading). Save locally and link instead.`,
+          );
+        }
+
+        const ext = extFromMime(mime);
+        const baseName = fileName.replace(/\.[^.]+$/, "");
+        const desiredSlug = slugify(baseName) || `shared-file-${slugFallback}`;
+        const { finalName } = await writeBinary("Files", `${desiredSlug}.${ext}`, base64, mime);
+        const sharedStem = finalName.replace(/\.[^.]+$/, "");
+
+        title = `Shared file: ${fileName}`;
+        const sizeStr =
+          typeof otherFile.size === "number" ? String(otherFile.size) : "unknown";
+        const mdNote =
+          `---\n` +
+          `created: ${new Date().toISOString()}\n` +
+          `kind: shared-file\n` +
+          `source: ${yamlQuote(fileName)}\n` +
+          `mime: ${yamlQuote(mime)}\n` +
+          `size: ${sizeStr}\n` +
+          `tags: [shared, file]\n` +
+          `---\n` +
+          `# Shared file: ${fileName}\n\n` +
+          `## File\n[${fileName}](../Files/${finalName})\n\n` +
+          `## Context\n${ctx || "(none provided)"}\n`;
+
+        const { filepath: mdPath } = await writeIdea(sharedStem, mdNote);
+        filepath = mdPath;
       } else if (url || text) {
         // URL/text share: text-only enrichment.
         let enrichedMd: string;
