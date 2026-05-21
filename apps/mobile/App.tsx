@@ -1,6 +1,6 @@
 import "react-native-gesture-handler";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { ActivityIndicator, useColorScheme, View } from "react-native";
 import {
   NavigationContainer,
   useNavigationContainerRef,
@@ -18,6 +18,7 @@ import ShareReceiveScreen from "./src/screens/ShareReceiveScreen";
 import PhotoCaptureScreen from "./src/screens/PhotoCaptureScreen";
 import RecentDetailScreen from "./src/screens/RecentDetailScreen";
 import type { CaptureEntry, CaptureMode } from "./src/lib/storage";
+import { inkAndMistDark, inkAndMistLight } from "./src/lib/theme";
 
 export type RootStackParamList = {
   Home: undefined;
@@ -67,6 +68,10 @@ function ShareIntentRouter({
 export default function App() {
   const [ready, setReady] = useState(false);
   const navRef = useNavigationContainerRef<RootStackParamList>();
+  // Mirror the OS light/dark setting. userInterfaceStyle="automatic" in
+  // app.json lets the system flip; this hook reflects the live preference.
+  const colorScheme = useColorScheme();
+  const paperTheme = colorScheme === "dark" ? inkAndMistDark : inkAndMistLight;
 
   useEffect(() => {
     // Allow async storage to initialise before rendering navigation.
@@ -80,16 +85,17 @@ export default function App() {
           flex: 1,
           alignItems: "center",
           justifyContent: "center",
+          backgroundColor: paperTheme.colors.background,
         }}
       >
-        <ActivityIndicator />
+        <ActivityIndicator color={paperTheme.colors.primary} />
       </View>
     );
   }
 
   return (
     <ShareIntentProvider>
-      <PaperProvider>
+      <PaperProvider theme={paperTheme}>
         <NavigationContainer ref={navRef}>
           <StatusBar style="auto" />
           <Stack.Navigator initialRouteName="Home">
