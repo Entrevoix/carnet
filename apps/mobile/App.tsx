@@ -2,9 +2,12 @@ import "react-native-gesture-handler";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
 import {
+  DarkTheme as NavDarkTheme,
+  DefaultTheme as NavLightTheme,
   NavigationContainer,
   useNavigationContainerRef,
   type NavigationContainerRefWithCurrent,
+  type Theme as NavTheme,
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { PaperProvider } from "react-native-paper";
@@ -72,6 +75,21 @@ export default function App() {
   // app.json lets the system flip; this hook reflects the live preference.
   const colorScheme = useColorScheme();
   const paperTheme = colorScheme === "dark" ? inkAndMistDark : inkAndMistLight;
+  // Derive a React Navigation theme so the native-stack header bar matches
+  // the Paper-themed screen body. Without this, the header would render
+  // with RN Navigation's default light theme on top of our ink-dark surface.
+  const navTheme: NavTheme = {
+    ...(colorScheme === "dark" ? NavDarkTheme : NavLightTheme),
+    colors: {
+      ...(colorScheme === "dark" ? NavDarkTheme : NavLightTheme).colors,
+      primary: paperTheme.colors.primary,
+      background: paperTheme.colors.background,
+      card: paperTheme.colors.surface,
+      text: paperTheme.colors.onSurface,
+      border: paperTheme.colors.outline,
+      notification: paperTheme.colors.error,
+    },
+  };
 
   useEffect(() => {
     // Allow async storage to initialise before rendering navigation.
@@ -96,7 +114,7 @@ export default function App() {
   return (
     <ShareIntentProvider>
       <PaperProvider theme={paperTheme}>
-        <NavigationContainer ref={navRef}>
+        <NavigationContainer ref={navRef} theme={navTheme}>
           <StatusBar style="auto" />
           <Stack.Navigator initialRouteName="Home">
             <Stack.Screen
