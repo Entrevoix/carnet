@@ -380,6 +380,16 @@ describe("extFromMime", () => {
     expect(extFromMime("application/zip")).toBe("zip");
   });
 
+  it("uses the slash-suffix for audio mimes not in the explicit map", () => {
+    // Recording apps, browsers, and Android sources hand carnet a wide
+    // range of audio mimes — lock in that the suffix fallback covers the
+    // common ones cleanly (so the saved file lands as `.aac`, not `.bin`).
+    expect(extFromMime("audio/aac")).toBe("aac");
+    expect(extFromMime("audio/ogg")).toBe("ogg");
+    expect(extFromMime("audio/flac")).toBe("flac");
+    expect(extFromMime("audio/webm")).toBe("webm");
+  });
+
   it("returns bin for empty / null / no slash", () => {
     expect(extFromMime(undefined)).toBe("bin");
     expect(extFromMime("")).toBe("bin");
