@@ -85,6 +85,9 @@ import {
   safLastSegment,
   injectImageEmbed,
   stripFrontmatter,
+  extractFrontmatterField,
+  mimeFromFilename,
+  readPairedBinaryFromNote,
 } from "./writer";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -564,5 +567,104 @@ describe("moveToArchive", () => {
     expect(result.archivedMdPath).toMatch(/\/Archive\/dup-2\.md$/);
     // First archive copy still intact
     expect(_files.get(result.archivedMdPath.replace("dup-2", "dup"))!.content).toBe("# v1\n");
+  });
+});
+
+// ── extractFrontmatterField (exported for the retro-enrich routing key) ──────
+
+describe("extractFrontmatterField", () => {
+  it("reads a simple ASCII value", () => {
+    const md = "---\nkind: shared-image\n---\n# T\n";
+    expect(extractFrontmatterField(md, "kind")).toBe("shared-image");
+  });
+
+  it("returns null when the field is absent", () => {
+    const md = "---\nkind: photo\n---\n# T\n";
+    expect(extractFrontmatterField(md, "source")).toBeNull();
+  });
+
+  it("returns null when there is no frontmatter", () => {
+    expect(extractFrontmatterField("# T\n\nbody\n", "kind")).toBeNull();
+  });
+
+  it("strips surrounding single and double quotes", () => {
+    const md1 = "---\nkind: 'shared-link'\n---\n# T\n";
+    expect(extractFrontmatterField(md1, "kind")).toBe("shared-link");
+    const md2 = '---\nkind: "shared-text"\n---\n# T\n';
+    expect(extractFrontmatterField(md2, "kind")).toBe("shared-text");
+  });
+});
+
+// ── mimeFromFilename ─────────────────────────────────────────────────────────
+
+describe("mimeFromFilename", () => {
+  it("maps common image extensions", () => {
+    expect(mimeFromFilename("a.jpg")).toBe("image/jpeg");
+    expect(mimeFromFilename("a.jpeg")).toBe("image/jpeg");
+    expect(mimeFromFilename("a.png")).toBe("image/png");
+    expect(mimeFromFilename("a.webp")).toBe("image/webp");
+    expect(mimeFromFilename("a.gif")).toBe("image/gif");
+    expect(mimeFromFilename("a.heic")).toBe("image/heic");
+    expect(mimeFromFilename("a.heif")).toBe("image/heif");
+  });
+
+  it("maps audio extensions", () => {
+    expect(mimeFromFilename("a.mp3")).toBe("audio/mpeg");
+    expect(mimeFromFilename("a.wav")).toBe("audio/wav");
+    expect(mimeFromFilename("a.m4a")).toBe("audio/mp4");
+  });
+
+  it("maps pdf", () => {
+    expect(mimeFromFilename("a.pdf")).toBe("application/pdf");
+  });
+
+  it("falls back to octet-stream for an unknown extension", () => {
+    expect(mimeFromFilename("a.xyz")).toBe("application/octet-stream");
+  });
+
+  it("falls back to octet-stream for a name with no extension", () => {
+    expect(mimeFromFilename("noext")).toBe("application/octet-stream");
+  });
+
+  it("is case-insensitive on the extension", () => {
+    expect(mimeFromFilename("IMG.JPG")).toBe("image/jpeg");
+    expect(mimeFromFilename("song.MP3")).toBe("audio/mpeg");
+  });
+});
+
+// ── readPairedBinaryFromNote (retro-enrich helper) ───────────────────────────
+
+describe("readPairedBinaryFromNote", () => {
+  beforeEach(clearFiles);
+
+  it("finds and returns the paired image bytes for a photo note", async () => {
+    await writeBinary("Photos", "shot.jpg", "QkFTRTY0", "image/jpeg");
+    const md = "---\nkind: photo\n---\n# T\n\n![](../Photos/shot.jpg)\n";
+    const result = await readPairedBinaryFromNote(md);
+    expect(result.base64).toBe("QkFTRTY0");
+    expect(result.mime).toBe("image/jpeg");
+  });
+
+  it("works for shared-image notes the same way (subdir is Photos)", async () => {
+    await writeBinary("Photos", "shared.png", "UE5HQllURVM=", "image/png");
+    const md =
+      "---\nkind: shared-image\n---\n# Shared\n\n![](../Photos/shared.png)\n";
+    const result = await readPairedBinaryFromNote(md);
+    expect(result.base64).toBe("UE5HQllURVM=");
+    expect(result.mime).toBe("image/png");
+  });
+
+  it("throws when the body contains no recognized paired-binary link", async () => {
+    const md = "---\nkind: idea\n---\n# Title\n\nplain body text\n";
+    await expect(readPairedBinaryFromNote(md)).rejects.toThrow(
+      "No paired binary link found",
+    );
+  });
+
+  it("throws when the link target doesn't exist on disk", async () => {
+    const md = "---\nkind: photo\n---\n# T\n\n![](../Photos/ghost.jpg)\n";
+    await expect(readPairedBinaryFromNote(md)).rejects.toThrow(
+      "Paired binary not found",
+    );
   });
 });

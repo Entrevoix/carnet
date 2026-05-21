@@ -403,8 +403,9 @@ function extractH1(markdown: string): string | null {
   return null;
 }
 
-/** Extract a YAML frontmatter field value. */
-function extractFrontmatterField(markdown: string, field: string): string | null {
+/** Extract a YAML frontmatter field value. Exported so screens (e.g.
+ * RecentDetail's retro-enrich gate) can route off the `kind:` field. */
+export function extractFrontmatterField(markdown: string, field: string): string | null {
   const s = markdown.trimStart();
   if (!s.startsWith("---")) return null;
   const afterFirst = s.slice(3);
@@ -749,4 +750,67 @@ export async function moveToArchive(
   }
 
   return { archivedMdPath, archivedBinaryPath };
+}
+
+/** Best-effort inverse of `extFromMime` for the file extensions we actually
+ * write into the vault. Returns "application/octet-stream" for unknowns so
+ * downstream code (e.g. `enrichSharedImage`) gets to surface its own error
+ * about an unsupported type, rather than us guessing wrong. */
+export function mimeFromFilename(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  if (dot < 0) return "application/octet-stream";
+  const ext = filename.slice(dot + 1).toLowerCase();
+  const map: Record<string, string> = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp",
+    gif: "image/gif",
+    heic: "image/heic",
+    heif: "image/heif",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    m4a: "audio/mp4",
+    pdf: "application/pdf",
+  };
+  return map[ext] ?? "application/octet-stream";
+}
+
+/**
+ * Locate and read the paired binary referenced by a note's body (e.g. the
+ * JPEG behind a photo/shared-image .md), returning the base64 payload and
+ * the inferred MIME type. Used by RecentDetail's retro-enrich flow when the
+ * raw image needs to be re-sent to the vision model days after capture.
+ *
+ * Resolves the first `../{Photos|Audio|Files}/<name>` link in `body`,
+ * looks the file up in that subdir of the active vault root, and reads it
+ * as base64. Path-traversal characters in the captured filename are
+ * rejected by the regex (matches `moveToArchive`).
+ *
+ * Throws with a friendly message when:
+ *   - the body contains no recognized paired-binary link
+ *   - the link target doesn't exist on disk (e.g. user moved or renamed
+ *     the binary in Obsidian)
+ *
+ * Callers should surface the error in a banner — never overwrite the
+ * existing note when this fails.
+ */
+export async function readPairedBinaryFromNote(
+  body: string,
+): Promise<{ base64: string; mime: string }> {
+  const linkMatch = body.match(/\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/);
+  if (!linkMatch) {
+    throw new Error("No paired binary link found in note.");
+  }
+  const subdir = linkMatch[1];
+  const filename = linkMatch[2];
+  const root = await resolveRoot();
+  const subdirUri = await findOrCreateSubdir(root, subdir);
+  const binaryUri = await findFileInDir(subdirUri, filename, root.isSaf);
+  if (!binaryUri) {
+    throw new Error(`Paired binary not found: ${subdir}/${filename}`);
+  }
+  const base64 = await readBinaryByUri(binaryUri, root.isSaf);
+  const mime = mimeFromFilename(filename);
+  return { base64, mime };
 }

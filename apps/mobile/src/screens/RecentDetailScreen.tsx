@@ -28,7 +28,16 @@ import Markdown from "react-native-markdown-display";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import type { RootStackParamList } from "../../App";
-import { moveToArchive, readNote, stripFrontmatter } from "../lib/writer";
+import {
+  extractFrontmatterField,
+  injectImageEmbed,
+  moveToArchive,
+  readNote,
+  readPairedBinaryFromNote,
+  stripFrontmatter,
+  updateNote,
+} from "../lib/writer";
+import { enrichSharedImage } from "../lib/omniroute";
 import { removeFromHistory, type CaptureEntry } from "../lib/storage";
 
 type Props = NativeStackScreenProps<RootStackParamList, "RecentDetail">;
@@ -41,9 +50,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [missing, setMissing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [confirmVisible, setConfirmVisible] = useState(false);
+  const [reEnriching, setReEnriching] = useState(false);
+  const [reEnrichError, setReEnrichError] = useState<string | null>(null);
   // Guard against fast double-taps on Delete — the in-flight archive can
   // race with a second handler call and produce a confusing UI state.
   const deletingRef = useRef(false);
+  // Same guard for the Re-enrich button — re-running the LLM call twice
+  // would write the .md twice, with whichever finishes second winning.
+  const reEnrichingRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -95,6 +109,53 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     navigation.goBack();
   }, [entry.id, navigation]);
 
+  const handleReEnrich = useCallback(async () => {
+    if (reEnrichingRef.current) return;
+    reEnrichingRef.current = true;
+    setReEnrichError(null);
+    setReEnriching(true);
+    try {
+      // Locate the paired image. The match also tells us the relative path
+      // we need to re-inject after the LLM rewrites the body.
+      const linkMatch = body.match(/\.\.\/Photos\/([^/\s)]+)/);
+      if (!linkMatch) {
+        throw new Error(
+          "No paired image found in this note — re-enrich needs the original image on disk.",
+        );
+      }
+      const imageFilename = linkMatch[1];
+      const { base64, mime } = await readPairedBinaryFromNote(body);
+      // Re-enrich uses an empty context — the original context-at-capture
+      // isn't recoverable from the saved markdown without a brittle parse.
+      // A future PR can add a TextInput to let the user supply fresh context.
+      const result = await enrichSharedImage({
+        base64,
+        mimeType: mime,
+        context: "",
+      });
+      const withImage = injectImageEmbed(
+        result.markdown,
+        `../Photos/${imageFilename}`,
+      );
+      await updateNote(entry.filepath, withImage);
+      setBody(withImage);
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.warn("[RecentDetail] re-enrich failed:", reason);
+      setReEnrichError(reason);
+    } finally {
+      reEnrichingRef.current = false;
+      setReEnriching(false);
+    }
+  }, [body, entry.filepath]);
+
+  // Re-enrich only makes sense when the raw input is recoverable from disk.
+  // That's photo + shared-image (paired JPEG in Photos/). idea/journal/person
+  // notes have no raw input on disk — the enriched body is the only artifact.
+  // shared-link/text need a frontmatter migration first (follow-up PR).
+  const kind = extractFrontmatterField(body, "kind") ?? "";
+  const canReEnrich = kind === "shared-image" || kind === "photo";
+
   if (loading) {
     return (
       <View style={styles.loading}>
@@ -125,6 +186,21 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           </Banner>
         ) : null}
 
+        {reEnrichError ? (
+          <Banner visible icon="alert" actions={[]}>
+            {`Re-enrich failed: ${reEnrichError}`}
+          </Banner>
+        ) : null}
+
+        {reEnriching ? (
+          <View style={styles.inlineLoading}>
+            <ActivityIndicator />
+            <Text variant="bodySmall" style={styles.dim}>
+              Re-running vision enrichment…
+            </Text>
+          </View>
+        ) : null}
+
         <Card style={styles.card}>
           <Card.Title
             title={entry.title}
@@ -147,12 +223,22 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
 
         <Card style={styles.card}>
           <Card.Actions>
+            {canReEnrich ? (
+              <Button
+                mode="text"
+                icon="auto-fix"
+                onPress={handleReEnrich}
+                disabled={missing || reEnriching}
+              >
+                Re-enrich
+              </Button>
+            ) : null}
             <Button
               mode="text"
               icon="delete"
               textColor={theme.colors.error}
               onPress={() => setConfirmVisible(true)}
-              disabled={missing}
+              disabled={missing || reEnriching}
             >
               Delete
             </Button>
@@ -253,5 +339,11 @@ const styles = StyleSheet.create({
   content: { padding: 16, gap: 12 },
   card: { marginTop: 4 },
   path: { opacity: 0.6, fontFamily: "monospace" },
+  dim: { opacity: 0.6 },
   loading: { flex: 1, alignItems: "center", justifyContent: "center" },
+  inlineLoading: {
+    paddingVertical: 16,
+    alignItems: "center",
+    gap: 6,
+  },
 });
