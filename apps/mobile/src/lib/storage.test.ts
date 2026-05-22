@@ -21,6 +21,7 @@ import {
   getRecentCaptures,
   recordCapture,
   removeFromHistory,
+  removeManyFromHistory,
   type CaptureEntry,
 } from "./storage";
 
@@ -86,5 +87,52 @@ describe("recents history", () => {
   it("returns an empty array when stored JSON is corrupted", async () => {
     _store.set("carnet:history:v1", "{ this is not valid JSON");
     expect(await getRecentCaptures()).toEqual([]);
+  });
+});
+
+describe("removeManyFromHistory", () => {
+  beforeEach(() => {
+    _store.clear();
+  });
+
+  it("removes multiple ids in a single write, preserving order of the rest", async () => {
+    await recordCapture(entry("a"));
+    await recordCapture(entry("b"));
+    await recordCapture(entry("c"));
+    await recordCapture(entry("d"));
+    // MRU order before delete: d, c, b, a
+    await removeManyFromHistory(["b", "d"]);
+    const xs = await getRecentCaptures();
+    expect(xs.map((e) => e.id)).toEqual(["c", "a"]);
+  });
+
+  it("ignores unknown ids", async () => {
+    await recordCapture(entry("a"));
+    await removeManyFromHistory(["nope", "alsoNope"]);
+    const xs = await getRecentCaptures();
+    expect(xs.map((e) => e.id)).toEqual(["a"]);
+  });
+
+  it("is a no-op on empty input (does not touch storage)", async () => {
+    await recordCapture(entry("a"));
+    await removeManyFromHistory([]);
+    const xs = await getRecentCaptures();
+    expect(xs.map((e) => e.id)).toEqual(["a"]);
+  });
+
+  it("clears all entries when every id matches", async () => {
+    await recordCapture(entry("a"));
+    await recordCapture(entry("b"));
+    await removeManyFromHistory(["a", "b"]);
+    const xs = await getRecentCaptures();
+    expect(xs).toEqual([]);
+  });
+
+  it("dedupes via internal Set (duplicate ids still remove once each)", async () => {
+    await recordCapture(entry("a"));
+    await recordCapture(entry("b"));
+    await removeManyFromHistory(["a", "a"]);
+    const xs = await getRecentCaptures();
+    expect(xs.map((e) => e.id)).toEqual(["b"]);
   });
 });
