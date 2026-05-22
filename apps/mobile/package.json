@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo run:android",
+    "android": "bash ./scripts/run-android.sh",
     "ios": "expo run:ios",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
