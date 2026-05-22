@@ -7,6 +7,7 @@
   "scripts": {
     "start": "expo start",
     "android": "bash ./scripts/run-android.sh",
+    "android:release": "bash ./scripts/build-release-apk.sh",
     "ios": "expo run:ios",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
