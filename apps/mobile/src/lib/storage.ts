@@ -37,3 +37,21 @@ export async function removeFromHistory(id: string): Promise<void> {
   const next = existing.filter((e) => e.id !== id);
   await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next));
 }
+
+/**
+ * Remove many entries by id in a single write. Used by Home's multi-select
+ * bulk delete so cleaning up N rows is one AsyncStorage round-trip instead
+ * of N. Unknown ids are silently ignored. Skips the write when no entries
+ * actually match — avoids touching storage on empty input or all-unknown
+ * inputs.
+ */
+export async function removeManyFromHistory(
+  ids: ReadonlyArray<string>,
+): Promise<void> {
+  if (ids.length === 0) return;
+  const toRemove = new Set(ids);
+  const existing = await getRecentCaptures();
+  const next = existing.filter((e) => !toRemove.has(e.id));
+  if (next.length === existing.length) return;
+  await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+}
