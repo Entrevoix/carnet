@@ -67,11 +67,18 @@ export default function HomeScreen({ navigation }: Props) {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
-      // Auto-exit selection mode when the user deselects the last row.
-      if (next.size === 0) setSelectionMode(false);
       return next;
     });
   }, []);
+
+  // Auto-exit selection mode when the user deselects the last row.
+  // Kept as an effect (rather than inside the updater above) so the side
+  // effect doesn't fire twice in React 18+ StrictMode's double-invoke.
+  useEffect(() => {
+    if (selectionMode && selectedIds.size === 0) {
+      setSelectionMode(false);
+    }
+  }, [selectionMode, selectedIds]);
 
   const handleBulkDelete = useCallback(async () => {
     if (bulkDeletingRef.current) return;
@@ -100,7 +107,12 @@ export default function HomeScreen({ navigation }: Props) {
     } finally {
       bulkDeletingRef.current = false;
       exitSelection();
-      await refresh();
+      // Fire-and-forget so a rare AsyncStorage rejection doesn't bubble
+      // up to the unawaited Button.onPress as an unhandled rejection.
+      refresh().catch((re: unknown) => {
+        const reason = re instanceof Error ? re.message : String(re);
+        console.warn("[Home] refresh after bulk delete failed:", reason);
+      });
     }
   }, [selectedIds, recent, refresh, exitSelection]);
 
