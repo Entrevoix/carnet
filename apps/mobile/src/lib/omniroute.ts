@@ -12,7 +12,7 @@
  *   promoteIdea   — rewrite an existing idea at a higher maturity status
  */
 
-import { getSettings } from "./settings";
+import { getPromptOverrides, getSettings } from "./settings";
 import {
   buildIdeaPrompt,
   buildJournalPrompt,
@@ -28,6 +28,24 @@ import type { IdeaStatus } from "@carnet/shared";
 export interface EnrichResult {
   markdown: string;
   model: string;
+}
+
+/**
+ * Apply a per-mode prompt override. Returns the pair unchanged when the
+ * override is missing, undefined, or whitespace-only — so callers can
+ * always invoke this safely without special-casing the "no override" path.
+ *
+ * The user message is never replaced — only the system. This preserves
+ * the INJECTION_GUARD-protected delimiter shape that wraps user content,
+ * even when the user has fully rewritten the system instructions.
+ */
+export function withSystemOverride(
+  pair: PromptPair,
+  override: string | undefined,
+): PromptPair {
+  const trimmed = override?.trim() ?? "";
+  if (!trimmed) return pair;
+  return { system: trimmed, user: pair.user };
 }
 
 /** OpenAI-compatible content part for multimodal messages. */
@@ -315,12 +333,14 @@ export async function listModels(
 
 /** Enrich a raw idea text into structured Obsidian markdown. */
 export async function enrichIdea(text: string): Promise<EnrichResult> {
-  const [baseUrl, apiKey, model] = await Promise.all([
+  const [baseUrl, apiKey, model, overrides] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
     getModel(),
+    getPromptOverrides(),
   ]);
-  return chatCompletion(baseUrl, apiKey, model, buildIdeaPrompt(text));
+  const pair = withSystemOverride(buildIdeaPrompt(text), overrides.idea);
+  return chatCompletion(baseUrl, apiKey, model, pair);
 }
 
 /** Enrich a journal voice transcript (plus optional notes) into a journal entry. */
@@ -328,17 +348,17 @@ export async function enrichJournal(input: {
   transcript: string;
   notes: string;
 }): Promise<EnrichResult> {
-  const [baseUrl, apiKey, model] = await Promise.all([
+  const [baseUrl, apiKey, model, overrides] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
     getModel(),
+    getPromptOverrides(),
   ]);
-  return chatCompletion(
-    baseUrl,
-    apiKey,
-    model,
+  const pair = withSystemOverride(
     buildJournalPrompt(input.transcript, input.notes),
+    overrides.journal,
   );
+  return chatCompletion(baseUrl, apiKey, model, pair);
 }
 
 /** Enrich a business card OCR result + context into a contact note. */
@@ -346,17 +366,17 @@ export async function enrichPerson(input: {
   ocrResult: string;
   context: string;
 }): Promise<EnrichResult> {
-  const [baseUrl, apiKey, model] = await Promise.all([
+  const [baseUrl, apiKey, model, overrides] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
     getModel(),
+    getPromptOverrides(),
   ]);
-  return chatCompletion(
-    baseUrl,
-    apiKey,
-    model,
+  const pair = withSystemOverride(
     buildPersonPrompt(input.ocrResult, input.context),
+    overrides.person,
   );
+  return chatCompletion(baseUrl, apiKey, model, pair);
 }
 
 /**
@@ -378,12 +398,18 @@ export async function enrichSharedImage(input: {
   const safeMime = /^image\/(jpe?g|png|webp|gif|heic|heif)$/.test(input.mimeType)
     ? input.mimeType
     : "image/jpeg";
-  const [baseUrl, apiKey, model] = await Promise.all([
+  const [baseUrl, apiKey, model, overrides] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
     getModel(),
+    getPromptOverrides(),
   ]);
-  const { system, userText } = buildSharedImagePrompt(input.context);
+  const { system: defaultSystem, userText } = buildSharedImagePrompt(input.context);
+  // Multimodal user content can't go through withSystemOverride (which is
+  // PromptPair-shaped), so the splice happens inline. Same null-safe rule:
+  // empty/whitespace override → default.
+  const systemOverride = overrides.sharedImage?.trim() ?? "";
+  const system = systemOverride || defaultSystem;
   const dataUrl = `data:${safeMime};base64,${input.base64}`;
   const messages: OpenAIMessage[] = [
     { role: "system", content: system },
@@ -430,18 +456,18 @@ export async function enrichSharedLink(input: {
       }
     });
   }
-  const [baseUrl, apiKey, model, preview] = await Promise.all([
+  const [baseUrl, apiKey, model, preview, overrides] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
     getModel(),
     previewPromise,
+    getPromptOverrides(),
   ]);
-  return chatCompletion(
-    baseUrl,
-    apiKey,
-    model,
+  const pair = withSystemOverride(
     buildSharedLinkPrompt(input.url, input.text, input.context, preview),
+    overrides.sharedLink,
   );
+  return chatCompletion(baseUrl, apiKey, model, pair);
 }
 
 /**

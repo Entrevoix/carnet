@@ -16,6 +16,19 @@ const LEGACY_PURGE_KEY = "carnet:legacy_purge:v1";
 
 export const DEFAULT_OMNIROUTE_MODEL = "openrouter/openai/gpt-4o-mini";
 
+/**
+ * Per-capture-mode system prompt overrides. Empty/missing fields fall back
+ * to the defaults in `prompts.ts`. Whitespace-only values are sanitised to
+ * empty on write so a stray accidental edit doesn't strand a noise override.
+ */
+export interface PromptOverrides {
+  idea?: string;
+  journal?: string;
+  person?: string;
+  sharedImage?: string;
+  sharedLink?: string;
+}
+
 export interface Settings {
   omniRouteUrl: string;
   omniRouteApiKey: string;
@@ -25,12 +38,14 @@ export interface Settings {
    * Set to a Syncthing-watched folder for automatic sync to workstation.
    */
   captureFolderPath: string;
+  promptOverrides: PromptOverrides;
 }
 
 interface PersistedSettings {
   omniRouteUrl: string;
   omniRouteModel: string;
   captureFolderPath: string;
+  promptOverrides: PromptOverrides;
 }
 
 /** Shape of a v1 settings blob — used for one-time migration read. */
@@ -44,14 +59,31 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   omniRouteUrl: "",
   omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
   captureFolderPath: "",
+  promptOverrides: {},
 };
+
+/** Strip whitespace-only entries so a `{idea: "   "}` save doesn't strand
+ * noise in storage that downstream code would treat as a real override. */
+function sanitisePromptOverrides(raw: PromptOverrides | undefined): PromptOverrides {
+  if (!raw) return {};
+  const out: PromptOverrides = {};
+  (Object.keys(raw) as Array<keyof PromptOverrides>).forEach((k) => {
+    const v = raw[k]?.trim();
+    if (v) out[k] = v;
+  });
+  return out;
+}
 
 async function readPersisted(): Promise<PersistedSettings> {
   const raw = await AsyncStorage.getItem(SETTINGS_KEY);
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
-      return { ...DEFAULT_PERSISTED, ...parsed };
+      return {
+        ...DEFAULT_PERSISTED,
+        ...parsed,
+        promptOverrides: sanitisePromptOverrides(parsed.promptOverrides),
+      };
     } catch {
       return { ...DEFAULT_PERSISTED };
     }
@@ -66,6 +98,7 @@ async function readPersisted(): Promise<PersistedSettings> {
         omniRouteUrl: legacy.omniRouteUrl ?? "",
         omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
         captureFolderPath: legacy.captureFolderPath ?? "",
+        promptOverrides: {},
       };
     } catch {
       return { ...DEFAULT_PERSISTED };
@@ -80,6 +113,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     omniRouteUrl: settings.omniRouteUrl,
     omniRouteModel: settings.omniRouteModel,
     captureFolderPath: settings.captureFolderPath,
+    promptOverrides: sanitisePromptOverrides(settings.promptOverrides),
   };
   await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitised));
 }
@@ -112,6 +146,7 @@ export async function getSettings(): Promise<Settings> {
     omniRouteApiKey,
     omniRouteModel: persisted.omniRouteModel,
     captureFolderPath: persisted.captureFolderPath,
+    promptOverrides: persisted.promptOverrides,
   };
 }
 
@@ -120,12 +155,21 @@ export async function saveSettings(settings: Settings): Promise<void> {
     omniRouteUrl: settings.omniRouteUrl,
     omniRouteModel: settings.omniRouteModel,
     captureFolderPath: settings.captureFolderPath,
+    promptOverrides: settings.promptOverrides,
   });
   if (settings.omniRouteApiKey) {
     await SecureStore.setItemAsync(OMNIROUTE_API_KEY, settings.omniRouteApiKey);
   } else {
     await SecureStore.deleteItemAsync(OMNIROUTE_API_KEY);
   }
+}
+
+/** Convenience read for the enrich entry points — skips SecureStore so an
+ * enrich call doesn't pay the keychain cost just to read the prompt
+ * overrides (the API key lives elsewhere in this module). */
+export async function getPromptOverrides(): Promise<PromptOverrides> {
+  const persisted = await readPersisted();
+  return persisted.promptOverrides;
 }
 
 /**

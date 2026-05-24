@@ -7,7 +7,11 @@ vi.mock("./settings", () => ({
     omniRouteApiKey: "test-key",
     omniRouteModel: "gpt-4o-mini",
     captureFolderPath: "",
+    promptOverrides: {},
   }),
+  // Used by each enrich entry point to load per-mode prompt overrides.
+  // Default-empty so existing tests get the default-prompt behavior.
+  getPromptOverrides: vi.fn().mockResolvedValue({}),
 }));
 
 // ── Mock fetch ────────────────────────────────────────────────────────────────
@@ -44,6 +48,7 @@ import {
   isPermanentError,
   assertBase64UnderLimit,
   MAX_SHARED_IMAGE_BYTES,
+  withSystemOverride,
 } from "./omniroute";
 import {
   buildIdeaPrompt,
@@ -277,6 +282,7 @@ describe("HTTPS enforcement", () => {
       omniRouteApiKey: "test-key",
       omniRouteModel: "gpt-4o-mini",
       captureFolderPath: "",
+      promptOverrides: {},
     });
     await expect(enrichIdea("x")).rejects.toThrow(/https:\/\//);
     // Ensure no fetch was attempted
@@ -290,6 +296,7 @@ describe("HTTPS enforcement", () => {
       omniRouteApiKey: "",
       omniRouteModel: "gpt-4o-mini",
       captureFolderPath: "",
+      promptOverrides: {},
     });
     fetchMock.mockResolvedValueOnce(
       makeOkResponse("---\n---\n# x\n"),
@@ -437,5 +444,138 @@ describe("enrichSharedLink", () => {
     const userContent = body.messages[1].content;
     expect(userContent).not.toContain("Site:");
     expect(userContent).not.toContain("Page title:");
+  });
+});
+
+// ── withSystemOverride (pure helper) ──────────────────────────────────────────
+
+describe("withSystemOverride", () => {
+  const pair = { system: "default-system", user: "user-content" };
+
+  it("returns the pair unchanged when override is undefined", () => {
+    expect(withSystemOverride(pair, undefined)).toEqual(pair);
+  });
+
+  it("returns the pair unchanged when override is an empty string", () => {
+    expect(withSystemOverride(pair, "")).toEqual(pair);
+  });
+
+  it("returns the pair unchanged when override is whitespace only", () => {
+    expect(withSystemOverride(pair, "   \n\t ")).toEqual(pair);
+  });
+
+  it("swaps in the override system, preserving the user content", () => {
+    const result = withSystemOverride(pair, "my custom system");
+    expect(result).toEqual({
+      system: "my custom system",
+      user: "user-content",
+    });
+  });
+
+  it("trims surrounding whitespace from the override", () => {
+    const result = withSystemOverride(pair, "  trimmed  ");
+    expect(result.system).toBe("trimmed");
+  });
+});
+
+// ── journal + person tag slots (the LLM-tagging gap closure) ──────────────────
+
+describe("journal + person prompts auto-tagging", () => {
+  it("buildJournalPrompt requests 2-3 tags and exposes slots in frontmatter", () => {
+    const { system } = buildJournalPrompt("woke up early, ran 5k", "");
+    // Instruction line
+    expect(system).toMatch(/Suggest 2-3 relevant tags/i);
+    // Frontmatter slots — tags array starts with `journal` then user slots
+    expect(system).toContain("tags: [journal, {tag1}, {tag2}]");
+  });
+
+  it("buildPersonPrompt requests tags and adds them after the base tags", () => {
+    const { system } = buildPersonPrompt("John Doe\nAcme Inc.", "met at conf");
+    expect(system).toMatch(/suggest 2-3 relevant tags/i);
+    expect(system).toContain("tags: [person, networking, {tag1}, {tag2}]");
+  });
+});
+
+// ── enrich entry points honor prompt overrides ────────────────────────────────
+
+describe("enrich entry points honor prompt overrides", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  it("enrichIdea uses the override system message when configured", async () => {
+    const { getPromptOverrides } = await import("./settings");
+    vi.mocked(getPromptOverrides).mockResolvedValueOnce({
+      idea: "You are an extremely terse summariser. Respond in one line.",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
+
+    await enrichIdea("the override should reach the API");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as RequestBody;
+    expect(body.messages[0].role).toBe("system");
+    expect(body.messages[0].content).toBe(
+      "You are an extremely terse summariser. Respond in one line.",
+    );
+  });
+
+  it("enrichIdea falls back to default when override is empty", async () => {
+    const { getPromptOverrides } = await import("./settings");
+    vi.mocked(getPromptOverrides).mockResolvedValueOnce({ idea: "" });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
+
+    await enrichIdea("default path");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as RequestBody;
+    // Default idea prompt contains its signature phrase
+    expect(body.messages[0].content).toMatch(
+      /Suggest 2-3 relevant tags|personal knowledge assistant/,
+    );
+  });
+
+  it("enrichJournal applies the journal override, not the idea override", async () => {
+    const { getPromptOverrides } = await import("./settings");
+    vi.mocked(getPromptOverrides).mockResolvedValueOnce({
+      idea: "wrong",
+      journal: "journal-custom",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
+
+    await enrichJournal({ transcript: "test", notes: "" });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as RequestBody;
+    expect(body.messages[0].content).toBe("journal-custom");
+  });
+
+  it("enrichSharedImage applies the sharedImage override via its inline splice", async () => {
+    // sharedImage uses an inline splice (not withSystemOverride) because its
+    // user content is OpenAIMessage[] not PromptPair — pin the inline path so
+    // it can't drift from the helper-driven entry points silently.
+    const { getPromptOverrides } = await import("./settings");
+    vi.mocked(getPromptOverrides).mockResolvedValueOnce({
+      sharedImage: "shared-image-custom-system",
+    });
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse(
+        "---\nkind: shared-image\n---\n# x\n\n## What's in this\nstuff\n",
+      ),
+    );
+
+    const { enrichSharedImage } = await import("./omniroute");
+    await enrichSharedImage({
+      base64: "QkFTRTY0",
+      mimeType: "image/jpeg",
+      context: "test ctx",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as RequestBody;
+    expect(body.messages[0].role).toBe("system");
+    expect(body.messages[0].content).toBe("shared-image-custom-system");
+    // User content stays multimodal (the image bytes still attach)
+    expect(Array.isArray(body.messages[1].content)).toBe(true);
   });
 });

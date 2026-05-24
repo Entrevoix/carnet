@@ -66,13 +66,14 @@ entry. Extract structure from the raw transcript:
 2. Extract any people mentioned (first name or full name)
 3. Extract any ideas or action items
 4. Write a 1-sentence summary
+5. Suggest 2-3 relevant tags drawn from the content (subjects, mood, places — whatever's most useful for finding this entry again)
 
 ${INJECTION_GUARD}
 
 Respond ONLY with valid Obsidian markdown in this exact format:
 ---
 date: ${today}
-tags: [journal]
+tags: [journal, {tag1}, {tag2}]
 people: [{people as [[Name]] wikilinks, comma separated}]
 ideas: []
 ---
@@ -93,6 +94,10 @@ export function buildPersonPrompt(ocrResult: string, context: string): PromptPai
   const system = `You are a personal knowledge assistant creating a contact note. You have OCR
 output from a business card and optional context about the meeting.
 
+Additionally, suggest 2-3 relevant tags drawn from the person's domain — their
+industry, role, or any topical signal from the context (e.g. "ai", "design",
+"fintech", "conference-name"). Add them to the tags array after the base tags.
+
 ${INJECTION_GUARD}
 
 Respond ONLY with valid Obsidian markdown in this exact format:
@@ -105,7 +110,7 @@ phone: {phone or ""}
 linkedin: {linkedin or ""}
 met: ${today}
 where: {extracted from context or ""}
-tags: [person, networking]
+tags: [person, networking, {tag1}, {tag2}]
 ---
 # {Full Name}
 
