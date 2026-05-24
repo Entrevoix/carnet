@@ -49,6 +49,7 @@
         }
       ],
       "./plugins/withSpeechRecognitionQueries",
+      "./plugins/withAppShortcuts",
       [
         "expo-share-intent",
         {
