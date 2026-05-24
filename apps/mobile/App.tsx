@@ -4,6 +4,7 @@ import { ActivityIndicator, useColorScheme, View } from "react-native";
 import {
   DarkTheme as NavDarkTheme,
   DefaultTheme as NavLightTheme,
+  type LinkingOptions,
   NavigationContainer,
   useNavigationContainerRef,
   type NavigationContainerRefWithCurrent,
@@ -33,6 +34,35 @@ export type RootStackParamList = {
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+// Deep-link routing. Drives the Android app-shortcuts (long-press launcher
+// icon → Idea/Journal/Photo/Contact) and any other carnet:// URI the OS
+// hands the app. The custom scheme is declared in app.json; this config
+// only maps URL paths to stack screens.
+//
+// SECURITY MODEL — deep-link routes are passive. They navigate; they never
+// auto-act on params. The carnet:// scheme is global on the device, so any
+// other app can fire a VIEW intent at us. Every screen reachable via this
+// linking config is a passive form where the user has to tap Save (or an
+// equivalent action) before anything is written. If a future route gains
+// an auto-action (e.g. carnet://import?url=X that fetches + saves), it
+// MUST validate the param and surface a user-confirm step before firing.
+//
+// RecentDetail is intentionally omitted — its param is a CaptureEntry
+// object which can't be url-encoded cleanly. Deep-linking into a specific
+// recent isn't a use case we're solving today.
+const linking: LinkingOptions<RootStackParamList> = {
+  prefixes: ["carnet://"],
+  config: {
+    screens: {
+      Home: "",
+      Capture: "capture/:mode",
+      PhotoCapture: "photo",
+      Settings: "settings",
+      ShareReceive: "share-receive",
+    },
+  },
+};
 
 /**
  * Watches for incoming Android share intents and routes to ShareReceive
@@ -114,7 +144,7 @@ export default function App() {
   return (
     <ShareIntentProvider>
       <PaperProvider theme={paperTheme}>
-        <NavigationContainer ref={navRef} theme={navTheme}>
+        <NavigationContainer ref={navRef} theme={navTheme} linking={linking}>
           <StatusBar style="auto" />
           <Stack.Navigator initialRouteName="Home">
             <Stack.Screen
