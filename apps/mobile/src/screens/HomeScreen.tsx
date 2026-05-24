@@ -177,6 +177,16 @@ export default function HomeScreen({ navigation }: Props) {
       >
         Photo
       </Button>
+      <Button
+        mode="outlined"
+        icon="microphone-outline"
+        onPress={() => navigation.navigate("AudioCapture")}
+        style={styles.button}
+        contentStyle={styles.buttonContent}
+        labelStyle={styles.buttonLabel}
+      >
+        Audio
+      </Button>
 
       {/* "Continue today's journal" shortcut — skips mode selection */}
       <Button
@@ -287,6 +297,8 @@ function formatMode(mode: CaptureEntry["mode"]): string {
       return "Contact";
     case "photo":
       return "Photo";
+    case "audio":
+      return "Audio";
   }
 }
 
@@ -300,6 +312,8 @@ function modeIcon(mode: CaptureEntry["mode"]): string {
       return "account";
     case "photo":
       return "camera";
+    case "audio":
+      return "microphone-outline";
   }
 }
 

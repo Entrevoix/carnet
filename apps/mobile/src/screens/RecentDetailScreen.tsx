@@ -280,6 +280,8 @@ function formatMode(mode: CaptureEntry["mode"]): string {
       return "Contact";
     case "photo":
       return "Photo";
+    case "audio":
+      return "Audio";
   }
 }
 
