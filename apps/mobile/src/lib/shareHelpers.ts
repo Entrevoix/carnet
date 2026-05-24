@@ -71,3 +71,16 @@ export async function readShareFileAsBase64(path: string): Promise<string> {
     encoding: FileSystem.EncodingType.Base64,
   });
 }
+
+/**
+ * Format a millisecond duration as `MM:SS` for a timer display. Negative
+ * inputs clamp to `00:00` (defensive against clock-skew or
+ * intentionally-stale state). Lifted out of AudioCaptureScreen so it's
+ * unit-testable and importable from any future timer surface.
+ */
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const mm = String(Math.floor(total / 60)).padStart(2, "0");
+  const ss = String(total % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}

@@ -20,6 +20,7 @@ import CaptureScreen from "./src/screens/CaptureScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import ShareReceiveScreen from "./src/screens/ShareReceiveScreen";
 import PhotoCaptureScreen from "./src/screens/PhotoCaptureScreen";
+import AudioCaptureScreen from "./src/screens/AudioCaptureScreen";
 import RecentDetailScreen from "./src/screens/RecentDetailScreen";
 import type { CaptureEntry, CaptureMode } from "./src/lib/storage";
 import { inkAndMistDark, inkAndMistLight } from "./src/lib/theme";
@@ -30,6 +31,7 @@ export type RootStackParamList = {
   Settings: undefined;
   ShareReceive: undefined;
   PhotoCapture: undefined;
+  AudioCapture: undefined;
   RecentDetail: { entry: CaptureEntry };
 };
 
@@ -58,6 +60,7 @@ const linking: LinkingOptions<RootStackParamList> = {
       Home: "",
       Capture: "capture/:mode",
       PhotoCapture: "photo",
+      AudioCapture: "audio",
       Settings: "settings",
       ShareReceive: "share-receive",
     },
@@ -178,6 +181,11 @@ export default function App() {
               name="PhotoCapture"
               component={PhotoCaptureScreen}
               options={{ title: "Photo" }}
+            />
+            <Stack.Screen
+              name="AudioCapture"
+              component={AudioCaptureScreen}
+              options={{ title: "Audio" }}
             />
             <Stack.Screen
               name="RecentDetail"
