@@ -55,3 +55,23 @@ export async function removeManyFromHistory(
   if (next.length === existing.length) return;
   await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next));
 }
+
+/**
+ * Update the title of a single capture entry in place. Used when the user
+ * edits the H1 of a note from inside carnet — keeps the recents list in
+ * sync with the file content. Unknown ids are silently ignored. Skips the
+ * write when the existing title already matches to avoid an empty
+ * round-trip (common case: user edited the body but not the H1).
+ */
+export async function updateCaptureTitle(
+  id: string,
+  title: string,
+): Promise<void> {
+  const existing = await getRecentCaptures();
+  const idx = existing.findIndex((e) => e.id === id);
+  if (idx === -1) return;
+  if (existing[idx].title === title) return;
+  const next = [...existing];
+  next[idx] = { ...next[idx], title };
+  await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+}

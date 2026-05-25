@@ -22,8 +22,10 @@ import {
   recordCapture,
   removeFromHistory,
   removeManyFromHistory,
+  updateCaptureTitle,
   type CaptureEntry,
 } from "./storage";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 function entry(id: string, t = Date.now()): CaptureEntry {
   return {
@@ -134,5 +136,47 @@ describe("removeManyFromHistory", () => {
     await removeManyFromHistory(["a", "a"]);
     const xs = await getRecentCaptures();
     expect(xs.map((e) => e.id)).toEqual(["b"]);
+  });
+});
+
+describe("updateCaptureTitle", () => {
+  beforeEach(() => {
+    _store.clear();
+    vi.mocked(AsyncStorage.setItem).mockClear();
+  });
+
+  it("updates the matching id and leaves siblings untouched", async () => {
+    await recordCapture(entry("a"));
+    await recordCapture(entry("b"));
+    await recordCapture(entry("c"));
+    await updateCaptureTitle("b", "Fixed title");
+    const xs = await getRecentCaptures();
+    const byId = Object.fromEntries(xs.map((e) => [e.id, e.title]));
+    expect(byId).toEqual({ a: "entry-a", b: "Fixed title", c: "entry-c" });
+  });
+
+  it("preserves MRU order when updating a non-head entry", async () => {
+    await recordCapture(entry("a"));
+    await recordCapture(entry("b"));
+    await recordCapture(entry("c"));
+    await updateCaptureTitle("a", "Renamed");
+    const xs = await getRecentCaptures();
+    expect(xs.map((e) => e.id)).toEqual(["c", "b", "a"]);
+  });
+
+  it("is a no-op for an unknown id (does not touch storage)", async () => {
+    await recordCapture(entry("a"));
+    vi.mocked(AsyncStorage.setItem).mockClear();
+    await updateCaptureTitle("ghost", "Whatever");
+    const xs = await getRecentCaptures();
+    expect(xs.map((e) => e.title)).toEqual(["entry-a"]);
+    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+  });
+
+  it("skips the write when the new title equals the existing title (common no-change case)", async () => {
+    await recordCapture(entry("a"));
+    vi.mocked(AsyncStorage.setItem).mockClear();
+    await updateCaptureTitle("a", "entry-a");
+    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
   });
 });
