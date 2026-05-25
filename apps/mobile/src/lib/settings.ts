@@ -15,6 +15,10 @@ const MIGRATION_BANNER_KEY = "carnet:migration_banner_dismissed:v1";
 const LEGACY_PURGE_KEY = "carnet:legacy_purge:v1";
 
 export const DEFAULT_OMNIROUTE_MODEL = "openrouter/openai/gpt-4o-mini";
+/** Default Whisper model name. Most OmniRoute / LiteLLM proxies route this
+ * to the OpenAI hosted Whisper-1 endpoint. Self-hosted proxies may need a
+ * namespaced form (e.g. `openai/whisper-1`); the field is user-editable. */
+export const DEFAULT_TRANSCRIPTION_MODEL = "whisper-1";
 
 /**
  * Per-capture-mode system prompt overrides. Empty/missing fields fall back
@@ -33,6 +37,10 @@ export interface Settings {
   omniRouteUrl: string;
   omniRouteApiKey: string;
   omniRouteModel: string;
+  /** Whisper-compatible model for /v1/audio/transcriptions. Defaults to
+   * whisper-1. Held separately from omniRouteModel so swapping the chat
+   * model doesn't break transcription (and vice versa). */
+  omniRouteTranscriptionModel: string;
   /**
    * Root folder for captured notes. Defaults to the app sandbox carnet/ dir.
    * Set to a Syncthing-watched folder for automatic sync to workstation.
@@ -44,6 +52,7 @@ export interface Settings {
 interface PersistedSettings {
   omniRouteUrl: string;
   omniRouteModel: string;
+  omniRouteTranscriptionModel: string;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
 }
@@ -58,6 +67,7 @@ interface LegacyPersistedSettings {
 const DEFAULT_PERSISTED: PersistedSettings = {
   omniRouteUrl: "",
   omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
+  omniRouteTranscriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
   captureFolderPath: "",
   promptOverrides: {},
 };
@@ -97,6 +107,7 @@ async function readPersisted(): Promise<PersistedSettings> {
       return {
         omniRouteUrl: legacy.omniRouteUrl ?? "",
         omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
+        omniRouteTranscriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
         captureFolderPath: legacy.captureFolderPath ?? "",
         promptOverrides: {},
       };
@@ -112,6 +123,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
   const sanitised: PersistedSettings = {
     omniRouteUrl: settings.omniRouteUrl,
     omniRouteModel: settings.omniRouteModel,
+    omniRouteTranscriptionModel: settings.omniRouteTranscriptionModel,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: sanitisePromptOverrides(settings.promptOverrides),
   };
@@ -145,6 +157,7 @@ export async function getSettings(): Promise<Settings> {
     omniRouteUrl: persisted.omniRouteUrl,
     omniRouteApiKey,
     omniRouteModel: persisted.omniRouteModel,
+    omniRouteTranscriptionModel: persisted.omniRouteTranscriptionModel,
     captureFolderPath: persisted.captureFolderPath,
     promptOverrides: persisted.promptOverrides,
   };
@@ -154,6 +167,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
   await writePersisted({
     omniRouteUrl: settings.omniRouteUrl,
     omniRouteModel: settings.omniRouteModel,
+    omniRouteTranscriptionModel: settings.omniRouteTranscriptionModel,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: settings.promptOverrides,
   });

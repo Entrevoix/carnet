@@ -36,8 +36,9 @@ import {
   readPairedBinaryFromNote,
   stripFrontmatter,
   updateNote,
+  upsertSection,
 } from "../lib/writer";
-import { enrichSharedImage } from "../lib/omniroute";
+import { enrichSharedImage, transcribeAudio } from "../lib/omniroute";
 import { removeFromHistory, type CaptureEntry } from "../lib/storage";
 
 type Props = NativeStackScreenProps<RootStackParamList, "RecentDetail">;
@@ -52,12 +53,15 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [reEnriching, setReEnriching] = useState(false);
   const [reEnrichError, setReEnrichError] = useState<string | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
+  const [transcribeError, setTranscribeError] = useState<string | null>(null);
   // Guard against fast double-taps on Delete — the in-flight archive can
   // race with a second handler call and produce a confusing UI state.
   const deletingRef = useRef(false);
   // Same guard for the Re-enrich button — re-running the LLM call twice
   // would write the .md twice, with whichever finishes second winning.
   const reEnrichingRef = useRef(false);
+  const transcribingRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -149,12 +153,51 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     }
   }, [body, entry.filepath]);
 
+  const handleTranscribe = useCallback(async () => {
+    if (transcribingRef.current) return;
+    transcribingRef.current = true;
+    setTranscribeError(null);
+    setTranscribing(true);
+    try {
+      // Locate the paired audio file — its filename is needed for the
+      // multipart `file` field on Whisper, and the regex doubles as a
+      // pre-flight check before we read bytes off disk.
+      const linkMatch = body.match(/\.\.\/Audio\/([^/\s)]+)/);
+      if (!linkMatch) {
+        throw new Error(
+          "No paired audio found in this note — transcription needs the original audio on disk.",
+        );
+      }
+      const filename = linkMatch[1];
+      const { base64, mime } = await readPairedBinaryFromNote(body);
+      const { text } = await transcribeAudio({
+        base64,
+        mimeType: mime,
+        filename,
+      });
+      const next = upsertSection(body, "Transcript", text);
+      await updateNote(entry.filepath, next);
+      setBody(next);
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.warn("[RecentDetail] transcribe failed:", reason);
+      setTranscribeError(reason);
+    } finally {
+      transcribingRef.current = false;
+      setTranscribing(false);
+    }
+  }, [body, entry.filepath]);
+
   // Re-enrich only makes sense when the raw input is recoverable from disk.
   // That's photo + shared-image (paired JPEG in Photos/). idea/journal/person
   // notes have no raw input on disk — the enriched body is the only artifact.
   // shared-link/text need a frontmatter migration first (follow-up PR).
   const kind = extractFrontmatterField(body, "kind") ?? "";
   const canReEnrich = kind === "shared-image" || kind === "photo";
+  // Transcribe shows for audio notes (both shared-audio + in-app captures
+  // use the same kind value). Mutually exclusive with canReEnrich in
+  // practice but the disabled guard handles the would-be overlap too.
+  const canTranscribe = kind === "shared-audio";
 
   if (loading) {
     return (
@@ -192,11 +235,26 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           </Banner>
         ) : null}
 
+        {transcribeError ? (
+          <Banner visible icon="alert" actions={[]}>
+            {`Transcribe failed: ${transcribeError}`}
+          </Banner>
+        ) : null}
+
         {reEnriching ? (
           <View style={styles.inlineLoading}>
             <ActivityIndicator />
             <Text variant="bodySmall" style={styles.dim}>
               Re-running vision enrichment…
+            </Text>
+          </View>
+        ) : null}
+
+        {transcribing ? (
+          <View style={styles.inlineLoading}>
+            <ActivityIndicator />
+            <Text variant="bodySmall" style={styles.dim}>
+              Transcribing audio…
             </Text>
           </View>
         ) : null}
@@ -228,9 +286,19 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
                 mode="text"
                 icon="auto-fix"
                 onPress={handleReEnrich}
-                disabled={missing || reEnriching}
+                disabled={missing || reEnriching || transcribing}
               >
                 Re-enrich
+              </Button>
+            ) : null}
+            {canTranscribe ? (
+              <Button
+                mode="text"
+                icon="text-recognition"
+                onPress={handleTranscribe}
+                disabled={missing || reEnriching || transcribing}
+              >
+                Transcribe
               </Button>
             ) : null}
             <Button
@@ -238,7 +306,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
               icon="delete"
               textColor={theme.colors.error}
               onPress={() => setConfirmVisible(true)}
-              disabled={missing || reEnriching}
+              disabled={missing || reEnriching || transcribing}
             >
               Delete
             </Button>
