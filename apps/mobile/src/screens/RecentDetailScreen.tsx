@@ -22,10 +22,12 @@ import {
   type MD3Theme,
   Portal,
   Text,
+  TextInput,
   useTheme,
 } from "react-native-paper";
 import Markdown from "react-native-markdown-display";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { deriveTitle } from "@carnet/shared";
 
 import type { RootStackParamList } from "../../App";
 import {
@@ -39,7 +41,11 @@ import {
   upsertSection,
 } from "../lib/writer";
 import { enrichSharedImage, transcribeAudio } from "../lib/omniroute";
-import { removeFromHistory, type CaptureEntry } from "../lib/storage";
+import {
+  removeFromHistory,
+  updateCaptureTitle,
+  type CaptureEntry,
+} from "../lib/storage";
 
 type Props = NativeStackScreenProps<RootStackParamList, "RecentDetail">;
 
@@ -55,6 +61,13 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [reEnrichError, setReEnrichError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
+  // Edit-mode state. `draft` holds the in-progress textarea content;
+  // `editError` surfaces a save failure as a banner; `discardVisible`
+  // gates the unsaved-changes dialog.
+  const [editMode, setEditMode] = useState(false);
+  const [draft, setDraft] = useState<string>("");
+  const [editError, setEditError] = useState<string | null>(null);
+  const [discardVisible, setDiscardVisible] = useState(false);
   // Guard against fast double-taps on Delete — the in-flight archive can
   // race with a second handler call and produce a confusing UI state.
   const deletingRef = useRef(false);
@@ -62,6 +75,22 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // would write the .md twice, with whichever finishes second winning.
   const reEnrichingRef = useRef(false);
   const transcribingRef = useRef(false);
+  const savingEditRef = useRef(false);
+  // Holds the navigation action that triggered beforeRemove so the
+  // discard-confirm dialog can replay it after the user confirms.
+  const pendingNavActionRef = useRef<
+    Parameters<typeof navigation.dispatch>[0] | null
+  >(null);
+  // Mounted guard — Back-during-save can unmount before the in-flight
+  // updateNote resolves; setState on an unmounted component triggers a
+  // React warning. The in-flight write itself still lands on disk.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -188,6 +217,104 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     }
   }, [body, entry.filepath]);
 
+  // True iff the user is in edit mode AND has typed something different
+  // from the on-disk body. Drives the beforeRemove guard + Cancel button's
+  // decision to skip the discard dialog when there's nothing to discard.
+  const isDirty = editMode && draft !== body;
+
+  const enterEdit = useCallback(() => {
+    setDraft(body);
+    setEditError(null);
+    setEditMode(true);
+  }, [body]);
+
+  const exitEdit = useCallback(() => {
+    setEditMode(false);
+    setDraft("");
+    setEditError(null);
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    if (isDirty) {
+      pendingNavActionRef.current = null;
+      setDiscardVisible(true);
+      return;
+    }
+    exitEdit();
+  }, [isDirty, exitEdit]);
+
+  const keepEditing = useCallback(() => {
+    pendingNavActionRef.current = null;
+    setDiscardVisible(false);
+  }, []);
+
+  const confirmDiscard = useCallback(() => {
+    setDiscardVisible(false);
+    const pending = pendingNavActionRef.current;
+    pendingNavActionRef.current = null;
+    exitEdit();
+    if (pending) {
+      // Replay the navigation action the user originally requested. The
+      // re-fired beforeRemove will see !isDirty and pass through.
+      navigation.dispatch(pending);
+    }
+  }, [exitEdit, navigation]);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (savingEditRef.current) return;
+    savingEditRef.current = true;
+    setEditError(null);
+    // Disk write owns its own try so a writeAsString failure surfaces as
+    // "Save failed" while the recents-title update below stays best-effort.
+    // Otherwise an AsyncStorage failure after a successful disk write would
+    // mislead the user into thinking nothing was saved.
+    try {
+      await updateNote(entry.filepath, draft);
+      if (!mountedRef.current) {
+        savingEditRef.current = false;
+        return;
+      }
+      setBody(draft);
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.warn("[RecentDetail] save edit failed:", reason);
+      if (mountedRef.current) setEditError(reason);
+      savingEditRef.current = false;
+      return;
+    }
+
+    // Note is saved at this point. Title update is best-effort — log on
+    // failure but don't block UX or revert the disk write.
+    const newTitle = deriveTitle(draft) || entry.title;
+    if (newTitle !== entry.title) {
+      try {
+        await updateCaptureTitle(entry.id, newTitle);
+      } catch (e: unknown) {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.warn("[RecentDetail] title update failed:", reason);
+      }
+    }
+
+    if (mountedRef.current) {
+      setEditMode(false);
+      setDraft("");
+    }
+    savingEditRef.current = false;
+  }, [draft, entry.filepath, entry.id, entry.title]);
+
+  // Unsaved-changes guard. preventDefault + show dialog when the user
+  // tries to navigate away with dirty edits. Re-subscribes whenever
+  // isDirty changes so the closure always reads the current value.
+  useEffect(() => {
+    const unsub = navigation.addListener("beforeRemove", (e) => {
+      if (!isDirty) return;
+      e.preventDefault();
+      pendingNavActionRef.current = e.data.action;
+      setDiscardVisible(true);
+    });
+    return unsub;
+  }, [navigation, isDirty]);
+
   // Re-enrich only makes sense when the raw input is recoverable from disk.
   // That's photo + shared-image (paired JPEG in Photos/). idea/journal/person
   // notes have no raw input on disk — the enriched body is the only artifact.
@@ -241,6 +368,12 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           </Banner>
         ) : null}
 
+        {editError ? (
+          <Banner visible icon="alert" actions={[]}>
+            {`Save failed: ${editError}`}
+          </Banner>
+        ) : null}
+
         {reEnriching ? (
           <View style={styles.inlineLoading}>
             <ActivityIndicator />
@@ -271,47 +404,85 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           </Card.Content>
         </Card>
 
-        {!missing ? (
+        {editMode ? (
           <Card style={styles.card}>
+            <Card.Title title="Editing" subtitle="Markdown + frontmatter" />
             <Card.Content>
-              <Markdown style={markdownStyle(theme)}>{renderBody}</Markdown>
+              <TextInput
+                mode="outlined"
+                multiline
+                numberOfLines={16}
+                value={draft}
+                onChangeText={setDraft}
+                style={styles.editor}
+                autoCorrect={false}
+                autoCapitalize="none"
+              />
             </Card.Content>
+            <Card.Actions>
+              <Button onPress={cancelEdit}>Cancel</Button>
+              <Button
+                mode="contained"
+                onPress={handleSaveEdit}
+                disabled={!isDirty}
+              >
+                Save
+              </Button>
+            </Card.Actions>
           </Card>
-        ) : null}
+        ) : (
+          <>
+            {!missing ? (
+              <Card style={styles.card}>
+                <Card.Content>
+                  <Markdown style={markdownStyle(theme)}>{renderBody}</Markdown>
+                </Card.Content>
+              </Card>
+            ) : null}
 
-        <Card style={styles.card}>
-          <Card.Actions>
-            {canReEnrich ? (
-              <Button
-                mode="text"
-                icon="auto-fix"
-                onPress={handleReEnrich}
-                disabled={missing || reEnriching || transcribing}
-              >
-                Re-enrich
-              </Button>
-            ) : null}
-            {canTranscribe ? (
-              <Button
-                mode="text"
-                icon="text-recognition"
-                onPress={handleTranscribe}
-                disabled={missing || reEnriching || transcribing}
-              >
-                Transcribe
-              </Button>
-            ) : null}
-            <Button
-              mode="text"
-              icon="delete"
-              textColor={theme.colors.error}
-              onPress={() => setConfirmVisible(true)}
-              disabled={missing || reEnriching || transcribing}
-            >
-              Delete
-            </Button>
-          </Card.Actions>
-        </Card>
+            <Card style={styles.card}>
+              <Card.Actions>
+                <Button
+                  mode="text"
+                  icon="pencil"
+                  onPress={enterEdit}
+                  disabled={missing || reEnriching || transcribing}
+                >
+                  Edit
+                </Button>
+                {canReEnrich ? (
+                  <Button
+                    mode="text"
+                    icon="auto-fix"
+                    onPress={handleReEnrich}
+                    disabled={missing || reEnriching || transcribing}
+                  >
+                    Re-enrich
+                  </Button>
+                ) : null}
+                {canTranscribe ? (
+                  <Button
+                    mode="text"
+                    icon="text-recognition"
+                    onPress={handleTranscribe}
+                    disabled={missing || reEnriching || transcribing}
+                  >
+                    Transcribe
+                  </Button>
+                ) : null}
+                <Button
+                  mode="text"
+                  icon="delete"
+                  textColor={theme.colors.error}
+                  onPress={() => setConfirmVisible(true)}
+                  disabled={missing || reEnriching || transcribing}
+                >
+                  Delete
+                </Button>
+              </Card.Actions>
+            </Card>
+          </>
+        )}
       </ScrollView>
 
       <Portal>
@@ -330,6 +501,21 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
             <Button onPress={() => setConfirmVisible(false)}>Cancel</Button>
             <Button onPress={handleDelete} textColor={theme.colors.error}>
               Delete
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+
+        <Dialog visible={discardVisible} onDismiss={keepEditing}>
+          <Dialog.Title>Discard changes?</Dialog.Title>
+          <Dialog.Content>
+            <Text variant="bodyMedium">
+              You have unsaved edits. Discard them and leave?
+            </Text>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={keepEditing}>Keep editing</Button>
+            <Button onPress={confirmDiscard} textColor={theme.colors.error}>
+              Discard
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -415,5 +601,9 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     alignItems: "center",
     gap: 6,
+  },
+  editor: {
+    fontFamily: "monospace",
+    minHeight: 320,
   },
 });
