@@ -285,6 +285,7 @@ describe("HTTPS enforcement", () => {
       omniRouteApiKey: "test-key",
       omniRouteModel: "gpt-4o-mini",
       omniRouteTranscriptionModel: "whisper-1",
+      persistentNotificationEnabled: false,
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -300,6 +301,7 @@ describe("HTTPS enforcement", () => {
       omniRouteApiKey: "",
       omniRouteModel: "gpt-4o-mini",
       omniRouteTranscriptionModel: "whisper-1",
+      persistentNotificationEnabled: false,
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -726,6 +728,7 @@ describe("transcribeAudio", () => {
       omniRouteApiKey: "test-key",
       omniRouteModel: "gpt-4o-mini",
       omniRouteTranscriptionModel: "whisper-1",
+      persistentNotificationEnabled: false,
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -747,6 +750,7 @@ describe("transcribeAudio", () => {
       omniRouteApiKey: "test-key",
       omniRouteModel: "gpt-4o-mini",
       omniRouteTranscriptionModel: "   ",
+      persistentNotificationEnabled: false,
       captureFolderPath: "",
       promptOverrides: {},
     });

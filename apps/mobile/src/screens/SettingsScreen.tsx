@@ -11,6 +11,7 @@ import {
   Modal,
   Portal,
   Snackbar,
+  Switch,
   Text,
   TextInput,
 } from "react-native-paper";
@@ -28,6 +29,7 @@ import {
   type Settings,
 } from "../lib/settings";
 import { listModels } from "../lib/omniroute";
+import * as captureNotification from "../lib/captureNotification";
 import {
   buildIdeaPrompt,
   buildJournalPrompt,
@@ -68,6 +70,7 @@ interface FormState {
   omniRouteUrl: string;
   omniRouteModel: string;
   omniRouteTranscriptionModel: string;
+  persistentNotificationEnabled: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
 }
@@ -131,10 +134,36 @@ export default function SettingsScreen() {
         hasOmniRouteApiKey(),
         shouldShowMigrationBanner(),
       ]);
+      // Source-of-truth for the notification toggle is native
+      // SharedPreferences (BootReceiver reads it). Read the native flag if
+      // available so the UI matches reality. Also reconcile: if native
+      // says ON but POST_NOTIFICATIONS was revoked via system settings,
+      // the service is running with an invisible notification — force-stop
+      // and flip the UI off so reality matches what the user can see.
+      let initialNotificationEnabled = s.persistentNotificationEnabled;
+      if (captureNotification.isAvailable()) {
+        try {
+          const enabledNative = await captureNotification.isEnabled();
+          if (enabledNative) {
+            const granted = await captureNotification.permissionIsGranted();
+            if (granted) {
+              initialNotificationEnabled = true;
+            } else {
+              await captureNotification.stop();
+              initialNotificationEnabled = false;
+            }
+          } else {
+            initialNotificationEnabled = false;
+          }
+        } catch {
+          // Native module read failed — keep the JS-side value as the hint.
+        }
+      }
       setForm({
         omniRouteUrl: s.omniRouteUrl,
         omniRouteModel: s.omniRouteModel,
         omniRouteTranscriptionModel: s.omniRouteTranscriptionModel,
+        persistentNotificationEnabled: initialNotificationEnabled,
         captureFolderPath: s.captureFolderPath,
         promptOverrides: s.promptOverrides,
       });
@@ -163,6 +192,7 @@ export default function SettingsScreen() {
       omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
       omniRouteTranscriptionModel:
         form.omniRouteTranscriptionModel || DEFAULT_TRANSCRIPTION_MODEL,
+      persistentNotificationEnabled: form.persistentNotificationEnabled,
       // Pass an empty string here so saveSettings doesn't touch the key.
       // Then we handle the key write separately below.
       omniRouteApiKey: "",
@@ -185,6 +215,61 @@ export default function SettingsScreen() {
     await setOmniRouteApiKey("");
     setKeyConfigured(false);
     setPendingKey("");
+  };
+
+  /**
+   * Atomic toggle for the persistent capture notification. Turning ON
+   * requires POST_NOTIFICATIONS grant — if denied, the toggle stays off
+   * and the user sees a snackbar. Turning OFF stops the service
+   * immediately. Form state is updated only after the native call
+   * succeeds so the UI never lies about what's actually running.
+   */
+  const handleToggleNotification = async (next: boolean) => {
+    if (!form) return;
+    if (!captureNotification.isAvailable()) {
+      setPickerError(
+        "Persistent notification needs a native build (Expo Go can't host it).",
+      );
+      return;
+    }
+    if (next) {
+      const granted = await captureNotification.requestPermission();
+      if (!granted) {
+        setPickerError(
+          "Notification permission denied — toggle stays off.",
+        );
+        return;
+      }
+      try {
+        await captureNotification.start();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setPickerError(`Failed to start notification: ${msg.slice(0, 120)}`);
+        return;
+      }
+    } else {
+      try {
+        await captureNotification.stop();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setPickerError(`Failed to stop notification: ${msg.slice(0, 120)}`);
+        return;
+      }
+    }
+    setForm({ ...form, persistentNotificationEnabled: next });
+    // Self-save to AsyncStorage so a fast Save tap doesn't race with the
+    // toggle's async setForm. Native SharedPreferences is the real source
+    // of truth on Android, but keeping the JS hint in sync avoids a
+    // confusing "Settings saved" toast that wrote the pre-flip value.
+    try {
+      const current = await getSettings();
+      await saveSettings({
+        ...current,
+        persistentNotificationEnabled: next,
+      });
+    } catch {
+      // Best-effort — reconcile-on-mount catches drift from a failed write.
+    }
   };
 
   const handleDismissBanner = async () => {
@@ -383,6 +468,34 @@ export default function SettingsScreen() {
             Reset to default
           </Button>
         )}
+      </View>
+
+      <View style={styles.notificationSection}>
+        <Text variant="titleMedium" style={styles.promptSectionTitle}>
+          Capture surfaces
+        </Text>
+        <List.Item
+          title="Persistent capture notification"
+          description={
+            form.persistentNotificationEnabled
+              ? "Always-on quick-capture row in the notification shade"
+              : "Off — turn on for one-tap capture from anywhere"
+          }
+          left={(p) => <List.Icon {...p} icon="bell-ring-outline" />}
+          right={() => (
+            <Switch
+              value={form.persistentNotificationEnabled}
+              onValueChange={handleToggleNotification}
+              disabled={!captureNotification.isAvailable()}
+            />
+          )}
+          style={styles.notificationRow}
+        />
+        {!captureNotification.isAvailable() ? (
+          <HelperText type="info" visible>
+            Requires a native build — rebuild via `npm run android` to enable.
+          </HelperText>
+        ) : null}
       </View>
 
       <View style={styles.promptSection}>
@@ -623,6 +736,8 @@ const styles = StyleSheet.create({
   browseCount: { opacity: 0.6, paddingHorizontal: 4 },
   browseSubheader: { paddingHorizontal: 0, paddingTop: 4 },
   browseEmpty: { textAlign: "center", opacity: 0.6, padding: 24 },
+  notificationSection: { marginTop: 16 },
+  notificationRow: { paddingHorizontal: 0 },
   promptSection: { marginTop: 16 },
   promptSectionTitle: { paddingHorizontal: 0, paddingTop: 8 },
   promptRow: { paddingHorizontal: 0 },
