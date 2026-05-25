@@ -7,12 +7,28 @@ vi.mock("./settings", () => ({
     omniRouteApiKey: "test-key",
     omniRouteModel: "gpt-4o-mini",
     omniRouteTranscriptionModel: "whisper-1",
+    persistentNotificationEnabled: false,
+    autoTranscribeOnSave: false,
     captureFolderPath: "",
     promptOverrides: {},
   }),
   // Used by each enrich entry point to load per-mode prompt overrides.
   // Default-empty so existing tests get the default-prompt behavior.
   getPromptOverrides: vi.fn().mockResolvedValue({}),
+}));
+
+// Mock the writer module so autoTranscribeIfEnabled's readNote /
+// readPairedBinaryFromNote / updateNote / upsertSection paths are
+// controllable per-test. Only autoTranscribeIfEnabled in omniroute.ts
+// touches writer; existing tests don't care about the mocked shape.
+vi.mock("./writer", () => ({
+  readNote: vi.fn(),
+  readPairedBinaryFromNote: vi.fn(),
+  updateNote: vi.fn(),
+  upsertSection: vi.fn(
+    (md: string, heading: string, body: string) =>
+      `${md}\n\n## ${heading}\n\n${body}\n`,
+  ),
 }));
 
 // ── Mock fetch ────────────────────────────────────────────────────────────────
@@ -40,6 +56,7 @@ const fetchMock = vi.fn();
 globalThis.fetch = fetchMock as unknown as typeof fetch;
 
 import {
+  autoTranscribeIfEnabled,
   enrichIdea,
   enrichJournal,
   enrichPerson,
@@ -286,6 +303,7 @@ describe("HTTPS enforcement", () => {
       omniRouteModel: "gpt-4o-mini",
       omniRouteTranscriptionModel: "whisper-1",
       persistentNotificationEnabled: false,
+      autoTranscribeOnSave: false,
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -302,6 +320,7 @@ describe("HTTPS enforcement", () => {
       omniRouteModel: "gpt-4o-mini",
       omniRouteTranscriptionModel: "whisper-1",
       persistentNotificationEnabled: false,
+      autoTranscribeOnSave: false,
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -729,6 +748,7 @@ describe("transcribeAudio", () => {
       omniRouteModel: "gpt-4o-mini",
       omniRouteTranscriptionModel: "whisper-1",
       persistentNotificationEnabled: false,
+      autoTranscribeOnSave: false,
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -751,6 +771,7 @@ describe("transcribeAudio", () => {
       omniRouteModel: "gpt-4o-mini",
       omniRouteTranscriptionModel: "   ",
       persistentNotificationEnabled: false,
+      autoTranscribeOnSave: false,
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -816,5 +837,187 @@ describe("transcribeAudio", () => {
       expect(e).toBeInstanceOf(OmniRouteError);
       expect((e as OmniRouteError).message).toContain("non-JSON");
     }
+  });
+});
+
+// ── autoTranscribeIfEnabled ───────────────────────────────────────────────────
+
+describe("autoTranscribeIfEnabled", () => {
+  const AUDIO_NOTE = `---\nkind: shared-audio\n---\n# Audio\n\n## File\n[clip.m4a](../Audio/clip.m4a)\n\n## Context\n(none)\n`;
+
+  beforeEach(async () => {
+    const { readNote, readPairedBinaryFromNote, updateNote } = await import(
+      "./writer"
+    );
+    vi.mocked(readNote).mockReset();
+    vi.mocked(readPairedBinaryFromNote).mockReset();
+    vi.mocked(updateNote).mockReset();
+  });
+
+  it("no-ops (returns null) when autoTranscribeOnSave is false (default)", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      omniRouteUrl: "https://llm.example.com",
+      omniRouteApiKey: "test-key",
+      omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "whisper-1",
+      persistentNotificationEnabled: false,
+      autoTranscribeOnSave: false,
+      captureFolderPath: "",
+      promptOverrides: {},
+    });
+    const { readNote } = await import("./writer");
+
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
+    expect(result).toBeNull();
+    // Helper short-circuits before reading the note — no I/O burned.
+    expect(readNote).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns null on the full happy path (toggle on, read, transcribe, upsert, update)", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      omniRouteUrl: "https://llm.example.com",
+      omniRouteApiKey: "test-key",
+      omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "whisper-1",
+      persistentNotificationEnabled: false,
+      autoTranscribeOnSave: true,
+      captureFolderPath: "",
+      promptOverrides: {},
+    });
+    const { readNote, readPairedBinaryFromNote, updateNote } = await import(
+      "./writer"
+    );
+    vi.mocked(readNote).mockResolvedValueOnce(AUDIO_NOTE);
+    vi.mocked(readPairedBinaryFromNote).mockResolvedValueOnce({
+      base64: "AAAA",
+      mime: "audio/mp4",
+    });
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(makeWhisperResponse("hello world"));
+
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
+    expect(result).toBeNull();
+    expect(updateNote).toHaveBeenCalledTimes(1);
+    const [filepath, newBody] = vi.mocked(updateNote).mock.calls[0];
+    expect(filepath).toBe("/vault/Ideas/foo.md");
+    expect(newBody).toContain("## Transcript");
+    expect(newBody).toContain("hello world");
+  });
+
+  it("returns 'Note has no Audio/ link' when body doesn't reference Audio/", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      omniRouteUrl: "https://llm.example.com",
+      omniRouteApiKey: "test-key",
+      omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "whisper-1",
+      persistentNotificationEnabled: false,
+      autoTranscribeOnSave: true,
+      captureFolderPath: "",
+      promptOverrides: {},
+    });
+    const { readNote, readPairedBinaryFromNote } = await import("./writer");
+    vi.mocked(readNote).mockResolvedValueOnce(
+      `---\nkind: idea\n---\n# Plain idea\n\nNo binary link here.\n`,
+    );
+
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
+    expect(result).toBe("Note has no Audio/ link");
+    expect(readPairedBinaryFromNote).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns the readNote error message when reading the note throws", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      omniRouteUrl: "https://llm.example.com",
+      omniRouteApiKey: "test-key",
+      omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "whisper-1",
+      persistentNotificationEnabled: false,
+      autoTranscribeOnSave: true,
+      captureFolderPath: "",
+      promptOverrides: {},
+    });
+    const { readNote } = await import("./writer");
+    vi.mocked(readNote).mockRejectedValueOnce(new Error("ENOENT: no such file"));
+
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/gone.md");
+    expect(result).toContain("ENOENT");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns the transcribeAudio error message when Whisper rejects (e.g. 401)", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      omniRouteUrl: "https://llm.example.com",
+      omniRouteApiKey: "test-key",
+      omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "whisper-1",
+      persistentNotificationEnabled: false,
+      autoTranscribeOnSave: true,
+      captureFolderPath: "",
+      promptOverrides: {},
+    });
+    const { readNote, readPairedBinaryFromNote, updateNote } = await import(
+      "./writer"
+    );
+    vi.mocked(readNote).mockResolvedValueOnce(AUDIO_NOTE);
+    vi.mocked(readPairedBinaryFromNote).mockResolvedValueOnce({
+      base64: "AAAA",
+      mime: "audio/mp4",
+    });
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(makeErrorResponse(401, "invalid api key"));
+
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
+    expect(result).toContain("invalid api key");
+    // updateNote MUST NOT run on transcribe failure — would clobber the note
+    // with a half-baked section. The original note stays as-is.
+    expect(updateNote).not.toHaveBeenCalled();
+  });
+
+  it("never throws — returns an error string instead", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      omniRouteUrl: "https://llm.example.com",
+      omniRouteApiKey: "test-key",
+      omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "whisper-1",
+      persistentNotificationEnabled: false,
+      autoTranscribeOnSave: true,
+      captureFolderPath: "",
+      promptOverrides: {},
+    });
+    const { readNote, readPairedBinaryFromNote, updateNote } = await import(
+      "./writer"
+    );
+    vi.mocked(readNote).mockResolvedValueOnce(AUDIO_NOTE);
+    vi.mocked(readPairedBinaryFromNote).mockResolvedValueOnce({
+      base64: "AAAA",
+      mime: "audio/mp4",
+    });
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(makeWhisperResponse("ok"));
+    // updateNote throws — caller must still receive a string, not a thrown error.
+    vi.mocked(updateNote).mockRejectedValueOnce(
+      new Error("SAF tree permission revoked"),
+    );
+
+    let returned: string | null | undefined;
+    let threw = false;
+    try {
+      returned = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+    expect(returned).toContain("SAF tree permission revoked");
   });
 });

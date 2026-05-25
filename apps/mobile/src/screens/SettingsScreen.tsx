@@ -71,6 +71,7 @@ interface FormState {
   omniRouteModel: string;
   omniRouteTranscriptionModel: string;
   persistentNotificationEnabled: boolean;
+  autoTranscribeOnSave: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
 }
@@ -164,6 +165,7 @@ export default function SettingsScreen() {
         omniRouteModel: s.omniRouteModel,
         omniRouteTranscriptionModel: s.omniRouteTranscriptionModel,
         persistentNotificationEnabled: initialNotificationEnabled,
+        autoTranscribeOnSave: s.autoTranscribeOnSave,
         captureFolderPath: s.captureFolderPath,
         promptOverrides: s.promptOverrides,
       });
@@ -193,6 +195,7 @@ export default function SettingsScreen() {
       omniRouteTranscriptionModel:
         form.omniRouteTranscriptionModel || DEFAULT_TRANSCRIPTION_MODEL,
       persistentNotificationEnabled: form.persistentNotificationEnabled,
+      autoTranscribeOnSave: form.autoTranscribeOnSave,
       // Pass an empty string here so saveSettings doesn't touch the key.
       // Then we handle the key write separately below.
       omniRouteApiKey: "",
@@ -468,6 +471,34 @@ export default function SettingsScreen() {
             Reset to default
           </Button>
         )}
+      </View>
+
+      <View style={styles.notificationSection}>
+        <Text variant="titleMedium" style={styles.promptSectionTitle}>
+          AI behavior
+        </Text>
+        <List.Item
+          title="Auto-transcribe audio on save"
+          description={
+            form.autoTranscribeOnSave
+              ? "Every audio capture runs through Whisper automatically"
+              : "Off — tap Transcribe per note instead"
+          }
+          left={(p) => <List.Icon {...p} icon="text-recognition" />}
+          right={() => (
+            <Switch
+              value={form.autoTranscribeOnSave}
+              onValueChange={(next) =>
+                update({ autoTranscribeOnSave: next })
+              }
+            />
+          )}
+          style={styles.notificationRow}
+        />
+        <HelperText type="info" visible>
+          Doubles the OmniRoute API spend per audio capture. Skip if you only
+          transcribe occasionally.
+        </HelperText>
       </View>
 
       <View style={styles.notificationSection}>

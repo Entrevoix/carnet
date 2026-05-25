@@ -38,6 +38,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import type { RootStackParamList } from "../../App";
 import { recordCapture } from "../lib/storage";
 import { writeBinary, writeIdea } from "../lib/writer";
+import { autoTranscribeIfEnabled } from "../lib/omniroute";
 import {
   BASE64_EXPANSION,
   formatElapsed,
@@ -86,10 +87,29 @@ export default function AudioCaptureScreen({ navigation }: Props) {
   const [savedFilepath, setSavedFilepath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
+  // Auto-transcribe (Settings → AI behavior toggle). The hook is
+  // fire-and-forget after the saved screen appears; these surface its
+  // in-flight + error state inline below the path.
+  const [autoTranscribing, setAutoTranscribing] = useState(false);
+  const [autoTranscribeError, setAutoTranscribeError] = useState<string | null>(
+    null,
+  );
 
   /** Pulse opacity for the REC indicator. opacity is compositor-friendly with
    * useNativeDriver, so a long recording won't drop frames on low-end phones. */
   const pulse = useRef(new Animated.Value(1)).current;
+
+  // Mounted guard — the user can tap Done before the fire-and-forget
+  // transcription finishes; without this, setAutoTranscribing(false) on
+  // an unmounted screen triggers a React warning. The write to disk
+  // (upsertSection + updateNote inside the helper) still completes.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   /** Discard any active recording and its cache file. Used by Cancel, by the
    * unmount cleanup, and as the bail-out path inside stopAndSave on error. */
@@ -313,6 +333,20 @@ export default function AudioCaptureScreen({ navigation }: Props) {
 
       setSavedFilepath(filepath);
       setPhase("saved");
+
+      // Fire-and-forget auto-transcribe. No-ops when the toggle is off;
+      // helper handles its own errors and never throws by contract. Capture
+      // filepath into a local so the closure doesn't read a mutated ref.
+      // mountedRef guards the setStates so a tap-Done-before-completion
+      // doesn't fire React warnings — the disk write still completes.
+      const transcribePath = filepath;
+      setAutoTranscribing(true);
+      setAutoTranscribeError(null);
+      void autoTranscribeIfEnabled(transcribePath).then((errMsg) => {
+        if (!mountedRef.current) return;
+        setAutoTranscribing(false);
+        if (errMsg) setAutoTranscribeError(errMsg);
+      });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[AudioCapture] save failed:", msg);
@@ -387,10 +421,23 @@ export default function AudioCaptureScreen({ navigation }: Props) {
             <Text variant="bodySmall" selectable style={styles.body}>
               {savedFilepath ?? "(no path)"}
             </Text>
-            <HelperText type="info" visible>
-              Open Obsidian (or your editor) on the synced folder to listen
-              or annotate. Transcription is a planned follow-up.
-            </HelperText>
+            {autoTranscribing ? (
+              <View style={styles.transcribeRow}>
+                <ActivityIndicator size="small" />
+                <Text variant="bodySmall" style={styles.dim}>
+                  Transcribing audio…
+                </Text>
+              </View>
+            ) : autoTranscribeError ? (
+              <HelperText type="error" visible>
+                {`Auto-transcribe failed: ${autoTranscribeError}`}
+              </HelperText>
+            ) : (
+              <HelperText type="info" visible>
+                Open Obsidian (or your editor) on the synced folder to listen
+                or annotate.
+              </HelperText>
+            )}
           </Card.Content>
           <Card.Actions>
             <Button mode="contained" onPress={() => navigation.goBack()}>
@@ -493,4 +540,10 @@ const styles = StyleSheet.create({
   },
   permissionText: { textAlign: "center" },
   grantBtn: { marginTop: 8 },
+  transcribeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingTop: 8,
+  },
 });
