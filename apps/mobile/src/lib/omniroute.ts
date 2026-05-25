@@ -104,6 +104,12 @@ const FETCH_TIMEOUT_MS = 60_000;
  * MUST gate on `assertBase64UnderLimit` rather than trusting quality alone. */
 export const MAX_SHARED_IMAGE_BYTES = 8 * 1024 * 1024;
 
+/** Hard cap for the audio payload sent to Whisper. OpenAI's hosted Whisper
+ * rejects >25 MB; LiteLLM-style proxies enforce the same. Pre-check before
+ * the multipart upload so users see a friendly error instead of a confusing
+ * 413 from the provider. */
+export const MAX_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
+
 /** Throw a user-friendly OmniRouteError if `base64` decodes to more than
  * `MAX_SHARED_IMAGE_BYTES`. Avoids materialising the binary — base64 length
  * × 0.75 is exact enough (off-by-≤2 bytes from padding `=`).
@@ -132,6 +138,43 @@ function sanitizeErrorMessage(raw: string): string {
 }
 
 /**
+ * Reject non-HTTPS OmniRoute URLs to prevent the API key from being sent
+ * over cleartext. Localhost / loopback / RFC1918 (10.x) are allowed for
+ * dev — the host-on-LAN dev loop relies on plain HTTP. All other http://
+ * URLs throw.
+ *
+ * Extracted from three call sites (executeChat, listModels, transcribeAudio).
+ */
+function assertHttpsOrLocal(trimmed: string): void {
+  if (/^https:\/\//i.test(trimmed)) return;
+  if (/^http:\/\/(localhost|127\.0\.0\.1|10\.)/i.test(trimmed)) return;
+  throw new OmniRouteError(
+    "OmniRoute URL must use https:// to protect the API key",
+    0,
+  );
+}
+
+/**
+ * Build a sanitized HTTP-error detail string from a failing Response. Reads
+ * the body as JSON and appends `error.message` if present; swallows parse
+ * failures because the status alone is enough signal in that case.
+ *
+ * Extracted from three call sites (executeChat, listModels, transcribeAudio).
+ */
+async function parseErrorBody(response: Response): Promise<string> {
+  let detail = `HTTP ${response.status}`;
+  try {
+    const errBody = (await response.json()) as OpenAIResponse;
+    if (errBody.error?.message) {
+      detail += `: ${sanitizeErrorMessage(errBody.error.message)}`;
+    }
+  } catch {
+    // ignore parse failure — status alone is enough
+  }
+  return detail;
+}
+
+/**
  * Low-level POST to /v1/chat/completions. Sends arbitrary OpenAI-compatible
  * messages — text or multimodal. Used both for the text-only modes
  * (idea/journal/person) and for vision-enabled share-target enrichment.
@@ -147,18 +190,8 @@ async function executeChat(
   model: string,
   messages: OpenAIMessage[],
 ): Promise<EnrichResult> {
-  // Enforce HTTPS. An http:// URL would leak the bearer token in cleartext.
-  // Allow http://localhost / 127.0.0.1 / 10.x for dev convenience.
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  if (!/^https:\/\//i.test(trimmed)) {
-    const isLocal = /^http:\/\/(localhost|127\.0\.0\.1|10\.)/i.test(trimmed);
-    if (!isLocal) {
-      throw new OmniRouteError(
-        "OmniRoute URL must use https:// to protect the API key",
-        0,
-      );
-    }
-  }
+  assertHttpsOrLocal(trimmed);
 
   const url = `${trimmed}/v1/chat/completions`;
   const body = JSON.stringify({ model, messages, stream: false });
@@ -186,16 +219,10 @@ async function executeChat(
   clearTimeout(timer);
 
   if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const errBody = (await response.json()) as OpenAIResponse;
-      if (errBody.error?.message) {
-        detail += `: ${sanitizeErrorMessage(errBody.error.message)}`;
-      }
-    } catch {
-      // ignore parse failure — original status message is enough
-    }
-    throw new OmniRouteError(`OmniRoute error — ${detail}`, response.status);
+    throw new OmniRouteError(
+      `OmniRoute error — ${await parseErrorBody(response)}`,
+      response.status,
+    );
   }
 
   const json = (await response.json()) as OpenAIResponse;
@@ -263,6 +290,11 @@ async function getModel(): Promise<string> {
   return settings.omniRouteModel.trim() || "openrouter/openai/gpt-4o-mini";
 }
 
+async function getTranscriptionModel(): Promise<string> {
+  const settings = await getSettings();
+  return settings.omniRouteTranscriptionModel.trim() || "whisper-1";
+}
+
 /**
  * Fetch the available model catalog from `${baseUrl}/v1/models`. Returns
  * the sorted list of model IDs. Same auth + HTTPS rules as chatCompletion.
@@ -276,15 +308,7 @@ export async function listModels(
   apiKey: string,
 ): Promise<string[]> {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  if (!/^https:\/\//i.test(trimmed)) {
-    const isLocal = /^http:\/\/(localhost|127\.0\.0\.1|10\.)/i.test(trimmed);
-    if (!isLocal) {
-      throw new OmniRouteError(
-        "OmniRoute URL must use https:// to protect the API key",
-        0,
-      );
-    }
-  }
+  assertHttpsOrLocal(trimmed);
 
   const url = `${trimmed}/v1/models`;
   const controller = new AbortController();
@@ -310,16 +334,10 @@ export async function listModels(
   clearTimeout(timer);
 
   if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const errBody = (await response.json()) as OpenAIResponse;
-      if (errBody.error?.message) {
-        detail += `: ${sanitizeErrorMessage(errBody.error.message)}`;
-      }
-    } catch {
-      // ignore parse failure
-    }
-    throw new OmniRouteError(`OmniRoute error — ${detail}`, response.status);
+    throw new OmniRouteError(
+      `OmniRoute error — ${await parseErrorBody(response)}`,
+      response.status,
+    );
   }
 
   const json = (await response.json()) as { data?: Array<{ id?: string }> };
@@ -468,6 +486,112 @@ export async function enrichSharedLink(input: {
     overrides.sharedLink,
   );
   return chatCompletion(baseUrl, apiKey, model, pair);
+}
+
+/**
+ * Transcribe an audio file via OmniRoute's OpenAI-compatible
+ * `/v1/audio/transcriptions` endpoint (Whisper). POSTs the bytes as
+ * multipart/form-data with `file` + `model` fields. Returns the recognized
+ * text and the model that was used.
+ *
+ * Same HTTPS guard + sanitization + abort timeout as the chat path — the
+ * guard is duplicated rather than extracted because two consumers don't
+ * yet justify a shared helper, and the chat-completions code path has
+ * its own JSON body shape it doesn't want to share.
+ *
+ * Pre-checks the 25 MB Whisper cap from the base64 length so an oversized
+ * recording fails locally instead of after a slow upload that ends in 413.
+ */
+export async function transcribeAudio(input: {
+  base64: string;
+  mimeType: string;
+  filename: string;
+}): Promise<{ text: string; model: string }> {
+  const approxBytes = Math.floor(input.base64.length * 0.75);
+  if (approxBytes > MAX_TRANSCRIPTION_BYTES) {
+    const mb = Math.round(approxBytes / 1024 / 1024);
+    const capMb = Math.round(MAX_TRANSCRIPTION_BYTES / 1024 / 1024);
+    throw new OmniRouteError(
+      `Audio is ${mb} MB — Whisper caps at ${capMb} MB. Split or compress before transcribing.`,
+      413,
+    );
+  }
+
+  const [baseUrl, apiKey, model] = await Promise.all([
+    getBaseUrl(),
+    getApiKey(),
+    getTranscriptionModel(),
+  ]);
+
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  assertHttpsOrLocal(trimmed);
+
+  // RN's fetch handles data: URIs; round-tripping through Blob is the
+  // canonical way to attach binary bytes to a multipart FormData without
+  // requiring filesystem access. base64 → Blob is sync-fast in practice.
+  const dataUrl = `data:${input.mimeType};base64,${input.base64}`;
+  const blob = await (await fetch(dataUrl)).blob();
+  const form = new FormData();
+  form.append("file", blob, input.filename);
+  form.append("model", model);
+  form.append("response_format", "json");
+
+  const url = `${trimmed}/v1/audio/transcriptions`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    // DO NOT set Content-Type — fetch must add the multipart boundary itself.
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: form as unknown as BodyInit,
+      signal: controller.signal,
+    });
+  } catch (e: unknown) {
+    clearTimeout(timer);
+    const raw = e instanceof Error ? e.message : String(e);
+    throw new OmniRouteError(
+      `OmniRoute network error — ${sanitizeErrorMessage(raw)}`,
+      0,
+    );
+  }
+  clearTimeout(timer);
+
+  if (!response.ok) {
+    throw new OmniRouteError(
+      `OmniRoute transcription error — ${await parseErrorBody(response)}`,
+      response.status,
+    );
+  }
+
+  // Wrap success-path JSON parse — some proxies (LiteLLM misconfigs) return
+  // text/plain on a 200, which would otherwise leak a raw SyntaxError that
+  // bypasses OmniRouteError classification (isPermanentError would miss it).
+  let json: { text?: string };
+  try {
+    json = (await response.json()) as { text?: string };
+  } catch (e: unknown) {
+    const raw = e instanceof Error ? e.message : String(e);
+    throw new OmniRouteError(
+      `OmniRoute returned non-JSON transcription body — ${sanitizeErrorMessage(raw)}`,
+      response.status,
+    );
+  }
+  const text = json.text?.trim() ?? "";
+  if (!text) {
+    // Empty transcript usually means Whisper detected silence. Don't write
+    // an empty `## Transcript` section — surface as an error so the user
+    // knows nothing was recognized.
+    throw new OmniRouteError(
+      "Whisper returned an empty transcript",
+      response.status,
+    );
+  }
+  return { text, model };
 }
 
 /**

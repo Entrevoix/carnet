@@ -302,6 +302,70 @@ async function deleteByUri(uri: string, isSaf: boolean): Promise<void> {
  * had no trailing newline (e.g. last line of a model response), dropping
  * the embed. This helper handles `\n` and end-of-string equally.
  */
+/**
+ * Idempotently insert-or-replace an H2 section in a markdown body.
+ *
+ *   - If `## {heading}` exists, replace everything from that line through
+ *     the next `## ` / `# ` line (or end-of-file) with the new content.
+ *   - If it doesn't exist, append a new section at the end with one blank
+ *     line of separation from the prior content.
+ *
+ * Heading match is exact-line and case-sensitive (`## Transcript` matches;
+ * `## Transcript ` with trailing space does not, neither does `##  Foo`
+ * with double space). This is deliberate: Obsidian's heading parser is
+ * strict, and exact-match means re-runs always find their own section
+ * back without surprises from whitespace drift.
+ *
+ * Section boundary stops at H1 and H2 only. H3+ subheadings are treated as
+ * part of the current section's body, so a transcript can include
+ * `### Speakers` without being truncated.
+ *
+ * Pure function — no I/O. Caller wires `updateNote` to persist the result.
+ */
+export function upsertSection(
+  markdown: string,
+  heading: string,
+  body: string,
+): string {
+  // Heading with a newline would break exact-line match (findIndex misses)
+  // AND emit a malformed heading on append. Defensive — current caller
+  // passes the literal "Transcript" but the helper is exported as general
+  // utility.
+  if (heading.includes("\n") || heading.includes("\r")) {
+    throw new Error("upsertSection: heading cannot contain newlines");
+  }
+
+  const headingLine = `## ${heading}`;
+  const lines = markdown.split("\n");
+  const startIdx = lines.findIndex((l) => l === headingLine);
+
+  if (startIdx === -1) {
+    // Append. Normalize trailing newlines so output always ends with
+    // exactly one newline after the appended body. Skip the leading "\n\n"
+    // separator entirely when markdown is empty so the output doesn't start
+    // with phantom blank lines.
+    const trimmed = markdown.replace(/\n+$/, "");
+    const separator = trimmed.length === 0 ? "" : "\n\n";
+    return `${trimmed}${separator}${headingLine}\n\n${body}\n`;
+  }
+
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    if (lines[i].startsWith("## ") || lines[i].startsWith("# ")) {
+      endIdx = i;
+      break;
+    }
+  }
+
+  const before = lines.slice(0, startIdx);
+  const after = lines.slice(endIdx);
+  const replacement = [headingLine, "", body];
+  // Preserve a blank line between the new section and whatever follows.
+  // If `after` is empty (section was at EOF), no separator needed.
+  if (after.length > 0 && after[0] !== "") replacement.push("");
+  return [...before, ...replacement, ...after].join("\n");
+}
+
 export function injectImageEmbed(markdown: string, relPath: string): string {
   const embed = `![](${relPath})`;
   // Match the H1 line and capture its trailing newline (if any).

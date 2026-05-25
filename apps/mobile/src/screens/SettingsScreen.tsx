@@ -17,6 +17,7 @@ import {
 
 import {
   DEFAULT_OMNIROUTE_MODEL,
+  DEFAULT_TRANSCRIPTION_MODEL,
   dismissMigrationBanner,
   getSettings,
   hasOmniRouteApiKey,
@@ -66,6 +67,7 @@ function defaultPromptFor(mode: PromptModeKey): string {
 interface FormState {
   omniRouteUrl: string;
   omniRouteModel: string;
+  omniRouteTranscriptionModel: string;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
 }
@@ -132,6 +134,7 @@ export default function SettingsScreen() {
       setForm({
         omniRouteUrl: s.omniRouteUrl,
         omniRouteModel: s.omniRouteModel,
+        omniRouteTranscriptionModel: s.omniRouteTranscriptionModel,
         captureFolderPath: s.captureFolderPath,
         promptOverrides: s.promptOverrides,
       });
@@ -158,6 +161,8 @@ export default function SettingsScreen() {
     const next: Settings = {
       omniRouteUrl: form.omniRouteUrl,
       omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
+      omniRouteTranscriptionModel:
+        form.omniRouteTranscriptionModel || DEFAULT_TRANSCRIPTION_MODEL,
       // Pass an empty string here so saveSettings doesn't touch the key.
       // Then we handle the key write separately below.
       omniRouteApiKey: "",
@@ -327,6 +332,21 @@ export default function SettingsScreen() {
       >
         Browse available models
       </Button>
+
+      <TextInput
+        label="Transcription model"
+        mode="outlined"
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={form.omniRouteTranscriptionModel}
+        onChangeText={(v) => update({ omniRouteTranscriptionModel: v })}
+        placeholder={DEFAULT_TRANSCRIPTION_MODEL}
+      />
+      <HelperText type="info" visible>
+        Whisper-compatible model for audio note transcription. Most OmniRoute
+        proxies expose whisper-1; self-hosted may need a prefix like
+        openai/whisper-1.
+      </HelperText>
 
       <TextInput
         label="Capture folder"

@@ -88,6 +88,7 @@ import {
   extractFrontmatterField,
   mimeFromFilename,
   readPairedBinaryFromNote,
+  upsertSection,
 } from "./writer";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -665,6 +666,110 @@ describe("readPairedBinaryFromNote", () => {
     const md = "---\nkind: photo\n---\n# T\n\n![](../Photos/ghost.jpg)\n";
     await expect(readPairedBinaryFromNote(md)).rejects.toThrow(
       "Paired binary not found",
+    );
+  });
+});
+
+// ── upsertSection ─────────────────────────────────────────────────────────────
+
+describe("upsertSection", () => {
+  it("appends a new section when the heading does not exist", () => {
+    const before =
+      "---\nkind: shared-audio\n---\n# Audio\n\n## File\n[a.m4a](../Audio/a.m4a)\n";
+    const after = upsertSection(before, "Transcript", "hello world");
+    expect(after).toContain("## Transcript");
+    expect(after).toContain("hello world");
+    expect(after).toContain("## File");
+    expect(after.endsWith("\n")).toBe(true);
+  });
+
+  it("normalizes trailing newlines on append (no double-blank gap)", () => {
+    // Input ends with several newlines — output should end with exactly one.
+    const before = "# Title\n\nbody\n\n\n\n";
+    const after = upsertSection(before, "Notes", "added");
+    expect(after).toBe("# Title\n\nbody\n\n## Notes\n\nadded\n");
+  });
+
+  it("appends correctly when input has no trailing newline", () => {
+    const before = "# Title\n\nbody";
+    const after = upsertSection(before, "Notes", "added");
+    expect(after).toBe("# Title\n\nbody\n\n## Notes\n\nadded\n");
+  });
+
+  it("replaces a single-section body when the heading exists at EOF", () => {
+    const before = "# Title\n\n## Transcript\n\nold text\n";
+    const after = upsertSection(before, "Transcript", "new text");
+    expect(after).toContain("## Transcript");
+    expect(after).toContain("new text");
+    expect(after).not.toContain("old text");
+  });
+
+  it("preserves following H2 section when replacing in the middle", () => {
+    const before =
+      "# T\n\n## Transcript\n\nold\n\n## Footer\n\nkeep\n";
+    const after = upsertSection(before, "Transcript", "new");
+    expect(after).toContain("## Transcript\n\nnew");
+    expect(after).toContain("## Footer");
+    expect(after).toContain("keep");
+    expect(after).not.toContain("old");
+  });
+
+  it("preserves following H1 when replacing the last H2 before it", () => {
+    const before = "## Transcript\n\nold\n\n# Next Doc\n\nkeep\n";
+    const after = upsertSection(before, "Transcript", "new");
+    expect(after).toContain("## Transcript\n\nnew");
+    expect(after).toContain("# Next Doc");
+    expect(after).toContain("keep");
+  });
+
+  it("does not match a heading with trailing whitespace (appends instead)", () => {
+    // Obsidian's heading parser is strict; our match must be too.
+    const before = "# T\n\n## Transcript \n\nold\n";
+    const after = upsertSection(before, "Transcript", "new");
+    // The malformed heading is left as body content; a new section is appended.
+    expect(after).toContain("## Transcript \n");
+    expect(after.endsWith("## Transcript\n\nnew\n")).toBe(true);
+  });
+
+  it("leaves frontmatter untouched", () => {
+    const before =
+      "---\nkind: shared-audio\ntags: [shared, audio]\n---\n# Audio\n";
+    const after = upsertSection(before, "Transcript", "txt");
+    expect(after).toContain("---\nkind: shared-audio");
+    expect(after).toContain("tags: [shared, audio]");
+  });
+
+  it("is idempotent — re-running with the same body returns identical output", () => {
+    const before = "# T\n\n## Transcript\n\nfoo\n";
+    const once = upsertSection(before, "Transcript", "bar");
+    const twice = upsertSection(once, "Transcript", "bar");
+    expect(twice).toBe(once);
+  });
+
+  it("treats H3+ subheadings as part of the current section body", () => {
+    const before =
+      "# T\n\n## Transcript\n\nold\n\n### Speakers\n\nA, B\n\n## Footer\n\nkeep\n";
+    const after = upsertSection(before, "Transcript", "new");
+    // The H3 + its content get replaced because they belong to the H2 section.
+    expect(after).not.toContain("### Speakers");
+    expect(after).toContain("## Footer");
+    expect(after).toContain("keep");
+  });
+
+  it("produces a clean section when input markdown is empty (no leading blank lines)", () => {
+    // Pre-fix this returned "\n\n## Transcript\n\nhi\n" with two phantom
+    // newlines at the start — caught by review, fixed via empty-string guard.
+    expect(upsertSection("", "Transcript", "hi")).toBe(
+      "## Transcript\n\nhi\n",
+    );
+  });
+
+  it("rejects headings containing newlines (defense against multi-line injection)", () => {
+    expect(() => upsertSection("# T\n", "Transcript\n## Pwned", "x")).toThrow(
+      /heading cannot contain newlines/,
+    );
+    expect(() => upsertSection("# T\n", "A\rB", "x")).toThrow(
+      /heading cannot contain newlines/,
     );
   });
 });

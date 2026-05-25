@@ -6,6 +6,7 @@ vi.mock("./settings", () => ({
     omniRouteUrl: "https://llm.example.com",
     omniRouteApiKey: "test-key",
     omniRouteModel: "gpt-4o-mini",
+    omniRouteTranscriptionModel: "whisper-1",
     captureFolderPath: "",
     promptOverrides: {},
   }),
@@ -48,6 +49,8 @@ import {
   isPermanentError,
   assertBase64UnderLimit,
   MAX_SHARED_IMAGE_BYTES,
+  MAX_TRANSCRIPTION_BYTES,
+  transcribeAudio,
   withSystemOverride,
 } from "./omniroute";
 import {
@@ -281,6 +284,7 @@ describe("HTTPS enforcement", () => {
       omniRouteUrl: "http://evil.example.com",
       omniRouteApiKey: "test-key",
       omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "whisper-1",
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -295,6 +299,7 @@ describe("HTTPS enforcement", () => {
       omniRouteUrl: "http://localhost:8080",
       omniRouteApiKey: "",
       omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "whisper-1",
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -577,5 +582,235 @@ describe("enrich entry points honor prompt overrides", () => {
     expect(body.messages[0].content).toBe("shared-image-custom-system");
     // User content stays multimodal (the image bytes still attach)
     expect(Array.isArray(body.messages[1].content)).toBe(true);
+  });
+});
+
+// ── transcribeAudio ───────────────────────────────────────────────────────────
+
+/**
+ * Build a Response that mimics what `fetch("data:...")` would return — used
+ * by transcribeAudio to convert the base64 payload to a Blob before stuffing
+ * it into the FormData. The Blob bytes don't matter for these tests; only
+ * the Response.blob() pathway needs to resolve cleanly.
+ */
+function makeDataUriResponse(): Response {
+  return new Response(new Uint8Array([0, 1, 2, 3]), {
+    headers: { "Content-Type": "audio/mp4" },
+  });
+}
+
+function makeWhisperResponse(text: string): Response {
+  return new Response(JSON.stringify({ text }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+describe("transcribeAudio", () => {
+  it("returns text + model on a successful Whisper response", async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(makeWhisperResponse("hello world"));
+
+    const out = await transcribeAudio({
+      base64: "AAAA",
+      mimeType: "audio/mp4",
+      filename: "clip.m4a",
+    });
+
+    expect(out.text).toBe("hello world");
+    expect(out.model).toBe("whisper-1");
+    // Second fetch (the API call) — verify URL + bearer + multipart shape
+    const apiCall = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(apiCall[0]).toBe("https://llm.example.com/v1/audio/transcriptions");
+    const headers = apiCall[1]?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer test-key");
+    // Do NOT set Content-Type explicitly — fetch must add the multipart boundary.
+    expect(headers["Content-Type"]).toBeUndefined();
+    expect(apiCall[1]?.body).toBeInstanceOf(FormData);
+    // Pin the Whisper contract: a future rename of "model" / "response_format"
+    // would otherwise silently break every call (server-side rejects but
+    // tests stay green).
+    const fd = apiCall[1]?.body as FormData;
+    expect(fd.get("model")).toBe("whisper-1");
+    expect(fd.get("response_format")).toBe("json");
+    expect(fd.get("file")).toBeInstanceOf(Blob);
+  });
+
+  it("trims surrounding whitespace from the transcript", async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(makeWhisperResponse("   spaced text   "));
+
+    const out = await transcribeAudio({
+      base64: "AAAA",
+      mimeType: "audio/mp4",
+      filename: "clip.m4a",
+    });
+    expect(out.text).toBe("spaced text");
+  });
+
+  it("throws OmniRouteError with status 401 on auth failure", async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(makeErrorResponse(401, "invalid api key"));
+
+    try {
+      await transcribeAudio({
+        base64: "AAAA",
+        mimeType: "audio/mp4",
+        filename: "clip.m4a",
+      });
+      expect.fail("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(OmniRouteError);
+      expect((e as OmniRouteError).status).toBe(401);
+      expect((e as OmniRouteError).message).toContain("invalid api key");
+    }
+  });
+
+  it("throws OmniRouteError with status 413 when provider reports payload too large", async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(makeErrorResponse(413, "file too large"));
+
+    try {
+      await transcribeAudio({
+        base64: "AAAA",
+        mimeType: "audio/mp4",
+        filename: "clip.m4a",
+      });
+      expect.fail("expected throw");
+    } catch (e) {
+      expect((e as OmniRouteError).status).toBe(413);
+    }
+  });
+
+  it("throws when Whisper returns an empty transcript (silent audio)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(makeWhisperResponse(""));
+
+    await expect(
+      transcribeAudio({
+        base64: "AAAA",
+        mimeType: "audio/mp4",
+        filename: "clip.m4a",
+      }),
+    ).rejects.toThrow("empty transcript");
+  });
+
+  it("pre-checks the 25 MB cap and throws 413 before any fetch", async () => {
+    // 40 MB of base64 decodes to ~30 MB, clearly over the 25 MB Whisper cap.
+    const oversized = "A".repeat(40 * 1024 * 1024);
+    try {
+      await transcribeAudio({
+        base64: oversized,
+        mimeType: "audio/mp4",
+        filename: "huge.m4a",
+      });
+      expect.fail("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(OmniRouteError);
+      expect((e as OmniRouteError).status).toBe(413);
+      expect((e as OmniRouteError).message).toContain("Whisper caps");
+    }
+    // Pre-flight check — no network calls at all
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects http:// non-local URLs before any fetch (key-in-cleartext guard)", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      omniRouteUrl: "http://evil.example.com",
+      omniRouteApiKey: "test-key",
+      omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "whisper-1",
+      captureFolderPath: "",
+      promptOverrides: {},
+    });
+
+    await expect(
+      transcribeAudio({
+        base64: "AAAA",
+        mimeType: "audio/mp4",
+        filename: "clip.m4a",
+      }),
+    ).rejects.toThrow(/https:\/\//);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to whisper-1 when the configured model is empty/whitespace", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      omniRouteUrl: "https://llm.example.com",
+      omniRouteApiKey: "test-key",
+      omniRouteModel: "gpt-4o-mini",
+      omniRouteTranscriptionModel: "   ",
+      captureFolderPath: "",
+      promptOverrides: {},
+    });
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(makeWhisperResponse("ok"));
+
+    const out = await transcribeAudio({
+      base64: "AAAA",
+      mimeType: "audio/mp4",
+      filename: "clip.m4a",
+    });
+    expect(out.model).toBe("whisper-1");
+  });
+
+  it("MAX_TRANSCRIPTION_BYTES is 25 MB", () => {
+    expect(MAX_TRANSCRIPTION_BYTES).toBe(25 * 1024 * 1024);
+  });
+
+  it("wraps a mid-request fetch rejection as OmniRouteError status 0", async () => {
+    // Most common mobile failure: network drops between TLS handshake and
+    // response (ENOTFOUND / ECONNRESET / DNS timeout). The HTTPS guard test
+    // pre-empts fetch entirely, so the catch-on-fetch branch was previously
+    // untested.
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockRejectedValueOnce(new TypeError("Network request failed"));
+
+    try {
+      await transcribeAudio({
+        base64: "AAAA",
+        mimeType: "audio/mp4",
+        filename: "clip.m4a",
+      });
+      expect.fail("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(OmniRouteError);
+      expect((e as OmniRouteError).status).toBe(0);
+      expect((e as OmniRouteError).message).toContain("network error");
+    }
+  });
+
+  it("wraps non-JSON success-body responses as OmniRouteError (not raw SyntaxError)", async () => {
+    // LiteLLM misconfigs sometimes return text/plain on a 200 — the raw
+    // SyntaxError would otherwise leak to the caller and bypass
+    // isPermanentError classification.
+    const badBody = new Response("not a json body at all", {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    });
+    fetchMock
+      .mockResolvedValueOnce(makeDataUriResponse())
+      .mockResolvedValueOnce(badBody);
+
+    try {
+      await transcribeAudio({
+        base64: "AAAA",
+        mimeType: "audio/mp4",
+        filename: "clip.m4a",
+      });
+      expect.fail("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(OmniRouteError);
+      expect((e as OmniRouteError).message).toContain("non-JSON");
+    }
   });
 });
