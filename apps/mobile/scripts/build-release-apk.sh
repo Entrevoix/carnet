@@ -23,6 +23,25 @@ MOBILE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ANDROID_DIR="$MOBILE_DIR/android"
 OUTPUT_APK="$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk"
 
+# ── locate Android SDK (gradle needs ANDROID_HOME or local.properties) ──
+# Without this, gradle's eval phase fails with "SDK location not found"
+# before it even gets to the resource merge. Mirrors the adb-locator
+# fallback below — the same path serves both needs.
+if [ -z "${ANDROID_HOME:-}" ]; then
+  for sdk_path in "${HOME}/Android/Sdk" "/opt/android-sdk" "${HOME}/Library/Android/sdk"; do
+    if [ -d "$sdk_path" ]; then
+      export ANDROID_HOME="$sdk_path"
+      echo "Detected ANDROID_HOME=$ANDROID_HOME"
+      break
+    fi
+  done
+fi
+if [ -z "${ANDROID_HOME:-}" ]; then
+  echo "ERROR: ANDROID_HOME unset and no SDK found in standard locations." >&2
+  echo "Install Android Studio + SDK, or set ANDROID_HOME=/path/to/Android/Sdk and retry." >&2
+  exit 1
+fi
+
 # ── prebuild check ───────────────────────────────────────────────────
 if [ ! -d "$ANDROID_DIR" ]; then
   echo "ERROR: $ANDROID_DIR doesn't exist." >&2

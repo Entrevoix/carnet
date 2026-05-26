@@ -7,9 +7,6 @@
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/icon.png",
-    "splash": {
-      "backgroundColor": "#5E63FF"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "us.beary.carnet",

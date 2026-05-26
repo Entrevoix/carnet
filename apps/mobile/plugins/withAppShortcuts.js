@@ -47,16 +47,37 @@ const SHORTCUTS = [
   { id: 'person',  rank: 3, shortLabel: 'Contact', longLabel: 'Scan a business card',  uri: 'carnet://capture/person',  drawableName: 'shortcut_person' },
 ];
 
+// AAPT validates that android:shortcutShortLabel / shortcutLongLabel are
+// string resource references (@string/...), not inline literals. Inline
+// labels build under some debug paths but break assembleRelease with
+// "is incompatible with attribute (attr) reference". Emit a dedicated
+// strings.xml and reference its keys from shortcuts.xml so release builds
+// link cleanly.
+function buildShortcutStringsXml() {
+  const entries = SHORTCUTS.flatMap((s) => [
+    `  <string name="shortcut_${s.id}_short">${escapeXml(s.shortLabel)}</string>`,
+    `  <string name="shortcut_${s.id}_long">${escapeXml(s.longLabel)}</string>`,
+  ]).join('\n');
+  return `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+${entries}
+</resources>
+`;
+}
+
 function buildShortcutsXml(packageName) {
   const mainActivityFqn = `${packageName}.MainActivity`;
+  // Static shortcuts display in the order they appear in shortcuts.xml,
+  // so android:shortcutRank is redundant — AAPT also rejects it on some
+  // build-tools versions even though Android docs list it as valid.
+  // Order the SHORTCUTS array if you want a different launcher order.
   const entries = SHORTCUTS.map(
     (s) => `  <shortcut
     android:shortcutId="${s.id}"
     android:enabled="true"
     android:icon="@drawable/${s.drawableName}"
-    android:shortcutRank="${s.rank}"
-    android:shortcutShortLabel="${escapeXml(s.shortLabel)}"
-    android:shortcutLongLabel="${escapeXml(s.longLabel)}">
+    android:shortcutShortLabel="@string/shortcut_${s.id}_short"
+    android:shortcutLongLabel="@string/shortcut_${s.id}_long">
     <intent
       android:action="android.intent.action.VIEW"
       android:targetPackage="${packageName}"
@@ -147,8 +168,18 @@ module.exports = function withAppShortcuts(config) {
       );
       const xmlDir = path.join(resDir, 'xml');
       const drawableDir = path.join(resDir, 'drawable');
+      const valuesDir = path.join(resDir, 'values');
       fs.mkdirSync(xmlDir, { recursive: true });
       fs.mkdirSync(drawableDir, { recursive: true });
+      fs.mkdirSync(valuesDir, { recursive: true });
+
+      // strings.xml MUST land before shortcuts.xml references it; emit
+      // strings first so AAPT sees the keys when linking shortcuts.xml.
+      fs.writeFileSync(
+        path.join(valuesDir, 'shortcut_strings.xml'),
+        buildShortcutStringsXml(),
+        'utf8',
+      );
 
       fs.writeFileSync(
         path.join(xmlDir, 'shortcuts.xml'),

@@ -46,7 +46,8 @@ check_file() {
 }
 
 echo "→ Checking emitted resource files:"
-check_file "app/src/main/res/xml/shortcuts.xml"            "shortcuts.xml"
+check_file "app/src/main/res/xml/shortcuts.xml"             "shortcuts.xml"
+check_file "app/src/main/res/values/shortcut_strings.xml"   "shortcut_strings.xml (AAPT requires @string refs)"
 check_file "app/src/main/res/drawable/shortcut_idea.xml"    "drawable: idea"
 check_file "app/src/main/res/drawable/shortcut_journal.xml" "drawable: journal"
 check_file "app/src/main/res/drawable/shortcut_photo.xml"   "drawable: photo"

@@ -99,7 +99,12 @@ check_manifest_contains "POST_NOTIFICATIONS" "permission: POST_NOTIFICATIONS"
 check_manifest_contains "RECEIVE_BOOT_COMPLETED" "permission: RECEIVE_BOOT_COMPLETED"
 
 echo "→ MainApplication package registration:"
-check_main_app_contains "CaptureNotificationPackage" "import + add(CaptureNotificationPackage())"
+check_main_app_contains "import us.beary.carnet.notification.CaptureNotificationPackage" "import line present"
+# Distinct check for the add() injection — earlier versions of the plugin
+# only inserted the import but silently failed the add() injection on
+# SDK 54's expression-bodied MainApplication. Catching that requires
+# checking for the CALL site, not just the symbol name.
+check_main_app_contains "add(CaptureNotificationPackage())" "add() call site present (bridge registered)"
 
 if [ "$EXIT" -eq 0 ]; then
   echo
