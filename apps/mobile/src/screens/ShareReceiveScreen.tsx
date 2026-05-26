@@ -40,6 +40,7 @@ import {
 } from "../lib/writer";
 import {
   assertBase64UnderLimit,
+  autoTranscribeIfEnabled,
   enrichSharedImage,
   enrichSharedLink,
   MAX_SHARED_IMAGE_BYTES,
@@ -109,6 +110,22 @@ export default function ShareReceiveScreen({ navigation }: Props) {
   /** Snapshot of the inputs used by the most recent enrichment, kept in
    * state so the saved-phase Re-enrich can replay them. */
   const [saveSource, setSaveSource] = useState<SaveSource | null>(null);
+  /** Auto-transcribe (Settings → AI behavior toggle) — only fired on the
+   * audio branch of save(). Inline indicator on the saved screen. */
+  const [autoTranscribing, setAutoTranscribing] = useState(false);
+  const [autoTranscribeError, setAutoTranscribeError] = useState<string | null>(
+    null,
+  );
+  // Mounted guard — user can tap Done before the fire-and-forget
+  // transcription finishes. The disk write still completes; only the
+  // setStates are skipped to avoid React's unmount warning.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   /** Combined text from typed context + accepted voice transcript. */
   const combinedContext = useMemo(() => {
@@ -129,6 +146,9 @@ export default function ShareReceiveScreen({ navigation }: Props) {
     setDegradedReason(null);
     setSavingDetail("OmniRoute is enriching + saving…");
     setPhase("saving");
+    // Tracked across the branch to gate auto-transcribe — only fires on
+    // the audio branch, not on image / link / other-file shares.
+    let wasAudioBranch = false;
     try {
       const slugFallback = timestampSlug();
       const files = shareIntent.files ?? [];
@@ -260,6 +280,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
 
         const { filepath: mdPath } = await writeIdea(sharedStem, mdNote);
         filepath = mdPath;
+        wasAudioBranch = true;
       } else if (otherFile) {
         // Generic-file share: PDFs, docs, archives, anything that isn't an
         // image or audio file. Same shape as the audio branch — see comments
@@ -360,6 +381,19 @@ export default function ShareReceiveScreen({ navigation }: Props) {
       }
       setSavedFilepath(filepath);
       setPhase("saved");
+
+      // Fire-and-forget auto-transcribe — audio branch only. No-ops when
+      // the toggle is off; helper never throws by contract.
+      if (wasAudioBranch) {
+        const transcribePath = filepath;
+        setAutoTranscribing(true);
+        setAutoTranscribeError(null);
+        void autoTranscribeIfEnabled(transcribePath).then((errMsg) => {
+          if (!mountedRef.current) return;
+          setAutoTranscribing(false);
+          if (errMsg) setAutoTranscribeError(errMsg);
+        });
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[ShareReceive] save failed:", msg, e);
@@ -515,10 +549,23 @@ export default function ShareReceiveScreen({ navigation }: Props) {
             <Text variant="bodySmall" selectable style={styles.body}>
               {savedFilepath ?? "(no path)"}
             </Text>
-            <HelperText type="info" visible>
-              Open Obsidian (or your editor) on the synced folder to read
-              and edit. Carnet is intake-only.
-            </HelperText>
+            {autoTranscribing ? (
+              <View style={styles.transcribeRow}>
+                <ActivityIndicator size="small" />
+                <Text variant="bodySmall" style={styles.dim}>
+                  Transcribing audio…
+                </Text>
+              </View>
+            ) : autoTranscribeError ? (
+              <HelperText type="error" visible>
+                {`Auto-transcribe failed: ${autoTranscribeError}`}
+              </HelperText>
+            ) : (
+              <HelperText type="info" visible>
+                Open Obsidian (or your editor) on the synced folder to read
+                and edit. Carnet is intake-only.
+              </HelperText>
+            )}
           </Card.Content>
           <Card.Actions>
             {degradedReason ? (
@@ -572,4 +619,10 @@ const styles = StyleSheet.create({
   loading: { paddingVertical: 32, alignItems: "center", gap: 8 },
   errMsg: { textAlign: "center" },
   degradedBanner: { marginBottom: 8 },
+  transcribeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingTop: 8,
+  },
 });

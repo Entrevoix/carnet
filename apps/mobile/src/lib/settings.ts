@@ -46,6 +46,9 @@ export interface Settings {
    * in native SharedPreferences (BootReceiver reads it directly). Whenever
    * these two diverge, native wins; SettingsScreen reconciles on mount. */
   persistentNotificationEnabled: boolean;
+  /** When true, audio captures auto-run Whisper transcription after save.
+   * Default false — doubles OmniRoute API spend per capture, so opt-in. */
+  autoTranscribeOnSave: boolean;
   /**
    * Root folder for captured notes. Defaults to the app sandbox carnet/ dir.
    * Set to a Syncthing-watched folder for automatic sync to workstation.
@@ -59,6 +62,7 @@ interface PersistedSettings {
   omniRouteModel: string;
   omniRouteTranscriptionModel: string;
   persistentNotificationEnabled: boolean;
+  autoTranscribeOnSave: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
 }
@@ -75,6 +79,7 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
   omniRouteTranscriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
   persistentNotificationEnabled: false,
+  autoTranscribeOnSave: false,
   captureFolderPath: "",
   promptOverrides: {},
 };
@@ -116,6 +121,7 @@ async function readPersisted(): Promise<PersistedSettings> {
         omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
         omniRouteTranscriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
         persistentNotificationEnabled: false,
+        autoTranscribeOnSave: false,
         captureFolderPath: legacy.captureFolderPath ?? "",
         promptOverrides: {},
       };
@@ -133,6 +139,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     omniRouteModel: settings.omniRouteModel,
     omniRouteTranscriptionModel: settings.omniRouteTranscriptionModel,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
+    autoTranscribeOnSave: settings.autoTranscribeOnSave,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: sanitisePromptOverrides(settings.promptOverrides),
   };
@@ -168,6 +175,7 @@ export async function getSettings(): Promise<Settings> {
     omniRouteModel: persisted.omniRouteModel,
     omniRouteTranscriptionModel: persisted.omniRouteTranscriptionModel,
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
+    autoTranscribeOnSave: persisted.autoTranscribeOnSave,
     captureFolderPath: persisted.captureFolderPath,
     promptOverrides: persisted.promptOverrides,
   };
@@ -179,6 +187,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     omniRouteModel: settings.omniRouteModel,
     omniRouteTranscriptionModel: settings.omniRouteTranscriptionModel,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
+    autoTranscribeOnSave: settings.autoTranscribeOnSave,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: settings.promptOverrides,
   });

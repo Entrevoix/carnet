@@ -23,6 +23,12 @@ import {
   type PromptPair,
 } from "./prompts";
 import { fetchUrlPreview, type UrlPreview } from "./urlpreview";
+import {
+  readNote,
+  readPairedBinaryFromNote,
+  updateNote,
+  upsertSection,
+} from "./writer";
 import type { IdeaStatus } from "@carnet/shared";
 
 export interface EnrichResult {
@@ -592,6 +598,49 @@ export async function transcribeAudio(input: {
     );
   }
   return { text, model };
+}
+
+/**
+ * Optional post-save hook for audio captures. When the user has flipped
+ * `autoTranscribeOnSave` on in Settings, this reads the paired audio file
+ * off disk, runs Whisper, and idempotently inserts a `## Transcript`
+ * section back into the note via upsertSection.
+ *
+ * Best-effort by contract — NEVER throws. Returns null on success, an
+ * error reason string on failure. Callers (AudioCaptureScreen,
+ * ShareReceiveScreen audio branch) fire-and-forget after their saved
+ * screen renders; they surface the reason in a HelperText if non-null
+ * but never block the UX on a transcription failure.
+ *
+ * No-ops when:
+ *   - autoTranscribeOnSave is false (most common path)
+ *   - the note has no `../Audio/...` link (defensive)
+ *   - any downstream step throws (readNote, transcribeAudio, updateNote)
+ */
+export async function autoTranscribeIfEnabled(
+  filepath: string,
+): Promise<string | null> {
+  try {
+    const settings = await getSettings();
+    if (!settings.autoTranscribeOnSave) return null;
+
+    const body = await readNote(filepath);
+    const linkMatch = body.match(/\.\.\/Audio\/([^/\s)]+)/);
+    if (!linkMatch) return "Note has no Audio/ link";
+    const filename = linkMatch[1];
+
+    const { base64, mime } = await readPairedBinaryFromNote(body);
+    const { text } = await transcribeAudio({
+      base64,
+      mimeType: mime,
+      filename,
+    });
+    const next = upsertSection(body, "Transcript", text);
+    await updateNote(filepath, next);
+    return null;
+  } catch (e: unknown) {
+    return e instanceof Error ? e.message : String(e);
+  }
 }
 
 /**
