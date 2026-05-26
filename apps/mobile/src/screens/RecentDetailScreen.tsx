@@ -19,15 +19,19 @@ import {
   Button,
   Card,
   Dialog,
+  IconButton,
   type MD3Theme,
   Portal,
+  ProgressBar,
   Text,
   TextInput,
   useTheme,
 } from "react-native-paper";
 import Markdown from "react-native-markdown-display";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { Audio } from "expo-av";
 import { deriveTitle } from "@carnet/shared";
+import { formatElapsed } from "../lib/shareHelpers";
 
 import type { RootStackParamList } from "../../App";
 import {
@@ -36,6 +40,7 @@ import {
   moveToArchive,
   readNote,
   readPairedBinaryFromNote,
+  readPairedBinaryUri,
   stripFrontmatter,
   updateNote,
   upsertSection,
@@ -315,6 +320,74 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     return unsub;
   }, [navigation, isDirty]);
 
+  // ── Audio player (kind === shared-audio) ──────────────────────────────────
+  const [playerLoading, setPlayerLoading] = useState(false);
+  const [playerError, setPlayerError] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [positionMs, setPositionMs] = useState(0);
+  const [durationMs, setDurationMs] = useState(0);
+  const soundRef = useRef<Audio.Sound | null>(null);
+
+  // Unload the sound on unmount or note-switch — keeps the audio focus
+  // returned to the system and frees the file handle.
+  useEffect(() => {
+    return () => {
+      const s = soundRef.current;
+      soundRef.current = null;
+      if (s) {
+        void s.unloadAsync().catch(() => undefined);
+      }
+    };
+  }, []);
+
+  const togglePlay = useCallback(async () => {
+    setPlayerError(null);
+    try {
+      if (soundRef.current) {
+        // Already loaded — just toggle.
+        const status = await soundRef.current.getStatusAsync();
+        if (status.isLoaded) {
+          if (status.isPlaying) {
+            await soundRef.current.pauseAsync();
+          } else if (status.positionMillis >= (status.durationMillis ?? 0) - 100) {
+            // Reached end on prior play — rewind before resuming so a
+            // tap on Play after finish replays instead of staying stuck.
+            await soundRef.current.setPositionAsync(0);
+            await soundRef.current.playAsync();
+          } else {
+            await soundRef.current.playAsync();
+          }
+        }
+        return;
+      }
+      // First tap — load + start. Status callback drives the progress bar.
+      setPlayerLoading(true);
+      const { uri } = await readPairedBinaryUri(body);
+      const { sound } = await Audio.Sound.createAsync(
+        { uri },
+        { shouldPlay: true, progressUpdateIntervalMillis: 250 },
+        (status) => {
+          if (!status.isLoaded) return;
+          if (!mountedRef.current) return;
+          setIsPlaying(status.isPlaying);
+          setPositionMs(status.positionMillis);
+          setDurationMs(status.durationMillis ?? 0);
+          if (status.didJustFinish) {
+            // Stay loaded so the next tap replays without re-loading.
+            setIsPlaying(false);
+          }
+        },
+      );
+      soundRef.current = sound;
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.warn("[RecentDetail] audio playback failed:", reason);
+      setPlayerError(reason);
+    } finally {
+      setPlayerLoading(false);
+    }
+  }, [body]);
+
   // Re-enrich only makes sense when the raw input is recoverable from disk.
   // That's photo + shared-image (paired JPEG in Photos/). idea/journal/person
   // notes have no raw input on disk — the enriched body is the only artifact.
@@ -325,6 +398,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // use the same kind value). Mutually exclusive with canReEnrich in
   // practice but the disabled guard handles the would-be overlap too.
   const canTranscribe = kind === "shared-audio";
+  // Inline player surfaces for the same audio notes the Transcribe button
+  // does. Hidden until we have a body (loading guard above) and gated on
+  // not-missing (the file has to be on disk).
+  const showAudioPlayer = canTranscribe && !missing;
 
   if (loading) {
     return (
@@ -432,6 +509,41 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           </Card>
         ) : (
           <>
+            {showAudioPlayer ? (
+              <Card style={styles.card}>
+                <Card.Content>
+                  <View style={styles.playerRow}>
+                    <IconButton
+                      icon={isPlaying ? "pause" : "play"}
+                      mode="contained"
+                      size={28}
+                      onPress={togglePlay}
+                      disabled={playerLoading || reEnriching || transcribing}
+                      accessibilityLabel={isPlaying ? "Pause" : "Play"}
+                    />
+                    <View style={styles.playerMeta}>
+                      <Text variant="bodySmall" style={styles.playerTime}>
+                        {durationMs > 0
+                          ? `${formatElapsed(positionMs)} / ${formatElapsed(durationMs)}`
+                          : playerLoading
+                            ? "Loading…"
+                            : "Audio note — tap play"}
+                      </Text>
+                      <ProgressBar
+                        progress={durationMs > 0 ? positionMs / durationMs : 0}
+                        style={styles.playerProgress}
+                      />
+                    </View>
+                  </View>
+                  {playerError ? (
+                    <Text variant="bodySmall" style={styles.playerError}>
+                      {`Playback failed: ${playerError}`}
+                    </Text>
+                  ) : null}
+                </Card.Content>
+              </Card>
+            ) : null}
+
             {!missing ? (
               <Card style={styles.card}>
                 <Card.Content>
@@ -606,4 +718,9 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     minHeight: 320,
   },
+  playerRow: { flexDirection: "row", alignItems: "center", gap: 4 },
+  playerMeta: { flex: 1, gap: 4 },
+  playerTime: { opacity: 0.7, fontVariant: ["tabular-nums"] },
+  playerProgress: { height: 4, borderRadius: 2 },
+  playerError: { color: "#DC2626", marginTop: 8 },
 });

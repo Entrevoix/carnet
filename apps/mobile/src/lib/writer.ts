@@ -841,6 +841,42 @@ export function mimeFromFilename(filename: string): string {
 }
 
 /**
+ * Locate the paired binary referenced by a note's body and return its URI
+ * + filename + inferred MIME — WITHOUT reading the bytes. Used by the
+ * RecentDetail audio player which streams the file via expo-av's
+ * Audio.Sound (it accepts a URI directly). Cheaper than
+ * readPairedBinaryFromNote for the playback path — no base64 round-trip
+ * through JS heap for a 10MB audio file just to hand it to the player.
+ *
+ * Returned URI is the raw storage URI (file:// or content://) — Audio.Sound
+ * handles file:// directly on Android. For content:// SAF URIs the
+ * caller may need to first copy to a cache file (expo-av's SAF support is
+ * version-dependent); cross that bridge when a SAF user reports playback
+ * failing.
+ *
+ * Same error-message contract as readPairedBinaryFromNote — friendly text
+ * for the two failure modes (no link found / target file missing).
+ */
+export async function readPairedBinaryUri(
+  body: string,
+): Promise<{ uri: string; mime: string; filename: string }> {
+  const linkMatch = body.match(/\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/);
+  if (!linkMatch) {
+    throw new Error("No paired binary link found in note.");
+  }
+  const subdir = linkMatch[1];
+  const filename = linkMatch[2];
+  const root = await resolveRoot();
+  const subdirUri = await findOrCreateSubdir(root, subdir);
+  const binaryUri = await findFileInDir(subdirUri, filename, root.isSaf);
+  if (!binaryUri) {
+    throw new Error(`Paired binary not found: ${subdir}/${filename}`);
+  }
+  const mime = mimeFromFilename(filename);
+  return { uri: binaryUri, mime, filename };
+}
+
+/**
  * Locate and read the paired binary referenced by a note's body (e.g. the
  * JPEG behind a photo/shared-image .md), returning the base64 payload and
  * the inferred MIME type. Used by RecentDetail's retro-enrich flow when the
