@@ -54,10 +54,14 @@ export function withSystemOverride(
   return { system: trimmed, user: pair.user };
 }
 
-/** OpenAI-compatible content part for multimodal messages. */
+/** OpenAI-compatible content part for multimodal messages. `input_audio`
+ * is the OpenAI shape that LiteLLM bridges to Gemini's audio modality and
+ * to OpenAI's own gpt-4o-audio-preview. `format` is the file extension
+ * minus the dot (e.g. "m4a", "mp3", "wav"). */
 type ContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_audio"; input_audio: { data: string; format: string } };
 
 interface OpenAIMessage {
   role: "system" | "user" | "assistant";
@@ -296,10 +300,9 @@ async function getModel(): Promise<string> {
   return settings.omniRouteModel.trim() || "openrouter/openai/gpt-4o-mini";
 }
 
-async function getTranscriptionModel(): Promise<string> {
-  const settings = await getSettings();
-  return settings.omniRouteTranscriptionModel.trim() || "whisper-1";
-}
+// (getTranscriptionModel removed — transcribeAudio is on-device now and
+// doesn't route through OmniRoute. The Settings field stays defined for
+// future opt-in network-fallback use.)
 
 /**
  * Fetch the available model catalog from `${baseUrl}/v1/models`. Returns
@@ -495,18 +498,27 @@ export async function enrichSharedLink(input: {
 }
 
 /**
- * Transcribe an audio file via OmniRoute's OpenAI-compatible
- * `/v1/audio/transcriptions` endpoint (Whisper). POSTs the bytes as
- * multipart/form-data with `file` + `model` fields. Returns the recognized
- * text and the model that was used.
+ * Transcribe an audio file using the on-device speech recognizer
+ * (expo-speech-recognition → Google Soda on Android). Lives under the
+ * omniroute.ts API surface for caller compatibility even though it
+ * doesn't actually hit OmniRoute — the prior chat-completion / Whisper
+ * paths were swapped out after Gemini multimodal kept refusing
+ * verbatim transcription via content-policy and the user's proxy
+ * didn't expose a Whisper endpoint.
  *
- * Same HTTPS guard + sanitization + abort timeout as the chat path — the
- * guard is duplicated rather than extracted because two consumers don't
- * yet justify a shared helper, and the chat-completions code path has
- * its own JSON body shape it doesn't want to share.
+ * On-device wins:
+ *   - Free, no per-capture API cost
+ *   - Private — audio never leaves the device
+ *   - Works without OmniRoute being configured / reachable
+ *   - Same recognizer the Journal voice button already uses
  *
- * Pre-checks the 25 MB Whisper cap from the base64 length so an oversized
- * recording fails locally instead of after a slow upload that ends in 413.
+ * Caveat: requires the OS speech-recognition language pack to be
+ * installed (one-time setup the user completes the first time they
+ * tap any voice button — see the STT first-tap-bug memory).
+ *
+ * Pre-checks the 25 MB cap. Caller passes base64 (we already have it
+ * from readPairedBinaryFromNote) and filename (extension matters for
+ * the cache temp file's audio format detection).
  */
 export async function transcribeAudio(input: {
   base64: string;
@@ -518,86 +530,21 @@ export async function transcribeAudio(input: {
     const mb = Math.round(approxBytes / 1024 / 1024);
     const capMb = Math.round(MAX_TRANSCRIPTION_BYTES / 1024 / 1024);
     throw new OmniRouteError(
-      `Audio is ${mb} MB — Whisper caps at ${capMb} MB. Split or compress before transcribing.`,
+      `Audio is ${mb} MB — transcription caps at ${capMb} MB. Split or compress before transcribing.`,
       413,
     );
   }
 
-  const [baseUrl, apiKey, model] = await Promise.all([
-    getBaseUrl(),
-    getApiKey(),
-    getTranscriptionModel(),
-  ]);
-
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  assertHttpsOrLocal(trimmed);
-
-  // RN's fetch handles data: URIs; round-tripping through Blob is the
-  // canonical way to attach binary bytes to a multipart FormData without
-  // requiring filesystem access. base64 → Blob is sync-fast in practice.
-  const dataUrl = `data:${input.mimeType};base64,${input.base64}`;
-  const blob = await (await fetch(dataUrl)).blob();
-  const form = new FormData();
-  form.append("file", blob, input.filename);
-  form.append("model", model);
-  form.append("response_format", "json");
-
-  const url = `${trimmed}/v1/audio/transcriptions`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-  let response: Response;
-  try {
-    // DO NOT set Content-Type — fetch must add the multipart boundary itself.
-    response = await fetch(url, {
-      method: "POST",
-      headers: {
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: form as unknown as BodyInit,
-      signal: controller.signal,
-    });
-  } catch (e: unknown) {
-    clearTimeout(timer);
-    const raw = e instanceof Error ? e.message : String(e);
-    throw new OmniRouteError(
-      `OmniRoute network error — ${sanitizeErrorMessage(raw)}`,
-      0,
-    );
-  }
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    throw new OmniRouteError(
-      `OmniRoute transcription error — ${await parseErrorBody(response)}`,
-      response.status,
-    );
-  }
-
-  // Wrap success-path JSON parse — some proxies (LiteLLM misconfigs) return
-  // text/plain on a 200, which would otherwise leak a raw SyntaxError that
-  // bypasses OmniRouteError classification (isPermanentError would miss it).
-  let json: { text?: string };
-  try {
-    json = (await response.json()) as { text?: string };
-  } catch (e: unknown) {
-    const raw = e instanceof Error ? e.message : String(e);
-    throw new OmniRouteError(
-      `OmniRoute returned non-JSON transcription body — ${sanitizeErrorMessage(raw)}`,
-      response.status,
-    );
-  }
-  const text = json.text?.trim() ?? "";
-  if (!text) {
-    // Empty transcript usually means Whisper detected silence. Don't write
-    // an empty `## Transcript` section — surface as an error so the user
-    // knows nothing was recognized.
-    throw new OmniRouteError(
-      "Whisper returned an empty transcript",
-      response.status,
-    );
-  }
-  return { text, model };
+  // Dynamic import keeps the on-device dependency out of the
+  // unit-test path (vitest can't load the native module under Node).
+  // The runtime cost of the import is negligible; module cache after
+  // first call.
+  const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+  const text = await transcribeOnDevice({
+    base64: input.base64,
+    filename: input.filename,
+  });
+  return { text, model: "on-device" };
 }
 
 /**

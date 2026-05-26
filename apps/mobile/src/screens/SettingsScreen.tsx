@@ -431,9 +431,9 @@ export default function SettingsScreen() {
         placeholder={DEFAULT_TRANSCRIPTION_MODEL}
       />
       <HelperText type="info" visible>
-        Whisper-compatible model for audio note transcription. Most OmniRoute
-        proxies expose whisper-1; self-hosted may need a prefix like
-        openai/whisper-1.
+        Model for audio note transcription. Defaults to gemini/gemini-2.5-flash-lite
+        — uses the chat-completion audio modality so any multimodal chat model
+        on your proxy works. Whisper-style endpoints are no longer required.
       </HelperText>
 
       <TextInput
