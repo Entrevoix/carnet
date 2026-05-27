@@ -15,10 +15,11 @@ const MIGRATION_BANNER_KEY = "carnet:migration_banner_dismissed:v1";
 const LEGACY_PURGE_KEY = "carnet:legacy_purge:v1";
 
 export const DEFAULT_OMNIROUTE_MODEL = "openrouter/openai/gpt-4o-mini";
-/** Default Whisper model name. Most OmniRoute / LiteLLM proxies route this
- * to the OpenAI hosted Whisper-1 endpoint. Self-hosted proxies may need a
- * namespaced form (e.g. `openai/whisper-1`); the field is user-editable. */
-export const DEFAULT_TRANSCRIPTION_MODEL = "whisper-1";
+/** Default transcription model. Uses Gemini's audio modality via the
+ * /v1/chat/completions endpoint (LiteLLM bridges OpenAI's `input_audio`
+ * content type to Gemini natively). Cheaper and faster than Whisper on
+ * most proxies, no separate /v1/audio/transcriptions route required. */
+export const DEFAULT_TRANSCRIPTION_MODEL = "gemini/gemini-2.5-flash-lite";
 
 /**
  * Per-capture-mode system prompt overrides. Empty/missing fields fall back

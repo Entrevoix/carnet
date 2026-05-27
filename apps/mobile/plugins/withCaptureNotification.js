@@ -418,7 +418,6 @@ module.exports = function withCaptureNotification(config) {
   config = withMainApplication(config, (cfg) => {
     let contents = cfg.modResults.contents;
     const importLine = `import ${packageName}.notification.CaptureNotificationPackage`;
-    const addLine = 'packages.add(CaptureNotificationPackage())';
 
     if (!contents.includes(importLine)) {
       // Insert the import after the last existing top-level import.
@@ -429,18 +428,45 @@ module.exports = function withCaptureNotification(config) {
     }
 
     if (!contents.includes('CaptureNotificationPackage()')) {
-      // Kotlin MainApplication uses `PackageList(this).packages` and
-      // returns it from getPackages(). Insert our add() right after the
-      // PackageList line so we contribute to the same return value.
+      // Two call shapes — they differ by which `this` is in scope:
+      //   - applyAdd: inside `.apply { ... }` on the package list, `this` IS
+      //     the (mutable) list, so the call is bare `add(...)`. Bare
+      //     `packages.add(...)` here fails to compile with
+      //     `Unresolved reference 'packages'`.
+      //   - localAdd: legacy `val packages = PackageList(this).packages`
+      //     shape has a named local; the call needs the `packages.` prefix.
+      const applyAdd = 'add(CaptureNotificationPackage())';
+      const localAdd = 'packages.add(CaptureNotificationPackage())';
+
+      // Try patterns in order, newest SDK shape first.
+      //
+      // Pattern 1 — Expo SDK 54+ template: expression-bodied getPackages
+      // that wraps PackageList(this).packages.apply { /* add() here */ }.
+      // The template includes a commented-out example we can splice after.
       let inserted = contents.replace(
-        /(val packages = PackageList\(this\)\.packages[^\n]*\n)/,
-        `$1            ${addLine}\n`,
+        /(\/\/ add\(MyReactNativePackage\(\)\)\n)/,
+        `$1              ${applyAdd}\n`,
       );
+      // Pattern 2 — same SDK 54 shape but the example comment is gone
+      // (user edited it out). Inject right after the .apply { line.
       if (inserted === contents) {
-        // Alternate shape — getPackages override returning a mutable list.
+        inserted = contents.replace(
+          /(\.apply\s*\{\n)/,
+          `$1              ${applyAdd}\n`,
+        );
+      }
+      // Pattern 3 — legacy SDK pre-54 shape: `val packages = PackageList(this).packages`.
+      if (inserted === contents) {
+        inserted = contents.replace(
+          /(val packages = PackageList\(this\)\.packages[^\n]*\n)/,
+          `$1            ${localAdd}\n`,
+        );
+      }
+      // Pattern 4 — alternate legacy shape: explicit override fun with body.
+      if (inserted === contents) {
         inserted = contents.replace(
           /(override fun getPackages\(\):[^{]*\{[^\n]*\n\s*val packages[^\n]*\n)/,
-          `$1            ${addLine}\n`,
+          `$1            ${localAdd}\n`,
         );
       }
       contents = inserted;
@@ -453,9 +479,11 @@ module.exports = function withCaptureNotification(config) {
       throw new Error(
         '[withCaptureNotification] Failed to inject `add(CaptureNotificationPackage())` ' +
           'into MainApplication.kt. Expected one of: ' +
-          '(a) `val packages = PackageList(this).packages` line, ' +
-          '(b) `override fun getPackages()` followed by `val packages` declaration. ' +
-          'Neither pattern matched — update the plugin for this Expo SDK MainApplication shape.',
+          '(a) `// add(MyReactNativePackage())` example comment in an .apply block (SDK 54), ' +
+          '(b) `.apply {` block opener (SDK 54 without the example comment), ' +
+          '(c) `val packages = PackageList(this).packages` line (legacy SDK), ' +
+          '(d) `override fun getPackages()` followed by `val packages` (legacy SDK). ' +
+          'None matched — update the plugin for this Expo SDK MainApplication shape.',
       );
     }
 
