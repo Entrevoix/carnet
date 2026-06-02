@@ -1,11 +1,17 @@
 # PR Review: #23 — feat: AAC decoder bridge for on-device STT
 
-**Reviewed**: 2026-06-01
+**Reviewed**: 2026-06-01 (original) · 2026-06-02 (re-review of fix commit 01e1511)
 **Author**: bearyjd
 **Branch**: feat/aac-decoder-bridge → main
-**Decision**: REQUEST CHANGES (2 HIGH correctness items in the native decode loop)
+**Decision**: APPROVE (comment-level) at 01e1511 — all prior findings resolved; **on-device QA still the merge gate** (H1/H2 compile-verified only). Original decision was REQUEST CHANGES (the 2 HIGH below), now fixed.
 
-## Summary
+## Re-Review (01e1511 — 2026-06-02)
+
+Independent lane verified, by reading full files: **H1** (rate/channels now read from `decoder.outputFormat` on `INFO_OUTPUT_FORMAT_CHANGED`, first branch, var + containsKey-guarded — also subsumes M2) and **H2** (wall-clock `deadlineNs` checked each loop turn, `finally` still runs so no leak) are correctly resolved. M1 (20-min cap + honest docstring), M3 (mkdirs + File import), M4 (non-`file://` rejected, happy path intact), M6/M7 (`set -euo pipefail`, pipefail-safe `find … || true`, prebuild log on failure), M8 (extension guard traced across edge cases), M9 (4 falsifiable wiring tests) all resolved; `downsampleLinear`→`resampleLinear` renamed cleanly. M5 deferred (negligible). No new bugs introduced. Validation: tsc clean, 217/217, APK BUILD SUCCESSFUL.
+
+One **new non-blocking MEDIUM**: the M9 test's `result` event shape isn't type-checked against `ExpoSpeechRecognitionResultEvent`, so a library shape change could leave the mock green while production reads `undefined`. Fix: type `driveSuccess`'s payload as that event type. Test-confidence ceiling, not a shipped defect.
+
+## Summary (original review)
 The JS/TS integration, config-plugin structure, WAV header, and restored test suite are solid (type-clean, 213/213 green, prebuild verify healthy). Two HIGH-confidence correctness gaps in the emitted Kotlin decoder should be fixed before merge: sample rate/channels are read from the container's input track instead of the codec's output format (garbage transcripts for HE-AAC/AAC+ shared audio), and the decode loop has no wall-clock timeout (a wedged codec hangs the capture forever — the JS 90s timeout only wraps the recognizer, not the decode). Plus the actual decode-vs-fallback wiring this PR introduces ships untested.
 
 ## Findings
