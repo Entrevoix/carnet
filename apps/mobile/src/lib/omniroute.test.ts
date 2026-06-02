@@ -1,8 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Mock settings ─────────────────────────────────────────────────────────────
-vi.mock("./settings", () => ({
-  getSettings: vi.fn().mockResolvedValue({
+// BASE_SETTINGS is the default getSettings() shape (autoTranscribeOnSave OFF).
+// Hoisted via vi.hoisted so it can be referenced BOTH inside the vi.mock
+// factory (which vitest hoists above module scope) AND by SETTINGS_TOGGLE_ON
+// in the autoTranscribeIfEnabled block — one source of truth for the 8-field
+// Settings shape, so an interface change touches one fixture, not two.
+const { BASE_SETTINGS } = vi.hoisted(() => ({
+  BASE_SETTINGS: {
     omniRouteUrl: "https://llm.example.com",
     omniRouteApiKey: "test-key",
     omniRouteModel: "gpt-4o-mini",
@@ -11,7 +16,11 @@ vi.mock("./settings", () => ({
     autoTranscribeOnSave: false,
     captureFolderPath: "",
     promptOverrides: {},
-  }),
+  },
+}));
+
+vi.mock("./settings", () => ({
+  getSettings: vi.fn().mockResolvedValue(BASE_SETTINGS),
   // Used by each enrich entry point to load per-mode prompt overrides.
   // Default-empty so existing tests get the default-prompt behavior.
   getPromptOverrides: vi.fn().mockResolvedValue({}),
@@ -29,6 +38,14 @@ vi.mock("./writer", () => ({
     (md: string, heading: string, body: string) =>
       `${md}\n\n## ${heading}\n\n${body}\n`,
   ),
+}));
+
+// Mock the on-device transcription wrapper at the module boundary.
+// transcribeAudio dynamic-imports this module; vitest's hoisted vi.mock
+// intercepts both static and dynamic imports, so the mock is live inside
+// transcribeAudio's `await import("./audioTranscribeOnDevice")`.
+vi.mock("./audioTranscribeOnDevice", () => ({
+  transcribeOnDevice: vi.fn(),
 }));
 
 // ── Mock fetch ────────────────────────────────────────────────────────────────
@@ -60,11 +77,14 @@ import {
   enrichJournal,
   enrichPerson,
   enrichSharedLink,
+  autoTranscribeIfEnabled,
   promoteIdea,
+  transcribeAudio,
   OmniRouteError,
   isPermanentError,
   assertBase64UnderLimit,
   MAX_SHARED_IMAGE_BYTES,
+  MAX_TRANSCRIPTION_BYTES,
   withSystemOverride,
 } from "./omniroute";
 import {
@@ -603,16 +623,247 @@ describe("enrich entry points honor prompt overrides", () => {
   });
 });
 
-// ── transcribeAudio + autoTranscribeIfEnabled ───────────────────────────────
-//
-// TODO: tests for the on-device transcription path. The prior chat-completion
-// tests were stripped when transcribeAudio swapped from OmniRoute to
-// expo-speech-recognition (Gemini's content-policy filter was refusing
-// verbatim transcription requests). Re-add by mocking
-// './audioTranscribeOnDevice' via vi.mock and asserting on the same
-// behaviors (cap check, happy path, error surfacing in
-// autoTranscribeIfEnabled, never-throws contract).
-//
-// The MAX_TRANSCRIPTION_BYTES export is exercised indirectly through the
-// cap check that still lives in transcribeAudio; no separate unit test
-// needed for the constant.
+// ── transcribeAudio ───────────────────────────────────────────────────────────
+
+describe("transcribeAudio (on-device path)", () => {
+  beforeEach(async () => {
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+    vi.mocked(transcribeOnDevice).mockReset();
+  });
+
+  it("returns the on-device transcript + 'on-device' model on the happy path", async () => {
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+    vi.mocked(transcribeOnDevice).mockResolvedValueOnce("hello world");
+
+    const out = await transcribeAudio({
+      base64: "AAAA",
+      mimeType: "audio/mp4",
+      filename: "clip.m4a",
+    });
+
+    expect(out.text).toBe("hello world");
+    expect(out.model).toBe("on-device");
+    // transcribeAudio forwards only base64 + filename; the mimeType is used
+    // for the cap pre-check and not threaded into the on-device wrapper.
+    expect(transcribeOnDevice).toHaveBeenCalledWith({
+      base64: "AAAA",
+      filename: "clip.m4a",
+    });
+  });
+
+  it("propagates the on-device error through to the caller", async () => {
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+    vi.mocked(transcribeOnDevice).mockRejectedValueOnce(
+      new Error("On-device STT error: no-speech — no speech detected"),
+    );
+
+    await expect(
+      transcribeAudio({
+        base64: "AAAA",
+        mimeType: "audio/mp4",
+        filename: "clip.m4a",
+      }),
+    ).rejects.toThrow(/no-speech/);
+  });
+
+  it("does not throw at exactly the 25 MB cap — invokes the on-device wrapper", async () => {
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+    vi.mocked(transcribeOnDevice).mockResolvedValueOnce("ok");
+    // floor(len * 0.75) === MAX_TRANSCRIPTION_BYTES — sits exactly on the cap,
+    // which is allowed (the guard is strictly greater-than).
+    const atCap = "A".repeat(Math.ceil(MAX_TRANSCRIPTION_BYTES / 0.75));
+
+    const out = await transcribeAudio({
+      base64: atCap,
+      mimeType: "audio/mp4",
+      filename: "atcap.m4a",
+    });
+
+    expect(out.text).toBe("ok");
+    expect(transcribeOnDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws OmniRouteError 413 just over the cap, before calling the wrapper", async () => {
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+    // Two chars past the boundary → floor(len * 0.75) > MAX_TRANSCRIPTION_BYTES.
+    const overCap = "A".repeat(Math.ceil(MAX_TRANSCRIPTION_BYTES / 0.75) + 2);
+
+    try {
+      await transcribeAudio({
+        base64: overCap,
+        mimeType: "audio/mp4",
+        filename: "huge.m4a",
+      });
+      expect.fail("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(OmniRouteError);
+      expect((e as OmniRouteError).status).toBe(413);
+      expect((e as OmniRouteError).message).toContain("transcription caps");
+    }
+    // Pre-flight short-circuits before invoking the wrapper.
+    expect(transcribeOnDevice).not.toHaveBeenCalled();
+  });
+
+  it("MAX_TRANSCRIPTION_BYTES is 25 MB", () => {
+    expect(MAX_TRANSCRIPTION_BYTES).toBe(25 * 1024 * 1024);
+  });
+});
+
+// ── autoTranscribeIfEnabled ───────────────────────────────────────────────────
+
+describe("autoTranscribeIfEnabled", () => {
+  const AUDIO_NOTE = `---\nkind: shared-audio\n---\n# Audio\n\n## File\n[clip.m4a](../Audio/clip.m4a)\n\n## Context\n(none)\n`;
+  // Only the toggle differs from the default — derive it so a Settings
+  // interface change updates one fixture (BASE_SETTINGS), not two.
+  const SETTINGS_TOGGLE_ON = { ...BASE_SETTINGS, autoTranscribeOnSave: true };
+
+  beforeEach(async () => {
+    const { getSettings } = await import("./settings");
+    const { readNote, readPairedBinaryFromNote, updateNote, upsertSection } =
+      await import("./writer");
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+    // Reset + reseed getSettings so a queued mockResolvedValueOnce from a
+    // prior test can't leak in (defense against order-dependence — the
+    // toggle-on tests below queue one-shot overrides). Default: toggle OFF.
+    vi.mocked(getSettings).mockReset();
+    vi.mocked(getSettings).mockResolvedValue(BASE_SETTINGS);
+    vi.mocked(readNote).mockReset();
+    vi.mocked(readPairedBinaryFromNote).mockReset();
+    vi.mocked(updateNote).mockReset();
+    vi.mocked(transcribeOnDevice).mockReset();
+    // mockClear (not mockReset) — keep upsertSection's format implementation,
+    // just drop call history so per-test toHaveBeenCalledWith stays clean.
+    vi.mocked(upsertSection).mockClear();
+  });
+
+  it("no-ops (returns null) when autoTranscribeOnSave is false", async () => {
+    // Default global settings mock has autoTranscribeOnSave: false.
+    const { readNote } = await import("./writer");
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
+    expect(result).toBeNull();
+    // Short-circuits before reading the note OR hitting the recognizer.
+    expect(readNote).not.toHaveBeenCalled();
+    expect(transcribeOnDevice).not.toHaveBeenCalled();
+  });
+
+  it("returns null on the full happy path (read, transcribe, upsert, update)", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
+    const { readNote, readPairedBinaryFromNote, updateNote, upsertSection } =
+      await import("./writer");
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+
+    vi.mocked(readNote).mockResolvedValueOnce(AUDIO_NOTE);
+    vi.mocked(readPairedBinaryFromNote).mockResolvedValueOnce({
+      base64: "AAAA",
+      mime: "audio/mp4",
+    });
+    vi.mocked(transcribeOnDevice).mockResolvedValueOnce("hello world");
+
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
+    expect(result).toBeNull();
+
+    // Pin that the filename extracted by the ../Audio/ regex ("clip.m4a")
+    // reaches the on-device wrapper, alongside the binary's base64.
+    expect(transcribeOnDevice).toHaveBeenCalledWith({
+      base64: "AAAA",
+      filename: "clip.m4a",
+    });
+    // Pin what's forwarded to upsertSection: original note body, the
+    // "Transcript" heading, the transcript text. (The "## Transcript"
+    // substring asserted below comes from the MOCKED upsertSection's format
+    // string — real section-insertion behavior is covered in writer.test.ts.)
+    expect(upsertSection).toHaveBeenCalledWith(
+      AUDIO_NOTE,
+      "Transcript",
+      "hello world",
+    );
+    expect(updateNote).toHaveBeenCalledTimes(1);
+    const [filepath, newBody] = vi.mocked(updateNote).mock.calls[0];
+    expect(filepath).toBe("/vault/Ideas/foo.md");
+    expect(newBody).toContain("## Transcript");
+    expect(newBody).toContain("hello world");
+  });
+
+  it("returns 'Note has no Audio/ link' when body doesn't reference Audio/", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
+    const { readNote, readPairedBinaryFromNote } = await import("./writer");
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+
+    vi.mocked(readNote).mockResolvedValueOnce(
+      `---\nkind: idea\n---\n# Plain idea\n\nNo binary link here.\n`,
+    );
+
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
+    expect(result).toBe("Note has no Audio/ link");
+    expect(readPairedBinaryFromNote).not.toHaveBeenCalled();
+    expect(transcribeOnDevice).not.toHaveBeenCalled();
+  });
+
+  it("returns the readNote error message when reading the note throws", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
+    const { readNote } = await import("./writer");
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+
+    vi.mocked(readNote).mockRejectedValueOnce(
+      new Error("ENOENT: no such file"),
+    );
+
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/gone.md");
+    expect(result).toContain("ENOENT");
+    expect(transcribeOnDevice).not.toHaveBeenCalled();
+  });
+
+  it("returns the transcribeAudio error message when the on-device recognizer fails", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
+    const { readNote, readPairedBinaryFromNote, updateNote } = await import(
+      "./writer"
+    );
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+
+    vi.mocked(readNote).mockResolvedValueOnce(AUDIO_NOTE);
+    vi.mocked(readPairedBinaryFromNote).mockResolvedValueOnce({
+      base64: "AAAA",
+      mime: "audio/mp4",
+    });
+    vi.mocked(transcribeOnDevice).mockRejectedValueOnce(
+      new Error("On-device STT error: no-speech — no speech detected"),
+    );
+
+    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
+    expect(result).toContain("no-speech");
+    // updateNote MUST NOT run on transcribe failure — the original note
+    // stays untouched.
+    expect(updateNote).not.toHaveBeenCalled();
+  });
+
+  it("never throws — returns an error string even when updateNote rejects", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
+    const { readNote, readPairedBinaryFromNote, updateNote } = await import(
+      "./writer"
+    );
+    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
+
+    vi.mocked(readNote).mockResolvedValueOnce(AUDIO_NOTE);
+    vi.mocked(readPairedBinaryFromNote).mockResolvedValueOnce({
+      base64: "AAAA",
+      mime: "audio/mp4",
+    });
+    vi.mocked(transcribeOnDevice).mockResolvedValueOnce("ok");
+    vi.mocked(updateNote).mockRejectedValueOnce(
+      new Error("SAF tree permission revoked"),
+    );
+
+    // .resolves asserts the helper does NOT throw AND returns the error
+    // string in one idiomatic line — and preserves the failure if it ever
+    // does throw (the old manual try/catch swallowed the stack).
+    await expect(
+      autoTranscribeIfEnabled("/vault/Ideas/foo.md"),
+    ).resolves.toContain("SAF tree permission revoked");
+  });
+});
