@@ -34,21 +34,34 @@ vi.mock("expo-speech-recognition", () => ({
 
 import * as FileSystem from "expo-file-system/legacy";
 import { ExpoSpeechRecognitionModule } from "expo-speech-recognition";
+import type {
+  ExpoSpeechRecognitionErrorCode,
+  ExpoSpeechRecognitionErrorEvent,
+  ExpoSpeechRecognitionResultEvent,
+} from "expo-speech-recognition";
 import * as audioDecoder from "./audioDecoder";
 import { transcribeOnDevice } from "./audioTranscribeOnDevice";
 
 /** Make start() emit a final result then `end`, so runRecognizer resolves. */
 function driveSuccess(transcript: string): void {
+  // Typed against the real event so a future library shape change (e.g. a
+  // renamed `results`/`transcript`) breaks this test at compile time rather
+  // than passing while production silently reads undefined.
+  const event: ExpoSpeechRecognitionResultEvent = {
+    isFinal: true,
+    results: [{ transcript, confidence: 1, segments: [] }],
+  };
   vi.mocked(ExpoSpeechRecognitionModule.start).mockImplementation(() => {
-    speechListeners.result?.({ results: [{ transcript }] });
+    speechListeners.result?.(event);
     speechListeners.end?.(undefined);
   });
 }
 
 /** Make start() emit a hard error, so runRecognizer rejects. */
-function driveError(error: string, message = ""): void {
+function driveError(error: ExpoSpeechRecognitionErrorCode, message = ""): void {
+  const event: ExpoSpeechRecognitionErrorEvent = { error, message };
   vi.mocked(ExpoSpeechRecognitionModule.start).mockImplementation(() => {
-    speechListeners.error?.({ error, message });
+    speechListeners.error?.(event);
   });
 }
 
