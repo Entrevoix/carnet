@@ -44,9 +44,16 @@ export async function transcribeOnDevice(input: {
   filename: string;
 }): Promise<string> {
   const cacheDir = FileSystem.cacheDirectory ?? "file:///data/local/tmp/";
-  const ext = input.filename.includes(".")
-    ? input.filename.slice(input.filename.lastIndexOf("."))
-    : ".m4a";
+  // Require a real, non-leading dot with at least one char after it. Guards
+  // trailing-dot ("clip.") and dotfile (".hidden") names that would yield a
+  // degenerate extension; defaults to .m4a (the app's own capture format).
+  // The native decoder sniffs the container by content, but the fallback
+  // path hands this filename straight to the recognizer.
+  const dot = input.filename.lastIndexOf(".");
+  const ext =
+    dot > 0 && dot < input.filename.length - 1
+      ? input.filename.slice(dot)
+      : ".m4a";
   const ts = Date.now();
   const rawPath = `${cacheDir}stt-${ts}-input${ext}`;
   const wavPath = `${cacheDir}stt-${ts}-decoded.wav`;

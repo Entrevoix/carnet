@@ -17,7 +17,7 @@
 # android/ is gitignored and regenerated on every `npm run android`, so
 # this is safe — but don't run it concurrently with a Gradle build.
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOBILE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -30,7 +30,17 @@ echo "→ Cleaning android/ for a fresh prebuild…"
 rm -rf "$ANDROID_DIR"
 
 echo "→ Running expo prebuild --platform android…"
-npx expo prebuild --platform android >/dev/null
+# Keep stdout quiet on success, but capture it so a prebuild failure (or a
+# plugin that throws and skips injection) is inspectable instead of leaving
+# only bare "✗ MISSING" lines with no upstream cause.
+PREBUILD_LOG="$(mktemp)"
+if ! npx expo prebuild --platform android >"$PREBUILD_LOG" 2>&1; then
+  echo "✗ expo prebuild failed:"
+  cat "$PREBUILD_LOG"
+  rm -f "$PREBUILD_LOG"
+  exit 1
+fi
+rm -f "$PREBUILD_LOG"
 
 EXIT=0
 
@@ -49,7 +59,10 @@ check_main_app_contains() {
   local needle="$1"
   local label="$2"
   local file
-  file=$(find "$ANDROID_DIR/app/src/main/java" -name 'MainApplication.kt' -o -name 'MainApplication.java' 2>/dev/null | head -1)
+  # Group the -name predicates so a later action wouldn't bind to one branch,
+  # and `|| true` keeps a find failure from aborting under `set -o pipefail`
+  # (the empty-result case is handled gracefully just below).
+  file=$(find "$ANDROID_DIR/app/src/main/java" \( -name 'MainApplication.kt' -o -name 'MainApplication.java' \) -type f 2>/dev/null | head -1 || true)
   if [ -z "$file" ]; then
     echo "  ✗ MISSING: MainApplication source file"
     EXIT=1

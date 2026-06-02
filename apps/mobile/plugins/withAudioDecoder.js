@@ -42,6 +42,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -52,22 +53,47 @@ import java.nio.ByteOrder
  * a standard RIFF/WAVE file.
  *
  * Target format is fixed because the only consumer is
- * expo-speech-recognition, which expects exactly that shape. In-memory
- * accumulation of the decoded PCM — fine for typical voice notes
- * (5 min ≈ 9.6 MB). For multi-hour recordings switch to a streaming
- * write; documented as a known limit.
+ * expo-speech-recognition, which expects exactly that shape.
+ *
+ * MEMORY: decoded PCM is accumulated fully in memory at the SOURCE
+ * rate/channels before mixdown + resample, then copied once by
+ * toByteArray(). Peak ≈ 2 × durationSec × srcRate × srcChannels × 2 bytes
+ * (e.g. ~5 min of 44.1 kHz stereo ≈ 106 MB transient). Inputs longer than
+ * MAX_INPUT_DURATION_US are rejected with E_INPUT_TOO_LONG to bound this;
+ * a streaming resampler would remove the cap (deferred known limit).
  */
 class AudioDecoderModule(reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
 
   override fun getName() = "AudioDecoder"
 
+  companion object {
+    private const val TARGET_SAMPLE_RATE = 16000
+    private const val TARGET_CHANNELS = 1
+    private const val TARGET_BITS = 16
+    private const val DEQUEUE_TIMEOUT_US = 10_000L
+    // Overall wall-clock budget for the decode loop. The per-call dequeue
+    // timeout is NOT a total bound — without this, a codec that never
+    // signals output EOS (malformed stream / OEM quirk) busy-spins forever.
+    private const val DECODE_BUDGET_NS = 60_000_000_000L
+    // In-memory PCM guard (see class doc). 1_200_000_000 µs = 20 min — well
+    // past any voice note yet bounds pathological multi-hour shares.
+    private const val MAX_INPUT_DURATION_US = 1_200_000_000L
+  }
+
   @ReactMethod
   fun decodeToWav(inputUri: String, outputUri: String, promise: Promise) {
     val extractor = MediaExtractor()
     var decoder: MediaCodec? = null
     try {
-      val inputPath = Uri.parse(inputUri).path
+      val inUri = Uri.parse(inputUri)
+      if (inUri.scheme != null && inUri.scheme != "file") {
+        return promise.reject(
+          "E_BAD_INPUT",
+          "Input must be a file:// path (got scheme '\${inUri.scheme}'); content:// is not supported."
+        )
+      }
+      val inputPath = inUri.path
         ?: return promise.reject("E_BAD_INPUT", "Input URI has no path: \$inputUri")
       extractor.setDataSource(inputPath)
 
@@ -87,8 +113,27 @@ class AudioDecoderModule(reactContext: ReactApplicationContext) :
       }
       extractor.selectTrack(trackIdx)
 
-      val srcSampleRate = trackFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-      val srcChannels = trackFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+      // Reject over-long inputs up front to bound the in-memory PCM
+      // accumulator (see class doc / MAX_INPUT_DURATION_US).
+      if (trackFormat.containsKey(MediaFormat.KEY_DURATION)) {
+        val durationUs = trackFormat.getLong(MediaFormat.KEY_DURATION)
+        if (durationUs > MAX_INPUT_DURATION_US) {
+          return promise.reject(
+            "E_INPUT_TOO_LONG",
+            "Audio is \${durationUs / 60_000_000} min — decoder caps at " +
+              "\${MAX_INPUT_DURATION_US / 60_000_000} min (in-memory PCM limit)."
+          )
+        }
+      }
+
+      // Seed rate/channels from the input track, but the codec OUTPUT format
+      // (read on INFO_OUTPUT_FORMAT_CHANGED in the loop) is authoritative —
+      // HE-AAC/AAC+ (SBR/PS) lie about rate/channels on the container, which
+      // would otherwise mix/resample with wrong divisors → wrong-pitch garbage.
+      var sampleRate = if (trackFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE))
+        trackFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE) else TARGET_SAMPLE_RATE
+      var channels = if (trackFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
+        trackFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else TARGET_CHANNELS
       val mime = trackFormat.getString(MediaFormat.KEY_MIME)!!
 
       decoder = MediaCodec.createDecoderByType(mime)
@@ -100,9 +145,18 @@ class AudioDecoderModule(reactContext: ReactApplicationContext) :
       val bufferInfo = MediaCodec.BufferInfo()
       var inputEos = false
       var outputEos = false
-      val timeoutUs = 10_000L
+      val timeoutUs = DEQUEUE_TIMEOUT_US
+      val deadlineNs = System.nanoTime() + DECODE_BUDGET_NS
 
       while (!outputEos) {
+        // Wall-clock guard: the per-call dequeue timeout is not a total
+        // bound, so a codec that never signals output EOS can't hang here.
+        if (System.nanoTime() > deadlineNs) {
+          return promise.reject(
+            "E_DECODE_TIMEOUT",
+            "Decode exceeded \${DECODE_BUDGET_NS / 1_000_000_000}s budget"
+          )
+        }
         if (!inputEos) {
           val inIdx = decoder.dequeueInputBuffer(timeoutUs)
           if (inIdx >= 0) {
@@ -122,7 +176,17 @@ class AudioDecoderModule(reactContext: ReactApplicationContext) :
           }
         }
         val outIdx = decoder.dequeueOutputBuffer(bufferInfo, timeoutUs)
-        if (outIdx >= 0) {
+        if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+          // Authoritative decoded format — THE fix for HE-AAC/AAC+ where the
+          // container header lies about rate/channels. Read it from here.
+          val outFormat = decoder.outputFormat
+          if (outFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+            sampleRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+          }
+          if (outFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+            channels = outFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+          }
+        } else if (outIdx >= 0) {
           if (bufferInfo.size > 0) {
             val outBuf = decoder.getOutputBuffer(outIdx)!!
             outBuf.position(bufferInfo.offset)
@@ -136,22 +200,20 @@ class AudioDecoderModule(reactContext: ReactApplicationContext) :
             outputEos = true
           }
         }
-        // INFO_TRY_AGAIN_LATER / INFO_OUTPUT_FORMAT_CHANGED are benign;
-        // loop continues. Output format changes mid-stream are rare for
-        // audio-only sources but if they happen we keep using whatever
-        // shape the previous header declared — quality could degrade but
-        // won't crash.
+        // INFO_TRY_AGAIN_LATER falls through — loop continues until output
+        // EOS or the wall-clock deadline trips.
       }
 
       val rawPcm = pcmOut.toByteArray()
-      val mono = if (srcChannels == 1) rawPcm else mixToMono(rawPcm, srcChannels)
-      val downsampled =
-        if (srcSampleRate == 16000) mono
-        else downsampleLinear(mono, srcSampleRate, 16000)
-      val wav = wrapInWavHeader(downsampled, 16000, 1, 16)
+      val mono = if (channels == TARGET_CHANNELS) rawPcm else mixToMono(rawPcm, channels)
+      val resampled =
+        if (sampleRate == TARGET_SAMPLE_RATE) mono
+        else resampleLinear(mono, sampleRate, TARGET_SAMPLE_RATE)
+      val wav = wrapInWavHeader(resampled, TARGET_SAMPLE_RATE, TARGET_CHANNELS, TARGET_BITS)
 
       val outPath = Uri.parse(outputUri).path
         ?: return promise.reject("E_BAD_OUTPUT", "Output URI has no path: \$outputUri")
+      File(outPath).parentFile?.mkdirs()
       FileOutputStream(outPath).use { it.write(wav) }
 
       promise.resolve(outputUri)
@@ -180,11 +242,12 @@ class AudioDecoderModule(reactContext: ReactApplicationContext) :
     return out
   }
 
-  /** Linear-interp downsample. Quality is fine for 16 kHz STT — aliasing
-   * artifacts in the inaudible high-freq range are below the recognizer's
-   * sensitivity envelope. Polyphase would add ~200 LOC for negligible
-   * accuracy gain. */
-  private fun downsampleLinear(
+  /** Linear-interpolation resampler — handles both up- and down-sampling
+   * (sub-16 kHz sources like 8 kHz AMR give ratio < 1 and upsample).
+   * Quality is fine for 16 kHz STT — aliasing artifacts in the inaudible
+   * high-freq range are below the recognizer's sensitivity envelope.
+   * Polyphase would add ~200 LOC for negligible accuracy gain. */
+  private fun resampleLinear(
     pcm: ByteArray,
     srcRate: Int,
     dstRate: Int,
