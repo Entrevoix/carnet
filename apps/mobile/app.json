@@ -53,6 +53,7 @@
       "./plugins/withAppShortcuts",
       "./plugins/withCaptureNotification",
       "./plugins/withCaptureWidget",
+      "./plugins/withAudioDecoder",
       [
         "expo-share-intent",
         {

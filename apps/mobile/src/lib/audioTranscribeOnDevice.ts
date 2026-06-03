@@ -30,6 +30,7 @@ import type {
   ExpoSpeechRecognitionErrorEvent,
   ExpoSpeechRecognitionResultEvent,
 } from "expo-speech-recognition";
+import * as audioDecoder from "./audioDecoder";
 
 const ON_DEVICE_TIMEOUT_MS = 90_000;
 
@@ -43,23 +44,51 @@ export async function transcribeOnDevice(input: {
   filename: string;
 }): Promise<string> {
   const cacheDir = FileSystem.cacheDirectory ?? "file:///data/local/tmp/";
-  const ext = input.filename.includes(".")
-    ? input.filename.slice(input.filename.lastIndexOf("."))
-    : ".m4a";
-  const tempPath = `${cacheDir}stt-${Date.now()}${ext}`;
+  // Require a real, non-leading dot with at least one char after it. Guards
+  // trailing-dot ("clip.") and dotfile (".hidden") names that would yield a
+  // degenerate extension; defaults to .m4a (the app's own capture format).
+  // The native decoder sniffs the container by content, but the fallback
+  // path hands this filename straight to the recognizer.
+  const dot = input.filename.lastIndexOf(".");
+  const ext =
+    dot > 0 && dot < input.filename.length - 1
+      ? input.filename.slice(dot)
+      : ".m4a";
+  const ts = Date.now();
+  const rawPath = `${cacheDir}stt-${ts}-input${ext}`;
+  const wavPath = `${cacheDir}stt-${ts}-decoded.wav`;
 
-  await FileSystem.writeAsStringAsync(tempPath, input.base64, {
+  await FileSystem.writeAsStringAsync(rawPath, input.base64, {
     encoding: FileSystem.EncodingType.Base64,
   });
 
   try {
-    return await runRecognizer(tempPath);
+    // Decode the raw container (AAC, MP3, etc.) to 16 kHz mono PCM WAV
+    // — expo-speech-recognition's file mode reads input as raw PCM and
+    // can't decode containers. Without this step, AAC files emit
+    // no-speech because the recognizer interprets the encoded bytes as
+    // noise samples.
+    //
+    // Graceful fallback: if the native module isn't registered (Expo Go,
+    // iOS, missing bridge), pass the raw file. Recognizer will probably
+    // emit no-speech for AAC inputs in that case, but PCM/WAV inputs
+    // would still work.
+    let recognizerInput = rawPath;
+    if (audioDecoder.isAvailable()) {
+      await audioDecoder.decodeToWav(rawPath, wavPath);
+      recognizerInput = wavPath;
+    }
+    return await runRecognizer(recognizerInput);
   } finally {
-    // Best-effort cache cleanup. OS reaps it eventually anyway.
-    try {
-      await FileSystem.deleteAsync(tempPath, { idempotent: true });
-    } catch {
-      /* swallow */
+    // Best-effort cache cleanup for BOTH temp files. OS reaps it
+    // eventually anyway, but cleaning eagerly keeps the cache dir
+    // small across many transcriptions.
+    for (const p of [rawPath, wavPath]) {
+      try {
+        await FileSystem.deleteAsync(p, { idempotent: true });
+      } catch {
+        /* swallow */
+      }
     }
   }
 }
