@@ -110,6 +110,45 @@ beforeEach(() => {
   fetchMock.mockReset();
 });
 
+// ── network hard timeout ──────────────────────────────────────────────────────
+
+describe("OmniRoute request hard timeout", () => {
+  it("rejects instead of hanging when the fetch never settles (unreachable host)", async () => {
+    // Simulates OmniRoute unreachable (e.g. Tailscale down): the fetch promise
+    // never resolves and RN's AbortController.abort() does NOT cancel a stuck
+    // connect. Without the Promise.race hard timeout this would hang forever.
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockReturnValueOnce(new Promise<Response>(() => {}));
+      const assertion = expect(enrichIdea("offline thought")).rejects.toThrow(
+        /timed out/i,
+      );
+      await vi.advanceTimersByTimeAsync(21_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces the timeout as an OmniRouteError with status 0 (network-class)", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockReturnValueOnce(new Promise<Response>(() => {}));
+      // Capture the rejection without an unhandled-rejection while advancing.
+      const caught = enrichIdea("offline thought").then(
+        () => null,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(21_000);
+      const err = await caught;
+      expect(err).toBeInstanceOf(OmniRouteError);
+      expect((err as OmniRouteError).status).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 // ── assertBase64UnderLimit ────────────────────────────────────────────────────
 
 describe("assertBase64UnderLimit", () => {

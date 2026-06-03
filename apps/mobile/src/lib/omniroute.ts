@@ -102,7 +102,11 @@ export function isPermanentError(err: unknown): boolean {
   return err.status >= 400 && err.status < 500;
 }
 
-const FETCH_TIMEOUT_MS = 60_000;
+// Hard ceiling on any single OmniRoute request. Kept short because an
+// unreachable host (e.g. OmniRoute on a tailnet with Tailscale down) must
+// fail fast so the caller's offline-queue path fires instead of spinning.
+// Trade-off: a genuine generation that runs longer than this is cut off.
+const FETCH_TIMEOUT_MS = 20_000;
 
 /** Hard cap on image payload sent to a vision model. Vision providers reject
  * >10 MB payloads and the in-memory peak on a phone (base64 inflates by 33%,
@@ -185,6 +189,49 @@ async function parseErrorBody(response: Response): Promise<string> {
 }
 
 /**
+ * fetch with a HARD timeout that ALWAYS settles.
+ *
+ * RN's fetch does not reject when AbortController.abort() fires during a
+ * stuck TCP connect to an unreachable host (e.g. OmniRoute on a tailnet host
+ * with Tailscale down) — the promise hangs forever and the UI spins. We race
+ * the fetch against an independent reject-timer so the caller always settles
+ * within `ms`; abort() is still called best-effort to release the socket.
+ * Surfaces a status-0 OmniRouteError on timeout so callers' network-error /
+ * offline-queue paths fire.
+ */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  ms: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {
+        /* best-effort cancel */
+      }
+      reject(
+        new OmniRouteError(
+          `OmniRoute unreachable — timed out after ${Math.round(ms / 1000)}s. Check your connection (Tailscale?).`,
+          0,
+        ),
+      );
+    }, ms);
+  });
+  try {
+    return await Promise.race([
+      fetch(url, { ...init, signal: controller.signal }),
+      timeout,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * Low-level POST to /v1/chat/completions. Sends arbitrary OpenAI-compatible
  * messages — text or multimodal. Used both for the text-only modes
  * (idea/journal/person) and for vision-enabled share-target enrichment.
@@ -206,27 +253,27 @@ async function executeChat(
   const url = `${trimmed}/v1/chat/completions`;
   const body = JSON.stringify({ model, messages, stream: false });
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    response = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body,
       },
-      body,
-      signal: controller.signal,
-    });
+      FETCH_TIMEOUT_MS,
+    );
   } catch (e: unknown) {
-    clearTimeout(timer);
+    // Timeout already arrives as a shaped OmniRouteError — don't double-wrap.
+    if (e instanceof OmniRouteError) throw e;
     const raw = e instanceof Error ? e.message : String(e);
     const msg = sanitizeErrorMessage(raw);
     throw new OmniRouteError(`OmniRoute network error — ${msg}`, 0);
   }
-  clearTimeout(timer);
 
   if (!response.ok) {
     throw new OmniRouteError(
@@ -320,27 +367,27 @@ export async function listModels(
   assertHttpsOrLocal(trimmed);
 
   const url = `${trimmed}/v1/models`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: "GET",
-      headers: {
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    response = await fetchWithTimeout(
+      url,
+      {
+        method: "GET",
+        headers: {
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
       },
-      signal: controller.signal,
-    });
+      FETCH_TIMEOUT_MS,
+    );
   } catch (e: unknown) {
-    clearTimeout(timer);
+    if (e instanceof OmniRouteError) throw e;
     const raw = e instanceof Error ? e.message : String(e);
     throw new OmniRouteError(
       `OmniRoute network error — ${sanitizeErrorMessage(raw)}`,
       0,
     );
   }
-  clearTimeout(timer);
 
   if (!response.ok) {
     throw new OmniRouteError(
