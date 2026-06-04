@@ -288,7 +288,7 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
 
   if (phase === "saved") {
     return (
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Card style={styles.card}>
           <Card.Title title="Saved to vault" />
           <Card.Content>
@@ -327,7 +327,7 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
 
   if (phase === "preview") {
     return (
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Card style={styles.card}>
           <Card.Title title="Preview" subtitle="Review before saving" />
           <Card.Content>
@@ -375,7 +375,7 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
   if (base64 && thumbUri) {
     // Capture done — show thumbnail + context inputs + Retake / Send.
     return (
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Card style={styles.card}>
           <Card.Title title="Captured" subtitle="Add context, then send" />
           <Card.Content>
