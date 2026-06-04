@@ -135,11 +135,19 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setPhase("input");
       return;
     }
-    await enqueueFn();
-    const depth = await getQueueDepth();
-    setQueueDepth(depth);
-    setError("Offline — capture queued.");
-    setPhase("input");
+    // Wrap the queue write so a failure here can never strand the user on the
+    // "submitting" spinner — the finally always returns to the input phase.
+    try {
+      await enqueueFn();
+      const depth = await getQueueDepth();
+      setQueueDepth(depth);
+      setError("Offline — capture queued.");
+    } catch (qe: unknown) {
+      const qmsg = qe instanceof Error ? qe.message : String(qe);
+      setError(`Couldn't reach OmniRoute, and queuing offline failed: ${qmsg}`);
+    } finally {
+      setPhase("input");
+    }
   };
 
   const submit = async () => {

@@ -147,6 +147,28 @@ describe("OmniRoute request hard timeout", () => {
       vi.useRealTimers();
     }
   });
+
+  it("rejects when fetch connects but the body read (response.json) never settles", async () => {
+    // The subtler hang: the connection succeeds and headers arrive, but the
+    // body never closes (LiteLLM SSE). A fetch-only timeout misses this; the
+    // whole-operation timeout must still fire because the body read runs
+    // inside it.
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => new Promise(() => {}), // body never resolves
+      } as unknown as Response);
+      const assertion = expect(enrichIdea("offline thought")).rejects.toThrow(
+        /timed out/i,
+      );
+      await vi.advanceTimersByTimeAsync(21_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ── assertBase64UnderLimit ────────────────────────────────────────────────────
