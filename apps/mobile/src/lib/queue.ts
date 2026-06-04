@@ -17,7 +17,6 @@
 
 import * as SQLite from "expo-sqlite";
 import * as Haptics from "expo-haptics";
-import { v4 as uuidv4 } from "uuid";
 
 import {
   enrichIdea,
@@ -106,10 +105,19 @@ export async function getQueueDepth(): Promise<number> {
   return rows[0]?.count ?? 0;
 }
 
+/** Non-crypto, unique-enough row id. uuid v11 needs crypto.getRandomValues,
+ * which RN/Hermes lacks without the (uninstalled) react-native-get-random-values
+ * polyfill — calling it here threw and left offline captures stuck on the
+ * spinner. A queue-row id only needs local uniqueness, so timestamp + random
+ * base36 is plenty. Mirrors CaptureScreen's localId. */
+function localId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 /** Enqueue a failed capture for later retry. */
 export async function enqueue(payload: QueuePayload): Promise<void> {
   const db = await getDb();
-  const id = uuidv4();
+  const id = localId();
   const now = Date.now();
   await db.runAsync(
     "INSERT INTO pending_captures (id, mode, payload_json, created_at, attempts, last_error) VALUES (?, ?, ?, ?, 0, NULL)",

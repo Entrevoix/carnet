@@ -166,23 +166,40 @@ function isBlockedHost(hostname: string): boolean {
   return false;
 }
 
-/** Internal: do the fetch with a timeout. Throws AbortError on
- * timeout, propagates other fetch errors. */
+/** Internal: do the fetch with a HARD timeout. Rejects on timeout,
+ * propagates other fetch errors (the sole caller maps any throw to null).
+ *
+ * Races the fetch against an independent reject-timer because RN's fetch
+ * does not reject when AbortController.abort() fires during a stuck connect
+ * to an unreachable host — a bare AbortController would hang forever. */
 async function fetchWithTimeout(url: string): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {
+        /* best-effort cancel */
+      }
+      reject(new Error(`URL preview timed out after ${FETCH_TIMEOUT_MS}ms`));
+    }, FETCH_TIMEOUT_MS);
+  });
   try {
-    return await fetch(url, {
-      method: "GET",
-      redirect: "follow",
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml",
-      },
-      signal: controller.signal,
-    });
+    return await Promise.race([
+      fetch(url, {
+        method: "GET",
+        redirect: "follow",
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept: "text/html,application/xhtml+xml",
+        },
+        signal: controller.signal,
+      }),
+      timeout,
+    ]);
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

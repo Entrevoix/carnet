@@ -102,7 +102,11 @@ export function isPermanentError(err: unknown): boolean {
   return err.status >= 400 && err.status < 500;
 }
 
-const FETCH_TIMEOUT_MS = 60_000;
+// Hard ceiling on any single OmniRoute request. Kept short because an
+// unreachable host (e.g. OmniRoute on a tailnet with Tailscale down) must
+// fail fast so the caller's offline-queue path fires instead of spinning.
+// Trade-off: a genuine generation that runs longer than this is cut off.
+const FETCH_TIMEOUT_MS = 20_000;
 
 /** Hard cap on image payload sent to a vision model. Vision providers reject
  * >10 MB payloads and the in-memory peak on a phone (base64 inflates by 33%,
@@ -185,6 +189,46 @@ async function parseErrorBody(response: Response): Promise<string> {
 }
 
 /**
+ * Run a network operation with a HARD timeout that ALWAYS settles.
+ *
+ * Covers the WHOLE operation — connect AND body read — not just fetch().
+ * Two ways the request can hang past a bare fetch timeout: RN's fetch ignores
+ * AbortController.abort() on a stuck TCP connect (unreachable tailnet host),
+ * AND response.json() on a never-closing body (LiteLLM SSE) hangs after the
+ * connect succeeds. Racing the entire `run()` against an independent
+ * reject-timer bounds both; abort() is still fired best-effort to release the
+ * socket. Rejects with a status-0 OmniRouteError on timeout so callers'
+ * network-error / offline-queue paths fire.
+ */
+async function withTimeout<T>(
+  ms: number,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {
+        /* best-effort cancel */
+      }
+      reject(
+        new OmniRouteError(
+          `OmniRoute unreachable — timed out after ${Math.round(ms / 1000)}s. Check your connection (Tailscale?).`,
+          0,
+        ),
+      );
+    }, ms);
+  });
+  try {
+    return await Promise.race([run(controller.signal), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * Low-level POST to /v1/chat/completions. Sends arbitrary OpenAI-compatible
  * messages — text or multimodal. Used both for the text-only modes
  * (idea/journal/person) and for vision-enabled share-target enrichment.
@@ -206,47 +250,48 @@ async function executeChat(
   const url = `${trimmed}/v1/chat/completions`;
   const body = JSON.stringify({ model, messages, stream: false });
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body,
+        signal,
+      });
+    } catch (e: unknown) {
+      // Timeout already arrives as a shaped OmniRouteError — don't double-wrap.
+      if (e instanceof OmniRouteError) throw e;
+      const raw = e instanceof Error ? e.message : String(e);
+      const msg = sanitizeErrorMessage(raw);
+      throw new OmniRouteError(`OmniRoute network error — ${msg}`, 0);
+    }
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body,
-      signal: controller.signal,
-    });
-  } catch (e: unknown) {
-    clearTimeout(timer);
-    const raw = e instanceof Error ? e.message : String(e);
-    const msg = sanitizeErrorMessage(raw);
-    throw new OmniRouteError(`OmniRoute network error — ${msg}`, 0);
-  }
-  clearTimeout(timer);
+    // Body reads run INSIDE the timeout — a never-closing body hangs here
+    // just like a stuck connect would.
+    if (!response.ok) {
+      throw new OmniRouteError(
+        `OmniRoute error — ${await parseErrorBody(response)}`,
+        response.status,
+      );
+    }
 
-  if (!response.ok) {
-    throw new OmniRouteError(
-      `OmniRoute error — ${await parseErrorBody(response)}`,
-      response.status,
-    );
-  }
+    const json = (await response.json()) as OpenAIResponse;
+    const content = json.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || !content.trim().length) {
+      throw new OmniRouteError(
+        "OmniRoute returned an empty or malformed response",
+        response.status,
+      );
+    }
 
-  const json = (await response.json()) as OpenAIResponse;
-  const content = json.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim().length) {
-    throw new OmniRouteError(
-      "OmniRoute returned an empty or malformed response",
-      response.status,
-    );
-  }
-
-  const markdown = stripCodeFences(content);
-  const modelUsed = json.model ?? model;
-  return { markdown, model: modelUsed };
+    const markdown = stripCodeFences(content);
+    const modelUsed = json.model ?? model;
+    return { markdown, model: modelUsed };
+  });
 }
 
 /**
@@ -320,40 +365,39 @@ export async function listModels(
   assertHttpsOrLocal(trimmed);
 
   const url = `${trimmed}/v1/models`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "GET",
-      headers: {
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      signal: controller.signal,
-    });
-  } catch (e: unknown) {
-    clearTimeout(timer);
-    const raw = e instanceof Error ? e.message : String(e);
-    throw new OmniRouteError(
-      `OmniRoute network error — ${sanitizeErrorMessage(raw)}`,
-      0,
-    );
-  }
-  clearTimeout(timer);
+  return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        headers: {
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        signal,
+      });
+    } catch (e: unknown) {
+      if (e instanceof OmniRouteError) throw e;
+      const raw = e instanceof Error ? e.message : String(e);
+      throw new OmniRouteError(
+        `OmniRoute network error — ${sanitizeErrorMessage(raw)}`,
+        0,
+      );
+    }
 
-  if (!response.ok) {
-    throw new OmniRouteError(
-      `OmniRoute error — ${await parseErrorBody(response)}`,
-      response.status,
-    );
-  }
+    if (!response.ok) {
+      throw new OmniRouteError(
+        `OmniRoute error — ${await parseErrorBody(response)}`,
+        response.status,
+      );
+    }
 
-  const json = (await response.json()) as { data?: Array<{ id?: string }> };
-  const ids = (json.data ?? [])
-    .map((m) => m.id)
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-  return [...new Set(ids)].sort();
+    const json = (await response.json()) as { data?: Array<{ id?: string }> };
+    const ids = (json.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    return [...new Set(ids)].sort();
+  });
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
