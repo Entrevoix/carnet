@@ -22,7 +22,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOBILE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ANDROID_DIR="$MOBILE_DIR/android"
-PKG_PATH="us/beary/carnet"
+# Derive the package from app.json so this never goes stale on a rename/rebrand.
+PKG="$(node -p "require('$MOBILE_DIR/app.json').expo.android.package")"
+PKG_PATH="${PKG//.//}"
 
 cd "$MOBILE_DIR"
 
@@ -81,7 +83,7 @@ check_file "app/src/main/java/$PKG_PATH/audiodecoder/AudioDecoderModule.kt" "Aud
 check_file "app/src/main/java/$PKG_PATH/audiodecoder/AudioDecoderPackage.kt" "AudioDecoderPackage.kt"
 
 echo "→ MainApplication package registration:"
-check_main_app_contains "import us.beary.carnet.audiodecoder.AudioDecoderPackage" "import line present"
+check_main_app_contains "import ${PKG}.audiodecoder.AudioDecoderPackage" "import line present"
 # Distinct check for the add() injection — PR #22 lesson: earlier
 # versions of withCaptureNotification only inserted the import but
 # silently failed the add() injection on SDK 54's expression-bodied
