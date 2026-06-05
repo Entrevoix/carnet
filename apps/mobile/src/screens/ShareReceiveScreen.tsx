@@ -454,7 +454,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
   const url = shareIntent.webUrl ?? "";
 
   return (
-    <ScrollView contentContainerStyle={styles.content}>
+    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Card style={styles.card}>
         <Card.Title title="Shared with carnet" />
         <Card.Content>

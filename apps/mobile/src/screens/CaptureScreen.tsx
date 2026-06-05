@@ -318,7 +318,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.content}>
+    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       {phase === "input" && (
         <ModeInput
           mode={mode}
