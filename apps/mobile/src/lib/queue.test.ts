@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// ── In-memory SQLite mock ─────────────────────────────────────────────────────
+// ── In-memory AsyncStorage mock ───────────────────────────────────────────────
+// Same pattern as storage.test.ts — the queue is now a JSON array under one key
+// instead of a SQLite table. We can't pull in the real native binding under Node.
 
 interface Row {
   id: string;
@@ -11,46 +13,19 @@ interface Row {
   last_error: string | null;
 }
 
-// Simple in-memory store keyed by id
-const _rows: Map<string, Row> = new Map();
+const QUEUE_KEY = "carnet:queue:v1";
+const _store = new Map<string, string>();
 
-const mockDb = {
-  execAsync: vi.fn(async (_sql: string) => {}),
-  getAllAsync: vi.fn(async (sql: string, ...params: unknown[]): Promise<unknown[]> => {
-    let rows = Array.from(_rows.values());
-    // Filter by attempts < MAX if the query mentions it
-    if (sql.includes("attempts <") && params.length > 0) {
-      const limit = params[0] as number;
-      rows = rows.filter((r) => r.attempts < limit);
-    }
-    // Sort by created_at
-    rows.sort((a, b) => a.created_at - b.created_at);
-    // COUNT query
-    if (sql.includes("COUNT(*)")) {
-      return [{ count: rows.length }];
-    }
-    return rows;
-  }),
-  runAsync: vi.fn(async (sql: string, ...params: unknown[]) => {
-    if (sql.startsWith("INSERT")) {
-      const [id, mode, payload_json, created_at] = params as [string, string, string, number];
-      _rows.set(id, { id, mode, payload_json, created_at, attempts: 0, last_error: null });
-    } else if (sql.startsWith("DELETE")) {
-      const id = params[0] as string;
-      _rows.delete(id);
-    } else if (sql.startsWith("UPDATE")) {
-      // UPDATE pending_captures SET attempts = ?, last_error = ? WHERE id = ?
-      const [attempts, last_error, id] = params as [number, string, string];
-      const row = _rows.get(id);
-      if (row) {
-        _rows.set(id, { ...row, attempts, last_error });
-      }
-    }
-  }),
-};
-
-vi.mock("expo-sqlite", () => ({
-  openDatabaseAsync: vi.fn(async (_name: string) => mockDb),
+vi.mock("@react-native-async-storage/async-storage", () => ({
+  default: {
+    getItem: vi.fn(async (k: string) => _store.get(k) ?? null),
+    setItem: vi.fn(async (k: string, v: string) => {
+      _store.set(k, v);
+    }),
+    removeItem: vi.fn(async (k: string) => {
+      _store.delete(k);
+    }),
+  },
 }));
 
 vi.mock("expo-haptics", () => ({
@@ -105,43 +80,20 @@ vi.mock("@carnet/shared", () => ({
 // Import after all mocks are set up
 import { enqueue, getQueueDepth, drainQueue } from "./queue";
 
-function clearRows(): void {
-  _rows.clear();
+/** Current persisted queue rows (parsed from the AsyncStorage mock). */
+function rows(): Row[] {
+  const raw = _store.get(QUEUE_KEY);
+  return raw ? (JSON.parse(raw) as Row[]) : [];
 }
 
-// Reset the singleton db cache between tests by clearing the module cache isn't
-// straightforward in vitest — instead we rely on the mock always returning mockDb.
+/** Directly seed the queue store, bypassing enqueue (for ordering tests). */
+function seed(seedRows: Row[]): void {
+  _store.set(QUEUE_KEY, JSON.stringify(seedRows));
+}
 
 beforeEach(() => {
-  clearRows();
+  _store.clear();
   vi.clearAllMocks();
-  // Re-apply stable mock implementations after clearAllMocks
-  mockDb.execAsync.mockResolvedValue(undefined);
-  mockDb.getAllAsync.mockImplementation(async (sql: string, ...params: unknown[]): Promise<unknown[]> => {
-    let rows = Array.from(_rows.values());
-    if (sql.includes("attempts <") && params.length > 0) {
-      const limit = params[0] as number;
-      rows = rows.filter((r) => r.attempts < limit);
-    }
-    rows.sort((a, b) => a.created_at - b.created_at);
-    if (sql.includes("COUNT(*)")) {
-      return [{ count: rows.length }];
-    }
-    return rows;
-  });
-  mockDb.runAsync.mockImplementation(async (sql: string, ...params: unknown[]) => {
-    if (sql.startsWith("INSERT")) {
-      const [id, mode, payload_json, created_at] = params as [string, string, string, number];
-      _rows.set(id, { id, mode, payload_json, created_at, attempts: 0, last_error: null });
-    } else if (sql.startsWith("DELETE")) {
-      const id = params[0] as string;
-      _rows.delete(id);
-    } else if (sql.startsWith("UPDATE")) {
-      const [attempts, last_error, id] = params as [number, string, string];
-      const row = _rows.get(id);
-      if (row) _rows.set(id, { ...row, attempts, last_error });
-    }
-  });
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -149,8 +101,8 @@ beforeEach(() => {
 describe("enqueue", () => {
   it("adds a row to the queue", async () => {
     await enqueue({ mode: "idea", text: "my idea" });
-    expect(_rows.size).toBe(1);
-    const row = Array.from(_rows.values())[0];
+    expect(rows().length).toBe(1);
+    const row = rows()[0];
     expect(row.mode).toBe("idea");
     expect(JSON.parse(row.payload_json)).toMatchObject({ mode: "idea", text: "my idea" });
   });
@@ -172,10 +124,18 @@ describe("drainQueue", () => {
     vi.mocked(writeIdea).mockResolvedValue({ filepath: "file:///carnet/Ideas/test-idea.md" });
 
     await enqueue({ mode: "idea", text: "drain me" });
-    expect(_rows.size).toBe(1);
+    expect(rows().length).toBe(1);
 
     await drainQueue();
-    expect(_rows.size).toBe(0);
+    expect(rows().length).toBe(0);
+  });
+
+  it("removes a corrupt payload_json row during drain", async () => {
+    seed([
+      { id: "x", mode: "idea", payload_json: "{not valid json", created_at: 1, attempts: 0, last_error: null },
+    ]);
+    await drainQueue();
+    expect(rows().length).toBe(0);
   });
 
   it("increments attempts on failure and leaves row in queue", async () => {
@@ -185,8 +145,8 @@ describe("drainQueue", () => {
     await enqueue({ mode: "idea", text: "fail me" });
     await drainQueue();
 
-    expect(_rows.size).toBe(1);
-    const row = Array.from(_rows.values())[0];
+    expect(rows().length).toBe(1);
+    const row = rows()[0];
     expect(row.attempts).toBe(1);
     expect(row.last_error).toBe("network error");
   });
@@ -199,9 +159,11 @@ describe("drainQueue", () => {
       return { markdown: `---\nstatus: seedling\n---\n# ${text}\n`, model: "t" };
     });
 
-    // Insert with explicit created_at ordering
-    _rows.set("a", { id: "a", mode: "idea", payload_json: JSON.stringify({ mode: "idea", text: "first" }), created_at: 100, attempts: 0, last_error: null });
-    _rows.set("b", { id: "b", mode: "idea", payload_json: JSON.stringify({ mode: "idea", text: "second" }), created_at: 200, attempts: 0, last_error: null });
+    // Seed with explicit created_at ordering (second appears first in the array).
+    seed([
+      { id: "b", mode: "idea", payload_json: JSON.stringify({ mode: "idea", text: "second" }), created_at: 200, attempts: 0, last_error: null },
+      { id: "a", mode: "idea", payload_json: JSON.stringify({ mode: "idea", text: "first" }), created_at: 100, attempts: 0, last_error: null },
+    ]);
 
     await drainQueue();
     expect(calls[0]).toBe("first");
@@ -217,7 +179,7 @@ describe("drainQueue", () => {
 
     expect(vi.mocked(enrichJournal)).toHaveBeenCalledWith({ transcript: "today I did things", notes: "" });
     expect(vi.mocked(appendJournal)).toHaveBeenCalled();
-    expect(_rows.size).toBe(0);
+    expect(rows().length).toBe(0);
   });
 
   it("processes person payloads via enrichPerson + writePerson", async () => {
@@ -229,7 +191,7 @@ describe("drainQueue", () => {
 
     expect(vi.mocked(enrichPerson)).toHaveBeenCalledWith({ ocrResult: "Jane Doe CEO", context: "conference" });
     expect(vi.mocked(writePerson)).toHaveBeenCalled();
-    expect(_rows.size).toBe(0);
+    expect(rows().length).toBe(0);
   });
 
   it("marks 4xx (permanent) errors as permanent failure immediately", async () => {
@@ -241,8 +203,8 @@ describe("drainQueue", () => {
     await enqueue({ mode: "idea", text: "doomed" });
     await drainQueue();
 
-    expect(_rows.size).toBe(1);
-    const row = Array.from(_rows.values())[0];
+    expect(rows().length).toBe(1);
+    const row = rows()[0];
     // Permanent failure sets attempts to MAX so it won't be re-tried in
     // subsequent drains (queue depth excludes attempts >= MAX).
     expect(row.attempts).toBe(10);
@@ -257,7 +219,7 @@ describe("drainQueue", () => {
     await enqueue({ mode: "idea", text: "leaky" });
     await drainQueue();
 
-    const row = Array.from(_rows.values())[0];
+    const row = rows()[0];
     expect(row.last_error).not.toContain("sk-very-secret-token-xyz");
     expect(row.last_error).toContain("Bearer [redacted]");
   });
@@ -285,6 +247,6 @@ describe("drainQueue", () => {
 
     // The row should have been processed exactly once.
     expect(calls).toEqual(["only-once"]);
-    expect(_rows.size).toBe(0);
+    expect(rows().length).toBe(0);
   });
 });
