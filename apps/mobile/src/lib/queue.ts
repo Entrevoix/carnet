@@ -2,8 +2,8 @@
  * Offline capture queue for carnet v0.2.
  *
  * When OmniRoute is unreachable (network error or 5xx), a capture is stored
- * in a local SQLite database. On reconnect or app foreground, a drain loop
- * processes the queue oldest-first:
+ * in AsyncStorage (a JSON array under a single key). On reconnect or app
+ * foreground, a drain loop processes the queue oldest-first:
  *   - Success → write file to disk + remove row
  *   - 4xx (permanent failure) → mark as failed, stop auto-retrying
  *   - Network error / 5xx → leave in queue, retry next drain
@@ -11,11 +11,17 @@
  * The API key is NOT stored in the queue — it is read fresh from SecureStore
  * on each drain pass. Only the raw user input is persisted.
  *
+ * Storage note: this used expo-sqlite, but that native module throws a SharedRef
+ * ABI error on-device (expo-sqlite@55 against the SDK-54 expo-modules-core), so
+ * the queue never persisted. AsyncStorage's native module is already present and
+ * working (see storage.ts), needs no native rebuild, and the queue only holds a
+ * handful of small text rows — SQLite was overkill.
+ *
  * Note: background execution on Android is limited. If the app is fully killed,
  * draining happens on next foreground open — not a regression vs. navetted.
  */
 
-import * as SQLite from "expo-sqlite";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Haptics from "expo-haptics";
 
 import {
@@ -66,43 +72,78 @@ export interface QueueRow {
   last_error: string | null;
 }
 
-const DB_NAME = "carnet_queue.db";
+const QUEUE_KEY = "carnet:queue:v1";
 const MAX_AUTO_RETRY_ATTEMPTS = 10;
 /** Sentinel attempts value meaning "permanent failure — do not auto-retry".
  * Set when OmniRoute returns a 4xx (auth, bad model, malformed input). */
 const PERMANENT_FAILURE_ATTEMPTS = MAX_AUTO_RETRY_ATTEMPTS;
 
-let _db: SQLite.SQLiteDatabase | null = null;
 /** Single-flight guard. CaptureScreen mounts re-trigger drainQueue and a
  * connectivity event could fire in parallel. Without this, two drains read
  * the same rows and both try to write — double-write to disk + double-charge
  * OmniRoute. */
 let _draining = false;
 
-async function getDb(): Promise<SQLite.SQLiteDatabase> {
-  if (_db) return _db;
-  _db = await SQLite.openDatabaseAsync(DB_NAME);
-  await _db.execAsync(`
-    CREATE TABLE IF NOT EXISTS pending_captures (
-      id TEXT PRIMARY KEY,
-      mode TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      attempts INTEGER NOT NULL DEFAULT 0,
-      last_error TEXT
-    );
-  `);
-  return _db;
+// ── AsyncStorage-backed storage ──────────────────────────────────────────
+// The queue is a JSON array of QueueRow under QUEUE_KEY. Mirrors storage.ts's
+// recents-history persistence.
+
+async function loadRows(): Promise<QueueRow[]> {
+  const raw = await AsyncStorage.getItem(QUEUE_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as QueueRow[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveRows(rows: QueueRow[]): Promise<void> {
+  await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(rows));
+}
+
+/** Serialize read-modify-write so a concurrent enqueue during a drain pass
+ * (CaptureScreen mount drains while a new failed capture enqueues) can't lose a
+ * row. SQLite gave per-statement atomicity for free; AsyncStorage RMW does not. */
+let _lock: Promise<unknown> = Promise.resolve();
+function withLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = _lock.then(fn, fn);
+  _lock = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
+/** Remove a row by id (locked read-modify-write). */
+function removeRow(id: string): Promise<void> {
+  return withLock(async () => {
+    const rows = await loadRows();
+    await saveRows(rows.filter((r) => r.id !== id));
+  });
+}
+
+/** Update a row's attempts + last_error by id (locked read-modify-write). */
+function updateRow(
+  id: string,
+  attempts: number,
+  last_error: string,
+): Promise<void> {
+  return withLock(async () => {
+    const rows = await loadRows();
+    const i = rows.findIndex((r) => r.id === id);
+    if (i !== -1) {
+      rows[i] = { ...rows[i], attempts, last_error };
+      await saveRows(rows);
+    }
+  });
 }
 
 /** Returns the current depth of the pending queue (excluding permanently failed). */
 export async function getQueueDepth(): Promise<number> {
-  const db = await getDb();
-  const rows = await db.getAllAsync<{ count: number }>(
-    "SELECT COUNT(*) as count FROM pending_captures WHERE attempts < ?",
-    MAX_AUTO_RETRY_ATTEMPTS,
-  );
-  return rows[0]?.count ?? 0;
+  const rows = await loadRows();
+  return rows.filter((r) => r.attempts < MAX_AUTO_RETRY_ATTEMPTS).length;
 }
 
 /** Non-crypto, unique-enough row id. uuid v11 needs crypto.getRandomValues,
@@ -116,16 +157,18 @@ function localId(): string {
 
 /** Enqueue a failed capture for later retry. */
 export async function enqueue(payload: QueuePayload): Promise<void> {
-  const db = await getDb();
-  const id = localId();
-  const now = Date.now();
-  await db.runAsync(
-    "INSERT INTO pending_captures (id, mode, payload_json, created_at, attempts, last_error) VALUES (?, ?, ?, ?, 0, NULL)",
-    id,
-    payload.mode,
-    JSON.stringify(payload),
-    now,
-  );
+  await withLock(async () => {
+    const rows = await loadRows();
+    rows.push({
+      id: localId(),
+      mode: payload.mode,
+      payload_json: JSON.stringify(payload),
+      created_at: Date.now(),
+      attempts: 0,
+      last_error: null,
+    });
+    await saveRows(rows);
+  });
   // Light haptic so the user feels the offline queue accept the capture.
   void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 }
@@ -143,11 +186,9 @@ export async function drainQueue(): Promise<void> {
   if (_draining) return;
   _draining = true;
   try {
-    const db = await getDb();
-    const rows = await db.getAllAsync<QueueRow>(
-      "SELECT * FROM pending_captures WHERE attempts < ? ORDER BY created_at ASC",
-      MAX_AUTO_RETRY_ATTEMPTS,
-    );
+    const rows = (await loadRows())
+      .filter((r) => r.attempts < MAX_AUTO_RETRY_ATTEMPTS)
+      .sort((a, b) => a.created_at - b.created_at);
 
     for (const row of rows) {
       let payload: QueuePayload;
@@ -155,14 +196,14 @@ export async function drainQueue(): Promise<void> {
         payload = JSON.parse(row.payload_json) as QueuePayload;
       } catch {
         // Corrupt row — remove it
-        await db.runAsync("DELETE FROM pending_captures WHERE id = ?", row.id);
+        await removeRow(row.id);
         continue;
       }
 
       try {
         await processRow(payload);
         // Success: remove from queue
-        await db.runAsync("DELETE FROM pending_captures WHERE id = ?", row.id);
+        await removeRow(row.id);
       } catch (e: unknown) {
         const raw = e instanceof Error ? e.message : String(e);
         const msg = sanitizeError(raw);
@@ -171,12 +212,7 @@ export async function drainQueue(): Promise<void> {
         const newAttempts = isPermanentError(e)
           ? PERMANENT_FAILURE_ATTEMPTS
           : row.attempts + 1;
-        await db.runAsync(
-          "UPDATE pending_captures SET attempts = ?, last_error = ? WHERE id = ?",
-          newAttempts,
-          msg,
-          row.id,
-        );
+        await updateRow(row.id, newAttempts, msg);
       }
     }
   } finally {
@@ -211,19 +247,16 @@ async function processRow(payload: QueuePayload): Promise<void> {
  * Returns all rows including permanently-failed ones (for debugging / admin).
  */
 export async function getAllQueueRows(): Promise<QueueRow[]> {
-  const db = await getDb();
-  return db.getAllAsync<QueueRow>(
-    "SELECT * FROM pending_captures ORDER BY created_at ASC",
-  );
+  const rows = await loadRows();
+  return rows.sort((a, b) => a.created_at - b.created_at);
 }
 
 /**
  * Clear all permanently-failed rows (attempts >= MAX_AUTO_RETRY_ATTEMPTS).
  */
 export async function clearFailedRows(): Promise<void> {
-  const db = await getDb();
-  await db.runAsync(
-    "DELETE FROM pending_captures WHERE attempts >= ?",
-    MAX_AUTO_RETRY_ATTEMPTS,
-  );
+  await withLock(async () => {
+    const rows = await loadRows();
+    await saveRows(rows.filter((r) => r.attempts < MAX_AUTO_RETRY_ATTEMPTS));
+  });
 }
