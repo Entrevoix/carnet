@@ -21,7 +21,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOBILE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ANDROID_DIR="$MOBILE_DIR/android"
-PKG_PATH="us/beary/carnet"
+# Derive the package from app.json so this never goes stale on a rename/rebrand.
+PKG="$(node -p "require('$MOBILE_DIR/app.json').expo.android.package")"
+PKG_PATH="${PKG//.//}"
 
 cd "$MOBILE_DIR"
 
@@ -99,7 +101,7 @@ check_manifest_contains "POST_NOTIFICATIONS" "permission: POST_NOTIFICATIONS"
 check_manifest_contains "RECEIVE_BOOT_COMPLETED" "permission: RECEIVE_BOOT_COMPLETED"
 
 echo "→ MainApplication package registration:"
-check_main_app_contains "import us.beary.carnet.notification.CaptureNotificationPackage" "import line present"
+check_main_app_contains "import ${PKG}.notification.CaptureNotificationPackage" "import line present"
 # Distinct check for the add() injection — earlier versions of the plugin
 # only inserted the import but silently failed the add() injection on
 # SDK 54's expression-bodied MainApplication. Catching that requires

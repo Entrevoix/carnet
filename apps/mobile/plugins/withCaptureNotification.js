@@ -26,7 +26,7 @@
 // the right pick for sideloaded apps. Play Store path would need different
 // design (see plan).
 //
-// All emitted Kotlin lives under us.beary.carnet.notification.* — that
+// All emitted Kotlin lives under com.ventoux.carnet.notification.* — that
 // package path is built from app.json's android.package so a rebrand /
 // fork doesn't silently break the manifest references.
 

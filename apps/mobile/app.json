@@ -9,7 +9,7 @@
     "icon": "./assets/icon.png",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "us.beary.carnet",
+      "bundleIdentifier": "com.ventoux.carnet",
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Carnet uses speech recognition to transcribe your voice notes into journal entries.",
         "NSMicrophoneUsageDescription": "Carnet uses the microphone to capture voice notes.",
@@ -18,7 +18,7 @@
     },
     "android": {
       "softwareKeyboardLayoutMode": "adjustResize",
-      "package": "us.beary.carnet",
+      "package": "com.ventoux.carnet",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#5E63FF"
