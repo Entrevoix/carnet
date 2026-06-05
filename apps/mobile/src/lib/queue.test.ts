@@ -130,6 +130,14 @@ describe("drainQueue", () => {
     expect(rows().length).toBe(0);
   });
 
+  it("removes a corrupt payload_json row during drain", async () => {
+    seed([
+      { id: "x", mode: "idea", payload_json: "{not valid json", created_at: 1, attempts: 0, last_error: null },
+    ]);
+    await drainQueue();
+    expect(rows().length).toBe(0);
+  });
+
   it("increments attempts on failure and leaves row in queue", async () => {
     const { enrichIdea } = await import("./omniroute");
     vi.mocked(enrichIdea).mockRejectedValue(new Error("network error"));

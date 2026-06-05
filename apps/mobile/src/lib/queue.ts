@@ -124,19 +124,23 @@ function removeRow(id: string): Promise<void> {
   });
 }
 
-/** Update a row's attempts + last_error by id (locked read-modify-write). */
-function updateRow(
+/** Bump a row's attempt count + last_error by id (locked read-modify-write).
+ * Computes the next attempts value from the freshly-loaded row (not a stale
+ * drain snapshot), collapsing a permanent (4xx) failure to the sentinel. */
+function bumpAttempts(
   id: string,
-  attempts: number,
+  permanent: boolean,
   last_error: string,
 ): Promise<void> {
   return withLock(async () => {
     const rows = await loadRows();
     const i = rows.findIndex((r) => r.id === id);
-    if (i !== -1) {
-      rows[i] = { ...rows[i], attempts, last_error };
-      await saveRows(rows);
-    }
+    if (i === -1) return;
+    const attempts = permanent
+      ? PERMANENT_FAILURE_ATTEMPTS
+      : rows[i].attempts + 1;
+    rows[i] = { ...rows[i], attempts, last_error };
+    await saveRows(rows);
   });
 }
 
@@ -209,10 +213,9 @@ export async function drainQueue(): Promise<void> {
         const msg = sanitizeError(raw);
         // 4xx → mark as permanent failure immediately. Retrying a 401 ten
         // times in seconds doesn't help — the user needs to fix the cause.
-        const newAttempts = isPermanentError(e)
-          ? PERMANENT_FAILURE_ATTEMPTS
-          : row.attempts + 1;
-        await updateRow(row.id, newAttempts, msg);
+        // The attempts increment is computed inside the lock from the current
+        // row, not this drain's snapshot.
+        await bumpAttempts(row.id, isPermanentError(e), msg);
       }
     }
   } finally {
@@ -248,7 +251,7 @@ async function processRow(payload: QueuePayload): Promise<void> {
  */
 export async function getAllQueueRows(): Promise<QueueRow[]> {
   const rows = await loadRows();
-  return rows.sort((a, b) => a.created_at - b.created_at);
+  return [...rows].sort((a, b) => a.created_at - b.created_at);
 }
 
 /**
