@@ -10,7 +10,7 @@ import {
   type ExpoSpeechRecognitionErrorEvent,
   type ExpoSpeechRecognitionResultEvent,
 } from 'expo-speech-recognition';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Animated, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from 'react-native-paper';
 
@@ -239,9 +239,17 @@ interface VoiceButtonProps {
   disabled?: boolean;
 }
 
+export interface VoiceButtonHandle {
+  /** Stop recording and commit the in-progress transcript as final, instead of
+   * losing it. No-op when not recording. The parent calls this before it opens
+   * a picker / mutates state mid-dictation so the spoken words are saved. */
+  stopAndFlush: () => void;
+}
+
 type ErrAction = 'none' | 'no-service' | 'permission' | 'lang-unavailable' | 'diag';
 
-export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
+export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
+  function VoiceButton({ onTranscript, disabled }, ref) {
   const theme = useTheme();
   const [isListening, setIsListening] = useState(false);
   const [errMsg, setErrMsg] = useState('');
@@ -299,6 +307,9 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
   const sessionTextRef = useRef('');
   // Latest in-progress (isFinal=false) transcript for the current utterance.
   const interimRef = useRef('');
+  // Set by stopAndFlush() so the `end` listener's user-stop branch doesn't
+  // commit the transcript a second time after we've already flushed it.
+  const flushedExternallyRef = useRef(false);
   // Which engine the active session is using — used by handlePressOut to
   // route to stopOnDevice or finishWhisper without re-reading AsyncStorage.
   const activeEngineRef = useRef<'ondevice' | 'whisper' | null>(null);
@@ -531,7 +542,11 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
     }
     lastAttemptedPkgRef.current = effectivePkg || null;
     const lang = await pickBestLocale(effectivePkg || null);
-    if (!pressActiveRef.current && activeEngineRef.current === 'ondevice') return;
+    // Session was stopped/flushed while we were awaiting locale — abort the
+    // pending start so we don't open the mic with no active session. (Dropped
+    // the `&& activeEngineRef==='ondevice'` qualifier: stopAndFlush clears the
+    // engine ref, and only on-device starts reach here anyway.)
+    if (!pressActiveRef.current) return;
     logEventRef.current('start.request', { pkg: effectivePkg || '(system-default)', lang });
     try {
       ExpoSpeechRecognitionModule.start({
@@ -613,6 +628,10 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
         logEventRef.current('result', { isFinal: event.isFinal, len: transcript?.length ?? 0 });
         audioSeenRef.current = true;
         clearWatchdogRef.current();
+        // Already committed via stopAndFlush() — ignore any trailing result the
+        // recognizer emits during teardown so we don't re-accumulate or fire a
+        // stray non-final update after the final flush.
+        if (flushedExternallyRef.current) return;
         if (!transcript) return;
         // Accumulator: continuous: true emits multiple isFinal results
         // (one per utterance boundary). We collect finals and overwrite the
@@ -681,6 +700,13 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
         // must not clear the saved pkg or trigger detection, or the second tap
         // finds no service. Show a brief transient error and exit.
         if (!pressActiveRef.current) {
+          // A teardown error from an external stopAndFlush() (e.g. the picker
+          // Activity grabbed audio focus) — already committed; swallow it AND
+          // clear the guard here, since `end` may not arrive on the error path.
+          if (flushedExternallyRef.current) {
+            flushedExternallyRef.current = false;
+            return;
+          }
           if (code !== 6 && code !== 7) { // 6/7 = silence, expected after stop
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const rawMsg = `${event.error}${(event as any).message ? ': ' + (event as any).message : ''} (code ${code})`;
@@ -807,6 +833,22 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
           const savedPkg = await AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY);
           await startRecognizerRef.current(savedPkg);
         }, 500);
+        return;
+      }
+
+      // Already committed by an external stopAndFlush() — just tear down,
+      // don't emit the transcript a second time.
+      if (flushedExternallyRef.current) {
+        flushedExternallyRef.current = false;
+        sessionTextRef.current = '';
+        resetAccumulator();
+        pressActiveRef.current = false;
+        activeEngineRef.current = null;
+        if (maxDurationTimer.current) {
+          clearTimeout(maxDurationTimer.current);
+          maxDurationTimer.current = null;
+        }
+        stopListeningRef.current();
         return;
       }
 
@@ -996,6 +1038,38 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
     }
   }, []);
 
+  // ── External stop+flush (parent calls this before opening a picker etc.) ──
+  // Commits the in-progress transcript as final NOW (synchronously, from JS
+  // state) rather than relying on the native `end` round-trip, which can be
+  // suspended when the picker Activity backgrounds the app — the exact path
+  // that was dropping the partial. No-op when not recording.
+  const stopAndFlush = useCallback(() => {
+    if (!pressActiveRef.current) return;
+    clearMaxTimer();
+    const engine = activeEngineRef.current;
+    if (engine === 'whisper') {
+      // Whisper has no interim; finishing transcribes the recording + commits
+      // on return. Nothing to flush synchronously.
+      pressActiveRef.current = false;
+      activeEngineRef.current = null;
+      void finishWhisper();
+      return;
+    }
+    const partial = composeText();
+    const text = sessionTextRef.current
+      ? (partial ? `${sessionTextRef.current} ${partial}` : sessionTextRef.current)
+      : partial;
+    if (text) onTranscriptRef.current(text, true);
+    flushedExternallyRef.current = true; // suppress the end-listener re-commit
+    sessionTextRef.current = '';
+    resetAccumulator();
+    pressActiveRef.current = false;
+    activeEngineRef.current = null;
+    stopOnDevice(); // release the mic; `end` fires and short-circuits on the flag
+  }, [composeText, finishWhisper, resetAccumulator, clearMaxTimer, stopOnDevice]);
+
+  useImperativeHandle(ref, () => ({ stopAndFlush }), [stopAndFlush]);
+
   // ── Tap-to-toggle router (tap once to start, tap again to stop) ─────────
 
   const handleToggle = useCallback(async () => {
@@ -1019,6 +1093,10 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
     pressActiveRef.current = true;
     errorHandlingRef.current = false;
     sessionTextRef.current = '';
+    // Self-heal the external-flush guard at the start of every session so a
+    // prior session whose `end` never arrived can't make this one skip its
+    // real commit.
+    flushedExternallyRef.current = false;
     errPersistRef.current = false;
     setErrMsg('');
     clearMaxTimer();
@@ -1213,7 +1291,9 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
       </View>
     </View>
   );
-}
+});
+
+VoiceButton.displayName = 'VoiceButton';
 
 const styles = StyleSheet.create({
   btn: {
