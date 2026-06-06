@@ -82,6 +82,7 @@ import {
   transcribeAudio,
   OmniRouteError,
   isPermanentError,
+  isNotConfiguredError,
   assertBase64UnderLimit,
   MAX_SHARED_IMAGE_BYTES,
   MAX_TRANSCRIPTION_BYTES,
@@ -293,6 +294,31 @@ describe("enrichIdea", () => {
     expect(caught).toBeInstanceOf(OmniRouteError);
     expect((caught as OmniRouteError).status).toBe(0);
     expect(isPermanentError(caught)).toBe(false);
+    // A real network failure is transient (queue it), NOT a config problem.
+    expect(isNotConfiguredError(caught)).toBe(false);
+  });
+
+  it("throws a not-configured OmniRouteError when the URL is blank", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      omniRouteUrl: "",
+    });
+    let caught: unknown;
+    try {
+      await enrichIdea("x");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(OmniRouteError);
+    // Status 0 like a network error, but flagged not-configured so callers
+    // surface it instead of silently queuing for an endpoint that can't exist.
+    expect((caught as OmniRouteError).status).toBe(0);
+    expect(isNotConfiguredError(caught)).toBe(true);
+    expect(isPermanentError(caught)).toBe(false);
+    expect((caught as OmniRouteError).message).toMatch(/not configured/i);
+    // No fetch should even be attempted with a blank URL.
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("redacts Bearer tokens from network error messages", async () => {
