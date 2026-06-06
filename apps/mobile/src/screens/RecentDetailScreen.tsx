@@ -12,7 +12,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { Image, ScrollView, StyleSheet, View } from "react-native";
+import * as Sharing from "expo-sharing";
 import {
   ActivityIndicator,
   Banner,
@@ -37,11 +38,14 @@ import type { RootStackParamList } from "../../App";
 import {
   extractFrontmatterField,
   injectImageEmbed,
+  listPairedBinaries,
   moveToArchive,
   readNote,
   readPairedBinaryFromNote,
   readPairedBinaryUri,
+  resolvePairedUri,
   stripFrontmatter,
+  stripPairedBinaryLinks,
   updateNote,
   upsertSection,
 } from "../lib/writer";
@@ -388,6 +392,54 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     }
   }, [body]);
 
+  // ── Attachments (images inline + tappable file rows) ──────────────────────
+  // Audio is rendered by the dedicated player above, so it's excluded here.
+  // The markdown renderer can't resolve relative/SAF URIs, so we resolve each
+  // link to a storage URI in an effect and render from state.
+  interface ResolvedAttachment {
+    rel: string;
+    filename: string;
+    uri: string;
+    mime: string;
+  }
+  const [attachments, setAttachments] = useState<ResolvedAttachment[]>([]);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const links = listPairedBinaries(body).filter((b) => b.subdir !== "Audio");
+      const resolved: ResolvedAttachment[] = [];
+      for (const link of links) {
+        const r = await resolvePairedUri(link.subdir, link.filename);
+        if (r) {
+          resolved.push({
+            rel: link.rel,
+            filename: link.filename,
+            uri: r.uri,
+            mime: r.mime,
+          });
+        }
+      }
+      if (active) setAttachments(resolved);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [body]);
+
+  // Open a non-image attachment via the system share sheet. shareAsync wants a
+  // file:// path; SAF content:// may not open on every device — surface the
+  // failure rather than crash. (No-ops silently when sharing is unavailable.)
+  const openAttachment = useCallback(async (uri: string): Promise<void> => {
+    try {
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri);
+      }
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.warn("[RecentDetail] open attachment failed:", reason);
+    }
+  }, []);
+
   // Re-enrich only makes sense when the raw input is recoverable from disk.
   // That's photo + shared-image (paired JPEG in Photos/). idea/journal/person
   // notes have no raw input on disk — the enriched body is the only artifact.
@@ -411,9 +463,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     );
   }
 
-  // Strip YAML frontmatter so the renderer doesn't show the `---` raw block.
-  // The metadata is already presented in the header card.
-  const renderBody = stripFrontmatter(body);
+  // Strip YAML frontmatter so the renderer doesn't show the `---` raw block,
+  // then strip paired-binary embeds/links — those render in the Attachments
+  // card below (the markdown renderer can't resolve the relative URIs anyway).
+  const renderBody = stripPairedBinaryLinks(stripFrontmatter(body));
 
   return (
     <>
@@ -540,6 +593,35 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
                       {`Playback failed: ${playerError}`}
                     </Text>
                   ) : null}
+                </Card.Content>
+              </Card>
+            ) : null}
+
+            {attachments.length > 0 ? (
+              <Card style={styles.card}>
+                <Card.Title title="Attachments" />
+                <Card.Content style={styles.attachmentList}>
+                  {attachments.map((a) =>
+                    a.mime.startsWith("image/") ? (
+                      <Image
+                        key={a.rel}
+                        source={{ uri: a.uri }}
+                        style={styles.attachmentImage}
+                        resizeMode="contain"
+                        accessibilityLabel={a.filename}
+                      />
+                    ) : (
+                      <Button
+                        key={a.rel}
+                        mode="outlined"
+                        icon="file-document-outline"
+                        onPress={() => openAttachment(a.uri)}
+                        contentStyle={styles.attachmentFileContent}
+                      >
+                        {a.filename}
+                      </Button>
+                    ),
+                  )}
                 </Card.Content>
               </Card>
             ) : null}
@@ -723,4 +805,12 @@ const styles = StyleSheet.create({
   playerTime: { opacity: 0.7, fontVariant: ["tabular-nums"] },
   playerProgress: { height: 4, borderRadius: 2 },
   playerError: { color: "#DC2626", marginTop: 8 },
+  attachmentList: { gap: 12 },
+  attachmentImage: {
+    width: "100%",
+    height: 240,
+    borderRadius: 8,
+    backgroundColor: "#0001",
+  },
+  attachmentFileContent: { flexDirection: "row-reverse", justifyContent: "flex-end" },
 });
