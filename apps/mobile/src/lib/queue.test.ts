@@ -52,6 +52,8 @@ vi.mock("./omniroute", () => ({
   // OmniRouteError, so isPermanentError returns false → drain treats as
   // transient and increments attempts (the existing test expectation).
   isPermanentError: vi.fn().mockReturnValue(false),
+  // Default false; the not-configured drain test flips it on for one pass.
+  isNotConfiguredError: vi.fn().mockReturnValue(false),
 }));
 
 // ── Mock writer ───────────────────────────────────────────────────────────────
@@ -149,6 +151,27 @@ describe("drainQueue", () => {
     const row = rows()[0];
     expect(row.attempts).toBe(1);
     expect(row.last_error).toBe("network error");
+  });
+
+  it("leaves rows untouched (no attempts burned) when OmniRoute is not configured", async () => {
+    const { enrichIdea, isNotConfiguredError } = await import("./omniroute");
+    vi.mocked(enrichIdea).mockRejectedValue(new Error("not configured"));
+    // Classify the first failure as a config problem (drain breaks after one,
+    // so Once is enough and won't leak into later tests via clearAllMocks).
+    vi.mocked(isNotConfiguredError).mockReturnValueOnce(true);
+
+    // Two pending rows: the pass must stop on the first without bumping either.
+    seed([
+      { id: "a", mode: "idea", payload_json: JSON.stringify({ mode: "idea", text: "one" }), created_at: 100, attempts: 0, last_error: null },
+      { id: "b", mode: "idea", payload_json: JSON.stringify({ mode: "idea", text: "two" }), created_at: 200, attempts: 0, last_error: null },
+    ]);
+
+    await drainQueue();
+
+    // Both rows survive with attempts still 0 — they'll drain once a URL is set.
+    expect(rows().length).toBe(2);
+    expect(rows().every((r) => r.attempts === 0)).toBe(true);
+    expect(rows().every((r) => r.last_error === null)).toBe(true);
   });
 
   it("processes rows oldest-first", async () => {

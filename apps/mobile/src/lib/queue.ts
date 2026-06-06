@@ -29,6 +29,7 @@ import {
   enrichJournal,
   enrichPerson,
   isPermanentError,
+  isNotConfiguredError,
 } from "./omniroute";
 import { writeIdea, appendJournal, writePerson, slugify } from "./writer";
 import { deriveTitle } from "@carnet/shared";
@@ -209,6 +210,11 @@ export async function drainQueue(): Promise<void> {
         // Success: remove from queue
         await removeRow(row.id);
       } catch (e: unknown) {
+        // Blank OmniRoute URL: every remaining row would fail identically.
+        // Stop the pass and leave all rows intact — do NOT burn retry attempts
+        // (which would eventually mark genuine captures permanently failed).
+        // They'll drain on the next open once the user sets a URL.
+        if (isNotConfiguredError(e)) break;
         const raw = e instanceof Error ? e.message : String(e);
         const msg = sanitizeError(raw);
         // 4xx → mark as permanent failure immediately. Retrying a 401 ten

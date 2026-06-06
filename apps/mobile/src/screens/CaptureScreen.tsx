@@ -27,6 +27,7 @@ import {
   enrichJournal,
   enrichPerson,
   isPermanentError,
+  isNotConfiguredError,
   promoteIdea as omniPromoteIdea,
 } from "../lib/omniroute";
 import {
@@ -129,6 +130,14 @@ export default function CaptureScreen({ route, navigation }: Props) {
     e: unknown,
     enqueueFn: () => Promise<void>,
   ): Promise<void> => {
+    // A blank OmniRoute URL is a configuration problem, not an offline blip.
+    // Queuing it would "succeed" silently and retry forever against a
+    // nonexistent endpoint — so surface it and keep the text for resend.
+    if (isNotConfiguredError(e)) {
+      setError("OmniRoute URL not configured — set it in Settings.");
+      setPhase("input");
+      return;
+    }
     if (isPermanentError(e)) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -142,6 +151,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
       const depth = await getQueueDepth();
       setQueueDepth(depth);
       setError("Offline — capture queued.");
+      // The capture is safely persisted in the queue — clear the inputs so the
+      // next capture starts fresh. Permanent (4xx) errors above intentionally
+      // keep the text so the user can fix the problem and resend.
+      setText("");
+      setTranscript("");
+      setOcrText("");
     } catch (qe: unknown) {
       const qmsg = qe instanceof Error ? qe.message : String(qe);
       setError(`Couldn't reach OmniRoute, and queuing offline failed: ${qmsg}`);

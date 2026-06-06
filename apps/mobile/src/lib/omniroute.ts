@@ -88,10 +88,20 @@ interface OpenAIResponse {
  */
 export class OmniRouteError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  /** True when the failure is a missing/blank configuration (no URL set), not
+   * a network failure. Status is still 0 (no HTTP response), but unlike a real
+   * timeout this will NEVER succeed by retrying — the caller must surface it so
+   * the user fixes Settings, rather than silently queuing it for retry. */
+  readonly notConfigured: boolean;
+  constructor(
+    message: string,
+    status: number,
+    opts?: { notConfigured?: boolean },
+  ) {
     super(message);
     this.name = "OmniRouteError";
     this.status = status;
+    this.notConfigured = opts?.notConfigured ?? false;
   }
 }
 
@@ -100,6 +110,13 @@ export class OmniRouteError extends Error {
 export function isPermanentError(err: unknown): boolean {
   if (!(err instanceof OmniRouteError)) return false;
   return err.status >= 400 && err.status < 500;
+}
+
+/** True when the request failed because OmniRoute is not configured (blank
+ * URL). Distinct from a transient network status-0 error: retrying/queuing is
+ * pointless until the user sets a URL, so the caller should surface this. */
+export function isNotConfiguredError(err: unknown): boolean {
+  return err instanceof OmniRouteError && err.notConfigured;
 }
 
 // Hard ceiling on any single OmniRoute request. Kept short because an
@@ -330,6 +347,7 @@ async function getBaseUrl(): Promise<string> {
     throw new OmniRouteError(
       "OmniRoute URL not configured — set it in Settings",
       0,
+      { notConfigured: true },
     );
   }
   return url;
