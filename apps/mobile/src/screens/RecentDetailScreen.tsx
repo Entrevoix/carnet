@@ -36,6 +36,7 @@ import { formatElapsed } from "../lib/shareHelpers";
 
 import type { RootStackParamList } from "../../App";
 import {
+  extFromMime,
   extractFrontmatterField,
   injectImageEmbed,
   listPairedBinaries,
@@ -44,11 +45,21 @@ import {
   readPairedBinaryFromNote,
   readPairedBinaryUri,
   resolvePairedUri,
+  slugify,
   stripFrontmatter,
   stripPairedBinaryLinks,
   updateNote,
   upsertSection,
+  writeBinary,
 } from "../lib/writer";
+import {
+  applyFormat,
+  insertAtCursor,
+  type FormatKind,
+  type Sel,
+} from "../lib/markdownEdit";
+import { pickAttachment } from "../lib/attachments";
+import { MarkdownToolbar } from "../components/MarkdownToolbar";
 import { enrichSharedImage, transcribeAudio } from "../lib/omniroute";
 import {
   removeFromHistory,
@@ -77,6 +88,18 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [draft, setDraft] = useState<string>("");
   const [editError, setEditError] = useState<string | null>(null);
   const [discardVisible, setDiscardVisible] = useState(false);
+  // Toolbar editing: `selection` tracks the live caret/range (via
+  // onSelectionChange) so transforms know what to act on; `forceSelection` is a
+  // transient override applied ONLY right after a toolbar action to place the
+  // caret, then cleared so the IME owns the caret again (avoids cursor jitter).
+  const [selection, setSelection] = useState<Sel>({ start: 0, end: 0 });
+  const [forceSelection, setForceSelection] = useState<Sel | null>(null);
+  const [preview, setPreview] = useState(false);
+  // True only while a save is committing — disables the toolbar so a format/
+  // image tap can't mutate `draft` after handleSaveEdit captured it (which
+  // would be discarded when the save exits edit mode).
+  const [saving, setSaving] = useState(false);
+  const insertingImageRef = useRef(false);
   // Guard against fast double-taps on Delete — the in-flight archive can
   // race with a second handler call and produce a confusing UI state.
   const deletingRef = useRef(false);
@@ -234,6 +257,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const enterEdit = useCallback(() => {
     setDraft(body);
     setEditError(null);
+    setSelection({ start: 0, end: 0 });
+    setForceSelection(null);
+    setPreview(false);
     setEditMode(true);
   }, [body]);
 
@@ -241,7 +267,52 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     setEditMode(false);
     setDraft("");
     setEditError(null);
+    setForceSelection(null);
+    setPreview(false);
   }, []);
+
+  /** Apply a toolbar formatting intent to the draft + reposition the caret. */
+  const applyFmt = useCallback(
+    (kind: FormatKind) => {
+      if (savingEditRef.current) return;
+      const r = applyFormat(draft, selection, kind);
+      setDraft(r.text);
+      setSelection(r.selection);
+      setForceSelection(r.selection);
+    },
+    [draft, selection],
+  );
+
+  /** Toolbar image button: pick → write to the vault → insert the embed at the
+   * caret. Reuses the attachments plumbing; the note is already on disk so the
+   * binary is committed immediately. Cancelling the picker writes nothing; but
+   * discarding the edit AFTER inserting leaves the written file orphaned in
+   * Photos/ (acceptable — it's recoverable in the vault, same as a stub photo). */
+  const insertImage = useCallback(async () => {
+    if (insertingImageRef.current || savingEditRef.current) return;
+    insertingImageRef.current = true;
+    setEditError(null);
+    try {
+      const picked = await pickAttachment({ imagesOnly: true });
+      if (!picked) return;
+      const ext = extFromMime(picked.mime);
+      const base = slugify(picked.filename.replace(/\.[^.]+$/, "")) || "image";
+      const { finalName } = await writeBinary(
+        "Photos",
+        `${base}.${ext}`,
+        picked.base64,
+        picked.mime,
+      );
+      const r = insertAtCursor(draft, selection, `![](../Photos/${finalName})`);
+      setDraft(r.text);
+      setSelection(r.selection);
+      setForceSelection(r.selection);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : String(e));
+    } finally {
+      insertingImageRef.current = false;
+    }
+  }, [draft, selection]);
 
   const cancelEdit = useCallback(() => {
     if (isDirty) {
@@ -272,6 +343,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const handleSaveEdit = useCallback(async () => {
     if (savingEditRef.current) return;
     savingEditRef.current = true;
+    setSaving(true);
     setEditError(null);
     // Disk write owns its own try so a writeAsString failure surfaces as
     // "Save failed" while the recents-title update below stays best-effort.
@@ -287,7 +359,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     } catch (e: unknown) {
       const reason = e instanceof Error ? e.message : String(e);
       console.warn("[RecentDetail] save edit failed:", reason);
-      if (mountedRef.current) setEditError(reason);
+      if (mountedRef.current) {
+        setEditError(reason);
+        setSaving(false);
+      }
       savingEditRef.current = false;
       return;
     }
@@ -307,6 +382,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     if (mountedRef.current) {
       setEditMode(false);
       setDraft("");
+      setSaving(false);
     }
     savingEditRef.current = false;
   }, [draft, entry.filepath, entry.id, entry.title]);
@@ -538,18 +614,46 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           <Card style={styles.card}>
             <Card.Title title="Editing" subtitle="Markdown + frontmatter" />
             <Card.Content>
+              <MarkdownToolbar
+                onFormat={applyFmt}
+                onInsertImage={insertImage}
+                disabled={saving}
+              />
               <TextInput
                 mode="outlined"
                 multiline
                 numberOfLines={16}
                 value={draft}
-                onChangeText={setDraft}
+                onChangeText={(t) => {
+                  setDraft(t);
+                  // User is typing — stop forcing the caret so the IME owns it.
+                  if (forceSelection) setForceSelection(null);
+                }}
+                selection={forceSelection ?? undefined}
+                onSelectionChange={(e) => {
+                  setSelection(e.nativeEvent.selection);
+                  if (forceSelection) setForceSelection(null);
+                }}
                 style={styles.editor}
                 autoCorrect={false}
                 autoCapitalize="none"
               />
+              {preview ? (
+                <View style={styles.editPreview}>
+                  <Markdown style={markdownStyle(theme)}>
+                    {stripPairedBinaryLinks(stripFrontmatter(draft))}
+                  </Markdown>
+                </View>
+              ) : null}
             </Card.Content>
             <Card.Actions>
+              <Button
+                mode="text"
+                icon={preview ? "eye-off" : "eye"}
+                onPress={() => setPreview((v) => !v)}
+              >
+                {preview ? "Hide preview" : "Preview"}
+              </Button>
               <Button onPress={cancelEdit}>Cancel</Button>
               <Button
                 mode="contained"
@@ -799,6 +903,12 @@ const styles = StyleSheet.create({
   editor: {
     fontFamily: "monospace",
     minHeight: 320,
+  },
+  editPreview: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#8884",
   },
   playerRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   playerMeta: { flex: 1, gap: 4 },
