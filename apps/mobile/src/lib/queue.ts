@@ -31,7 +31,14 @@ import {
   isPermanentError,
   isNotConfiguredError,
 } from "./omniroute";
-import { writeIdea, appendJournal, writePerson, slugify } from "./writer";
+import {
+  writeIdea,
+  appendJournal,
+  writePerson,
+  slugify,
+  injectAttachments,
+  type AttachmentRef,
+} from "./writer";
 import { deriveTitle } from "@carnet/shared";
 
 export type CaptureMode = "idea" | "journal" | "person";
@@ -43,10 +50,14 @@ function sanitizeError(raw: string): string {
     .replace(/Authorization:\s*[^\s,;]+/gi, "Authorization: [redacted]");
 }
 
-/** Raw user input stored in the queue — no credentials. */
+/** Raw user input stored in the queue — no credentials. Attachments carry only
+ * their `../{subdir}/{name}` rel-paths: the binaries are written to disk before
+ * enqueue (local + offline-safe), so the queue stays small and never holds
+ * base64 — same rule as "the API key is read fresh, never queued". */
 export interface IdeaPayload {
   mode: "idea";
   text: string;
+  attachments?: AttachmentRef[];
 }
 
 export interface JournalPayload {
@@ -54,6 +65,7 @@ export interface JournalPayload {
   transcript: string;
   notes: string;
   date: string;
+  attachments?: AttachmentRef[];
 }
 
 export interface PersonPayload {
@@ -235,13 +247,17 @@ async function processRow(payload: QueuePayload): Promise<void> {
     const result = await enrichIdea(payload.text);
     const title = deriveTitle(result.markdown);
     const slug = slugify(title) || "untitled";
-    await writeIdea(slug, result.markdown);
+    // Binaries were already written to disk at enqueue; fold their rel-paths
+    // back into the body so the drained note matches the online capture.
+    const md = injectAttachments(result.markdown, payload.attachments ?? []);
+    await writeIdea(slug, md);
   } else if (payload.mode === "journal") {
     const result = await enrichJournal({
       transcript: payload.transcript,
       notes: payload.notes,
     });
-    await appendJournal(payload.date, result.markdown);
+    const md = injectAttachments(result.markdown, payload.attachments ?? []);
+    await appendJournal(payload.date, md);
   } else if (payload.mode === "person") {
     const result = await enrichPerson({
       ocrResult: payload.ocrResult,

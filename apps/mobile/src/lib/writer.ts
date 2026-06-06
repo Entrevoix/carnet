@@ -377,6 +377,144 @@ export function injectImageEmbed(markdown: string, relPath: string): string {
   return `${before}\n\n${embed}\n${after}`;
 }
 
+/** The relative-link convention every binary writer emits: `../{subdir}/{name}`.
+ * The filename class `[^/\s)]+` rejects `/` so a crafted `[x](../Photos/../..)`
+ * link can't traverse out of the recognized subdir. */
+const PAIRED_BINARY_LINK = /\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/g;
+
+type PairedSubdir = "Photos" | "Audio" | "Files";
+
+/** A binary attachment carried alongside a capture: the storage subdir, the
+ * collision-bumped on-disk filename, and the `../{subdir}/{name}` relative link
+ * used to embed it in the markdown body. Distinct from a freshly-picked
+ * attachment (which still holds base64) — this is the post-write reference that
+ * survives in the offline queue and the note body. */
+export interface AttachmentRef {
+  kind: "image" | "file";
+  /** `../Photos/sketch.jpg` or `../Files/spec.pdf` */
+  rel: string;
+  /** Display label + collision-bumped final name on disk. */
+  filename: string;
+}
+
+/**
+ * Fold attachment references into an enriched markdown body. Images become
+ * `![](rel)` embeds under the H1 (order preserved); non-image files are
+ * collected into a single `## Files` section as a markdown link list.
+ *
+ * Pure function — the caller writes the binaries to disk first (so `rel`
+ * resolves) and persists the returned markdown. Shared by the online capture
+ * path (CaptureScreen.confirmSave) and the offline drain (queue.processRow) so
+ * both produce byte-identical bodies.
+ */
+export function injectAttachments(
+  markdown: string,
+  attachments: readonly AttachmentRef[],
+): string {
+  let md = markdown;
+  // Inject images in reverse: injectImageEmbed inserts each embed immediately
+  // under the H1, so reversing keeps the first attachment visually first.
+  const images = attachments.filter((a) => a.kind === "image");
+  for (let i = images.length - 1; i >= 0; i--) {
+    md = injectImageEmbed(md, images[i].rel);
+  }
+  const files = attachments.filter((a) => a.kind === "file");
+  if (files.length > 0) {
+    // Blank line between links so adjacent ones don't soft-break onto a single
+    // line in raw markdown (Obsidian); each still strips cleanly for display.
+    const body = files.map((f) => `[${f.filename}](${f.rel})`).join("\n\n");
+    md = upsertSection(md, "Files", body);
+  }
+  return md;
+}
+
+export interface PairedBinary {
+  subdir: PairedSubdir;
+  filename: string;
+  /** `../{subdir}/{filename}` — the exact link text found in the body. */
+  rel: string;
+}
+
+/**
+ * List every paired binary referenced by a note body (`../{Photos|Audio|Files}/
+ * {name}`), de-duplicated by relative path. Replaces the single-`.match()`
+ * lookups so a capture with several attachments archives/renders all of them.
+ */
+export function listPairedBinaries(body: string): PairedBinary[] {
+  const out: PairedBinary[] = [];
+  const seen = new Set<string>();
+  for (const m of body.matchAll(PAIRED_BINARY_LINK)) {
+    const rel = `../${m[1]}/${m[2]}`;
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    out.push({ subdir: m[1] as PairedSubdir, filename: m[2], rel });
+  }
+  return out;
+}
+
+/**
+ * Resolve a paired binary's storage URI + inferred MIME without reading bytes.
+ * Returns null when the file isn't on disk (a broken link from an external
+ * rename/move). Factored out of readPairedBinaryUri so RecentDetail's
+ * Attachments card can resolve many links, while the single-match callers keep
+ * their friendly throw-on-missing contract.
+ */
+export async function resolvePairedUri(
+  subdir: string,
+  filename: string,
+): Promise<{ uri: string; mime: string } | null> {
+  const root = await resolveRoot();
+  const subdirUri = await findOrCreateSubdir(root, subdir);
+  const binaryUri = await findFileInDir(subdirUri, filename, root.isSaf);
+  if (!binaryUri) return null;
+  return { uri: binaryUri, mime: mimeFromFilename(filename) };
+}
+
+/**
+ * Strip paired-binary embeds/links from a body for display. RecentDetail now
+ * renders attachments in a dedicated card (images inline, files as tappable
+ * rows), so the raw `![](../Photos/x)` / `[name](../Files/x)` markdown — which
+ * the renderer can't resolve anyway — is removed to keep the prose clean.
+ *
+ * Only whole-line embeds/links are removed (an inline `[see this](../Files/x)`
+ * mid-sentence is left intact). A `## File` / `## Files` heading whose only
+ * content was the stripped link is dropped too, so no empty heading is left
+ * behind. Display-only — callers keep the original body for playback,
+ * transcription, re-enrich, and edit.
+ */
+export function stripPairedBinaryLinks(body: string): string {
+  const lineIsPairedLink = (line: string): boolean =>
+    /^!?\[[^\]]*\]\(\.\.\/(Photos|Audio|Files)\/[^)]+\)$/.test(line.trim());
+
+  // Pass 1: drop standalone embed/link lines.
+  const kept = body.split("\n").filter((l) => !lineIsPairedLink(l));
+
+  // Pass 2: drop a "## File"/"## Files" heading left with no body content.
+  const out: string[] = [];
+  for (let i = 0; i < kept.length; i++) {
+    const trimmed = kept[i].trim();
+    if (trimmed === "## File" || trimmed === "## Files") {
+      let hasContent = false;
+      for (let j = i + 1; j < kept.length; j++) {
+        const next = kept[j].trim();
+        if (next === "") continue;
+        if (next.startsWith("# ") || next.startsWith("## ")) break;
+        hasContent = true;
+        break;
+      }
+      if (!hasContent) continue;
+    }
+    out.push(kept[i]);
+  }
+
+  // Collapse the blank-line runs left by removals; keep a single trailing \n.
+  return out
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^\n+/, "")
+    .replace(/\n+$/, "\n");
+}
+
 /**
  * Lowercase ASCII slug with hyphens. Transliterates common French accents
  * so "Mémoire" → "memoire". Non-ASCII non-accent chars are dropped.
@@ -720,16 +858,16 @@ export async function updateNote(filepath: string, markdown: string): Promise<vo
  * originals. Used by RecentDetail's Delete button so a misfire can be
  * recovered by browsing the vault in Obsidian.
  *
- * Returns the new .md path and, when a paired binary was found and moved,
- * its new path. `archivedBinaryPath` is null when the body has no recognized
- * relative link or the link's target didn't exist on disk (broken link from
- * a prior external edit — archive the .md, accept the orphan).
+ * Returns the new .md path plus the archived binary paths. `archivedBinaryPath`
+ * is the FIRST archived binary (kept for back-compat with single-binary
+ * callers); `archivedBinaryPaths` lists all of them. Both are empty/null when
+ * the body has no recognized relative link or every link's target was missing
+ * on disk (broken link from a prior external edit — archive the .md, accept
+ * the orphan).
  *
- * Single-binary by design: only the FIRST `../{Photos|Audio|Files}/{name}`
- * link in the body is followed. Today's writers (photo capture, share-image,
- * share-audio, share-file) emit exactly one such link per note. If a future
- * code path emits multiple paired binaries, switch this to `matchAll` and
- * fan out the archive/delete operations.
+ * Multi-binary: every `../{Photos|Audio|Files}/{name}` link in the body is
+ * followed. Legacy notes (photo, share-image, share-audio, share-file) carry
+ * exactly one; capture-with-attachments notes can carry several.
  *
  * Delete failures (SAF revoked the tree permission, file already gone) are
  * swallowed — the archive copy succeeded and is the source of truth for
@@ -737,27 +875,15 @@ export async function updateNote(filepath: string, markdown: string): Promise<vo
  */
 export async function moveToArchive(
   filepath: string,
-): Promise<{ archivedMdPath: string; archivedBinaryPath: string | null }> {
+): Promise<{
+  archivedMdPath: string;
+  archivedBinaryPath: string | null;
+  archivedBinaryPaths: string[];
+}> {
   const root = await resolveRoot();
   const archiveUri = await findOrCreateSubdir(root, "Archive");
 
   const content = await readByUri(filepath);
-
-  // Detect paired binary via the relative-link convention used by the
-  // image / audio / file share branches and the photo capture mode.
-  // The captured filename rejects `/` so a markdown body containing a
-  // crafted `[link](../Photos/../../sensitive)` link can't traverse out of
-  // the recognized subdir. All writers today emit slugified ASCII
-  // filenames, so this is defense-in-depth, not a fix to a live bug.
-  const linkMatch = content.match(/\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/);
-  let pairedBinaryUri: string | null = null;
-  let pairedFilename: string | null = null;
-  if (linkMatch) {
-    const pairedSubdir = linkMatch[1];
-    pairedFilename = linkMatch[2];
-    const subdirUri = await findOrCreateSubdir(root, pairedSubdir);
-    pairedBinaryUri = await findFileInDir(subdirUri, pairedFilename, root.isSaf);
-  }
 
   // Build collision-free archive name for the .md.
   const mdName = filepath.split("/").pop() ?? "note.md";
@@ -777,26 +903,34 @@ export async function moveToArchive(
     root.isSaf,
   );
 
-  // Archive the paired binary if present and resolvable.
-  let archivedBinaryPath: string | null = null;
-  if (pairedBinaryUri && pairedFilename) {
-    const binDot = pairedFilename.lastIndexOf(".");
-    const binStem =
-      binDot >= 0 ? pairedFilename.slice(0, binDot) : pairedFilename;
-    const binExt = binDot >= 0 ? pairedFilename.slice(binDot) : "";
+  // Archive every paired binary referenced by the body (each resolvable one).
+  // The filename class in PAIRED_BINARY_LINK rejects `/`, so a crafted
+  // `[x](../Photos/../../secret)` link can't traverse out of the subdir — this
+  // is defense-in-depth; today's writers emit slugified ASCII names.
+  const archivedBinaryPaths: string[] = [];
+  const binaryOriginals: string[] = [];
+  for (const pb of listPairedBinaries(content)) {
+    const subdirUri = await findOrCreateSubdir(root, pb.subdir);
+    const binUri = await findFileInDir(subdirUri, pb.filename, root.isSaf);
+    if (!binUri) continue; // broken link — archive the .md, accept the orphan
+    const binDot = pb.filename.lastIndexOf(".");
+    const binStem = binDot >= 0 ? pb.filename.slice(0, binDot) : pb.filename;
+    const binExt = binDot >= 0 ? pb.filename.slice(binDot) : "";
     const binArchiveName = await findCollisionFreeName(
       archiveUri,
       binStem,
       binExt,
       root.isSaf,
     );
-    const binBase64 = await readBinaryByUri(pairedBinaryUri, root.isSaf);
-    archivedBinaryPath = await writeBinaryBytes(
+    const binBase64 = await readBinaryByUri(binUri, root.isSaf);
+    const archived = await writeBinaryBytes(
       archiveUri,
       binArchiveName,
       binBase64,
       root.isSaf,
     );
+    archivedBinaryPaths.push(archived);
+    binaryOriginals.push(binUri);
   }
 
   // Best-effort delete of the originals — see jsdoc.
@@ -805,15 +939,19 @@ export async function moveToArchive(
   } catch {
     /* leave the original; archive copy is canonical */
   }
-  if (pairedBinaryUri) {
+  for (const orig of binaryOriginals) {
     try {
-      await deleteByUri(pairedBinaryUri, root.isSaf);
+      await deleteByUri(orig, root.isSaf);
     } catch {
       /* leave the original binary */
     }
   }
 
-  return { archivedMdPath, archivedBinaryPath };
+  return {
+    archivedMdPath,
+    archivedBinaryPath: archivedBinaryPaths[0] ?? null,
+    archivedBinaryPaths,
+  };
 }
 
 /** Best-effort inverse of `extFromMime` for the file extensions we actually
@@ -866,14 +1004,11 @@ export async function readPairedBinaryUri(
   }
   const subdir = linkMatch[1];
   const filename = linkMatch[2];
-  const root = await resolveRoot();
-  const subdirUri = await findOrCreateSubdir(root, subdir);
-  const binaryUri = await findFileInDir(subdirUri, filename, root.isSaf);
-  if (!binaryUri) {
+  const resolved = await resolvePairedUri(subdir, filename);
+  if (!resolved) {
     throw new Error(`Paired binary not found: ${subdir}/${filename}`);
   }
-  const mime = mimeFromFilename(filename);
-  return { uri: binaryUri, mime, filename };
+  return { uri: resolved.uri, mime: resolved.mime, filename };
 }
 
 /**
@@ -904,13 +1039,15 @@ export async function readPairedBinaryFromNote(
   }
   const subdir = linkMatch[1];
   const filename = linkMatch[2];
-  const root = await resolveRoot();
-  const subdirUri = await findOrCreateSubdir(root, subdir);
-  const binaryUri = await findFileInDir(subdirUri, filename, root.isSaf);
-  if (!binaryUri) {
+  const resolved = await resolvePairedUri(subdir, filename);
+  if (!resolved) {
     throw new Error(`Paired binary not found: ${subdir}/${filename}`);
   }
-  const base64 = await readBinaryByUri(binaryUri, root.isSaf);
-  const mime = mimeFromFilename(filename);
-  return { base64, mime };
+  // content:// vs file:// is the same discriminator resolveRoot uses; derive it
+  // from the resolved URI so this reader doesn't need the Root back.
+  const base64 = await readBinaryByUri(
+    resolved.uri,
+    resolved.uri.startsWith("content://"),
+  );
+  return { base64, mime: resolved.mime };
 }

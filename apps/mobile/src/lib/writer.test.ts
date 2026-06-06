@@ -89,6 +89,11 @@ import {
   mimeFromFilename,
   readPairedBinaryFromNote,
   upsertSection,
+  injectAttachments,
+  listPairedBinaries,
+  resolvePairedUri,
+  stripPairedBinaryLinks,
+  type AttachmentRef,
 } from "./writer";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -169,6 +174,129 @@ describe("injectImageEmbed", () => {
     expect(out).toContain("# Body Title\n\n![](../Photos/a.jpg)\n");
     // frontmatter preserved
     expect(out.startsWith("---\nkind: photo\n---\n")).toBe(true);
+  });
+});
+
+// ── injectAttachments ─────────────────────────────────────────────────────────
+
+describe("injectAttachments", () => {
+  const img = (rel: string, filename: string): AttachmentRef => ({
+    kind: "image",
+    rel,
+    filename,
+  });
+  const file = (rel: string, filename: string): AttachmentRef => ({
+    kind: "file",
+    rel,
+    filename,
+  });
+
+  it("returns the body unchanged for an empty attachment list", () => {
+    const md = "# T\n\nbody\n";
+    expect(injectAttachments(md, [])).toBe(md);
+  });
+
+  it("injects a single image embed under the H1", () => {
+    const out = injectAttachments("# T\n\nbody\n", [
+      img("../Photos/a.jpg", "a.jpg"),
+    ]);
+    expect(out).toBe("# T\n\n![](../Photos/a.jpg)\n\nbody\n");
+  });
+
+  it("keeps multiple images in input order under the H1", () => {
+    const out = injectAttachments("# T\n\nbody\n", [
+      img("../Photos/a.jpg", "a.jpg"),
+      img("../Photos/b.jpg", "b.jpg"),
+    ]);
+    // First attachment appears first even though each embed inserts directly
+    // below the H1 (the helper injects in reverse to preserve order).
+    expect(out.indexOf("../Photos/a.jpg")).toBeLessThan(
+      out.indexOf("../Photos/b.jpg"),
+    );
+    expect(out.indexOf("../Photos/a.jpg")).toBeGreaterThan(out.indexOf("# T"));
+  });
+
+  it("collects non-image files into a single ## Files section as links", () => {
+    const out = injectAttachments("# T\n\nbody\n", [
+      file("../Files/spec.pdf", "spec.pdf"),
+      file("../Files/data.csv", "data.csv"),
+    ]);
+    expect(out).toContain("## Files");
+    expect(out).toContain("[spec.pdf](../Files/spec.pdf)");
+    expect(out).toContain("[data.csv](../Files/data.csv)");
+    // Exactly one Files heading even with two files.
+    expect(out.match(/^## Files$/gm)?.length).toBe(1);
+  });
+
+  it("handles a mix of images and files in one pass", () => {
+    const out = injectAttachments("# T\n\nbody\n", [
+      img("../Photos/a.jpg", "a.jpg"),
+      file("../Files/spec.pdf", "spec.pdf"),
+    ]);
+    expect(out).toContain("![](../Photos/a.jpg)");
+    expect(out).toContain("[spec.pdf](../Files/spec.pdf)");
+    // Image is embedded under the H1; file link lives in the appended section.
+    expect(out.indexOf("![](../Photos/a.jpg)")).toBeLessThan(
+      out.indexOf("## Files"),
+    );
+  });
+});
+
+// ── listPairedBinaries ────────────────────────────────────────────────────────
+
+describe("listPairedBinaries", () => {
+  it("returns an empty array when there are no paired-binary links", () => {
+    expect(listPairedBinaries("# T\n\nplain prose only\n")).toEqual([]);
+  });
+
+  it("finds Photos, Audio, and Files links with subdir + filename + rel", () => {
+    const body =
+      "# T\n\n![](../Photos/a.jpg)\n\n## Files\n[s.pdf](../Files/s.pdf)\n\n[m.mp3](../Audio/m.mp3)\n";
+    const found = listPairedBinaries(body);
+    expect(found).toEqual([
+      { subdir: "Photos", filename: "a.jpg", rel: "../Photos/a.jpg" },
+      { subdir: "Files", filename: "s.pdf", rel: "../Files/s.pdf" },
+      { subdir: "Audio", filename: "m.mp3", rel: "../Audio/m.mp3" },
+    ]);
+  });
+
+  it("de-duplicates a link that appears more than once", () => {
+    const body =
+      "![](../Photos/a.jpg)\n\nsee [the image](../Photos/a.jpg) again\n";
+    expect(listPairedBinaries(body)).toHaveLength(1);
+  });
+});
+
+// ── stripPairedBinaryLinks (RecentDetail display) ────────────────────────────
+
+describe("stripPairedBinaryLinks", () => {
+  it("removes a standalone image embed but keeps the prose", () => {
+    const body = "# T\n\n![](../Photos/shot.jpg)\n\nWhat's in this.\n";
+    expect(stripPairedBinaryLinks(body)).toBe("# T\n\nWhat's in this.\n");
+  });
+
+  it("removes a file link AND its now-empty ## File heading (shared-audio)", () => {
+    const body =
+      "# Shared audio: m.mp3\n\n## File\n[m.mp3](../Audio/m.mp3)\n\n## Context\n(none)\n";
+    expect(stripPairedBinaryLinks(body)).toBe(
+      "# Shared audio: m.mp3\n\n## Context\n(none)\n",
+    );
+  });
+
+  it("removes a ## Files section that only held attachment links", () => {
+    const body =
+      "# T\n\n![](../Photos/a.jpg)\n\nbody text\n\n## Files\n[spec.pdf](../Files/spec.pdf)\n";
+    expect(stripPairedBinaryLinks(body)).toBe("# T\n\nbody text\n");
+  });
+
+  it("leaves an inline link inside a sentence intact", () => {
+    const body = "# T\n\nsee [the file](../Files/x.pdf) for details\n";
+    expect(stripPairedBinaryLinks(body)).toBe(body);
+  });
+
+  it("is a no-op for a note with no paired binaries", () => {
+    const body = "# T\n\njust prose\n\n## Notes\n- a\n- b\n";
+    expect(stripPairedBinaryLinks(body)).toBe(body);
   });
 });
 
@@ -569,6 +697,53 @@ describe("moveToArchive", () => {
     // First archive copy still intact
     expect(_files.get(result.archivedMdPath.replace("dup-2", "dup"))!.content).toBe("# v1\n");
   });
+
+  it("archives ALL paired binaries when a note has several attachments", async () => {
+    // A capture-with-attachments note: one image + one file, both on disk.
+    const { filepath: imgPath } = await writeBinary(
+      "Photos",
+      "sketch.jpg",
+      "SU1H",
+      "image/jpeg",
+    );
+    const { filepath: pdfPath } = await writeBinary(
+      "Files",
+      "spec.pdf",
+      "UERG",
+      "application/pdf",
+    );
+    const md =
+      "---\nkind: idea\n---\n# Multi\n\n![](../Photos/sketch.jpg)\n\n## Files\n[spec.pdf](../Files/spec.pdf)\n";
+    const { filepath: mdPath } = await writeIdea("multi", md);
+
+    const result = await moveToArchive(mdPath);
+    // Both binaries archived; archivedBinaryPath keeps the first for back-compat.
+    expect(result.archivedBinaryPaths).toHaveLength(2);
+    expect(result.archivedBinaryPath).toMatch(/\/Archive\/sketch\.jpg$/);
+    expect(result.archivedBinaryPaths.some((p) => /\/Archive\/spec\.pdf$/.test(p))).toBe(true);
+    // Originals (md + both binaries) removed.
+    expect(_files.has(mdPath)).toBe(false);
+    expect(_files.has(imgPath)).toBe(false);
+    expect(_files.has(pdfPath)).toBe(false);
+    // Bytes preserved in the archive copies.
+    expect(_files.get(result.archivedBinaryPath!)!.content).toBe("SU1H");
+  });
+
+  it("collision-bumps when two paired binaries would land on the same Archive name", async () => {
+    // Same filename in two subdirs → both want Archive/a.jpg; the second must
+    // bump. Guards the "await each write before re-listing the dir" invariant.
+    await writeBinary("Photos", "a.jpg", "UEhP", "image/jpeg");
+    await writeBinary("Files", "a.jpg", "RklM", "image/jpeg");
+    const md =
+      "---\nkind: idea\n---\n# Dup names\n\n![](../Photos/a.jpg)\n\n## Files\n[a.jpg](../Files/a.jpg)\n";
+    const { filepath: mdPath } = await writeIdea("dupnames", md);
+
+    const result = await moveToArchive(mdPath);
+    expect(result.archivedBinaryPaths).toHaveLength(2);
+    // Two distinct archive names: a.jpg and a-2.jpg.
+    const names = result.archivedBinaryPaths.map((p) => p.split("/").pop()).sort();
+    expect(names).toEqual(["a-2.jpg", "a.jpg"]);
+  });
 });
 
 // ── extractFrontmatterField (exported for the retro-enrich routing key) ──────
@@ -667,6 +842,24 @@ describe("readPairedBinaryFromNote", () => {
     await expect(readPairedBinaryFromNote(md)).rejects.toThrow(
       "Paired binary not found",
     );
+  });
+});
+
+// ── resolvePairedUri ──────────────────────────────────────────────────────────
+
+describe("resolvePairedUri", () => {
+  beforeEach(clearFiles);
+
+  it("returns the URI + inferred mime for a binary that exists on disk", async () => {
+    await writeBinary("Files", "spec.pdf", "UERG", "application/pdf");
+    const resolved = await resolvePairedUri("Files", "spec.pdf");
+    expect(resolved).not.toBeNull();
+    expect(resolved!.uri).toMatch(/Files\/spec\.pdf$/);
+    expect(resolved!.mime).toBe("application/pdf");
+  });
+
+  it("returns null for a link whose target is not on disk", async () => {
+    expect(await resolvePairedUri("Photos", "ghost.jpg")).toBeNull();
   });
 });
 

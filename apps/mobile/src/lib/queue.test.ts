@@ -66,6 +66,19 @@ vi.mock("./writer", () => ({
   rewriteFrontmatterField: vi.fn(),
   readNote: vi.fn(),
   updateNote: vi.fn(),
+  // Lightweight stand-in for the real injectAttachments (unit-tested in
+  // writer.test.ts). Enough to assert processRow wires attachments → body →
+  // writeIdea/appendJournal: images become embeds, files become links.
+  injectAttachments: vi.fn(
+    (md: string, atts: { kind: string; rel: string; filename: string }[]) =>
+      atts.reduce(
+        (acc, a) =>
+          a.kind === "image"
+            ? `${acc}\n![](${a.rel})\n`
+            : `${acc}\n[${a.filename}](${a.rel})\n`,
+        md,
+      ),
+  ),
 }));
 
 // ── Mock @carnet/shared ───────────────────────────────────────────────────────
@@ -214,6 +227,47 @@ describe("drainQueue", () => {
 
     expect(vi.mocked(enrichPerson)).toHaveBeenCalledWith({ ocrResult: "Jane Doe CEO", context: "conference" });
     expect(vi.mocked(writePerson)).toHaveBeenCalled();
+    expect(rows().length).toBe(0);
+  });
+
+  it("folds queued attachments into the body before writing (idea)", async () => {
+    const { writeIdea, injectAttachments } = await import("./writer");
+
+    await enqueue({
+      mode: "idea",
+      text: "with files",
+      attachments: [
+        { kind: "image", rel: "../Photos/a.jpg", filename: "a.jpg" },
+        { kind: "file", rel: "../Files/b.pdf", filename: "b.pdf" },
+      ],
+    });
+    await drainQueue();
+
+    // Attachments were handed to injectAttachments, and its output reached disk.
+    expect(vi.mocked(injectAttachments)).toHaveBeenCalledWith(
+      expect.any(String),
+      [
+        { kind: "image", rel: "../Photos/a.jpg", filename: "a.jpg" },
+        { kind: "file", rel: "../Files/b.pdf", filename: "b.pdf" },
+      ],
+    );
+    const writtenBody = vi.mocked(writeIdea).mock.calls[0][1];
+    expect(writtenBody).toContain("![](../Photos/a.jpg)");
+    expect(writtenBody).toContain("[b.pdf](../Files/b.pdf)");
+    expect(rows().length).toBe(0);
+  });
+
+  it("drains a legacy row with no attachments field unchanged", async () => {
+    // Rows queued before this feature have no `attachments` key — they must
+    // drain exactly as before (injectAttachments gets an empty list).
+    const { writeIdea } = await import("./writer");
+    seed([
+      { id: "old", mode: "idea", payload_json: JSON.stringify({ mode: "idea", text: "legacy" }), created_at: 1, attempts: 0, last_error: null },
+    ]);
+
+    await drainQueue();
+
+    expect(vi.mocked(writeIdea)).toHaveBeenCalledTimes(1);
     expect(rows().length).toBe(0);
   });
 

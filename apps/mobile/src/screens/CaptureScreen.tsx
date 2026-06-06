@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
@@ -35,11 +35,16 @@ import {
   writeIdea,
   appendJournal,
   writePerson,
+  writeBinary,
+  injectAttachments,
+  extFromMime,
   readNote,
   updateNote,
   rewriteFrontmatterField,
   extractNameFromMarkdown,
+  type AttachmentRef,
 } from "../lib/writer";
+import { pickAttachment, type PickedAttachment } from "../lib/attachments";
 import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
 import {
   IDEA_STATUSES,
@@ -104,6 +109,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
   const [queueDepth, setQueueDepth] = useState(0);
   const [showSource, setShowSource] = useState(false);
+  // Attachments picked but not yet written — held until the capture commits
+  // (confirmSave online, or enqueue offline) so cancelling at preview leaves
+  // no orphaned binaries on disk. Idea + Journal only.
+  const [pending, setPending] = useState<PickedAttachment[]>([]);
 
   useEffect(() => {
     void getQueueDepth().then(setQueueDepth);
@@ -122,6 +131,63 @@ export default function CaptureScreen({ route, navigation }: Props) {
     if (mode === "journal") return transcript.trim().length > 0 || text.trim().length > 0;
     return ocrText.trim().length > 0 || text.trim().length > 0;
   }, [phase, mode, text, transcript, ocrText]);
+
+  /** Open the picker and stage the chosen attachment. Surfaces the friendly
+   * cap/read error from pickAttachment rather than dropping it. */
+  const addAttachment = async (imagesOnly: boolean): Promise<void> => {
+    setError(null);
+    try {
+      const picked = await pickAttachment({ imagesOnly });
+      if (picked) setPending((prev) => [...prev, picked]);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const removeAttachment = (index: number): void => {
+    setPending((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // Remembers which staged attachments are already on disk, keyed by the
+  // picked-attachment object. A failed commit (writeIdea/enqueue threw) leaves
+  // `pending` intact; without this a retry would re-run writeBinary and, since
+  // findCollisionFreeName never overwrites, strand the first write as an
+  // orphan (`sketch.jpg` unreferenced, `sketch-2.jpg` linked). Keying by object
+  // identity also means removing an attachment between attempts drops it
+  // cleanly and a newly-added one still gets written.
+  const persistedRefs = useRef(new WeakMap<PickedAttachment, AttachmentRef>());
+
+  /** Write every staged attachment to the vault (once each) and return the
+   * rel-path references to embed/queue. Called at the commit moment
+   * (confirmSave or enqueue) so a cancel at preview never strands binaries.
+   * Uses the collision-bumped `finalName` for the link so it stays paired. */
+  const persistAttachments = async (): Promise<AttachmentRef[]> => {
+    const refs: AttachmentRef[] = [];
+    for (const p of pending) {
+      const cached = persistedRefs.current.get(p);
+      if (cached) {
+        refs.push(cached);
+        continue;
+      }
+      const subdir = p.kind === "image" ? "Photos" : "Files";
+      const ext = extFromMime(p.mime);
+      const base = slugify(p.filename.replace(/\.[^.]+$/, "")) || "attachment";
+      const { finalName } = await writeBinary(
+        subdir,
+        `${base}.${ext}`,
+        p.base64,
+        p.mime,
+      );
+      const ref: AttachmentRef = {
+        kind: p.kind,
+        rel: `../${subdir}/${finalName}`,
+        filename: finalName,
+      };
+      persistedRefs.current.set(p, ref);
+      refs.push(ref);
+    }
+    return refs;
+  };
 
   /** Build an offline-or-error handler. Permanent errors (4xx) surface to
    * the user with the actual message; transient errors (network / 5xx)
@@ -157,6 +223,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setText("");
       setTranscript("");
       setOcrText("");
+      setPending([]);
     } catch (qe: unknown) {
       const qmsg = qe instanceof Error ? qe.message : String(qe);
       setError(`Couldn't reach OmniRoute, and queuing offline failed: ${qmsg}`);
@@ -184,9 +251,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
         });
         setPhase("preview");
       } catch (e: unknown) {
-        await handleCaptureError(e, () =>
-          enqueue({ mode: "idea", text: text.trim() }),
-        );
+        await handleCaptureError(e, async () => {
+          // Write the binaries to disk first (local + offline-safe), then
+          // queue only their rel-paths — never base64.
+          const refs = await persistAttachments();
+          await enqueue({ mode: "idea", text: text.trim(), attachments: refs });
+        });
       }
       return;
     }
@@ -206,9 +276,16 @@ export default function CaptureScreen({ route, navigation }: Props) {
         });
         setPhase("preview");
       } catch (e: unknown) {
-        await handleCaptureError(e, () =>
-          enqueue({ mode: "journal", transcript: combined, notes: "", date: todayLocal() }),
-        );
+        await handleCaptureError(e, async () => {
+          const refs = await persistAttachments();
+          await enqueue({
+            mode: "journal",
+            transcript: combined,
+            notes: "",
+            date: todayLocal(),
+            attachments: refs,
+          });
+        });
       }
       return;
     }
@@ -243,8 +320,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
     if (mode === "idea" && pendingIdea) {
       try {
         console.log("[confirmSave] writeIdea start", { slug: pendingIdea.slug });
-        const { filepath } = await writeIdea(pendingIdea.slug, pendingIdea.markdown);
+        const refs = await persistAttachments();
+        const markdown = injectAttachments(pendingIdea.markdown, refs);
+        const { filepath } = await writeIdea(pendingIdea.slug, markdown);
         console.log("[confirmSave] writeIdea ok", filepath);
+        setPending([]);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingIdea.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
@@ -262,8 +342,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
     if (mode === "journal" && pendingJournal) {
       try {
         console.log("[confirmSave] appendJournal start", { date: pendingJournal.date });
-        const { filepath } = await appendJournal(pendingJournal.date, pendingJournal.markdown);
+        const refs = await persistAttachments();
+        const markdown = injectAttachments(pendingJournal.markdown, refs);
+        const { filepath } = await appendJournal(pendingJournal.date, markdown);
         console.log("[confirmSave] appendJournal ok", filepath);
+        setPending([]);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingJournal.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
@@ -344,6 +427,43 @@ export default function CaptureScreen({ route, navigation }: Props) {
           ocrText={ocrText}
           onOcrChange={setOcrText}
         />
+      )}
+
+      {phase === "input" && mode !== "person" && (
+        <View style={styles.attachBlock}>
+          <View style={styles.attachRow}>
+            <Button
+              icon="image"
+              mode="contained-tonal"
+              compact
+              onPress={() => addAttachment(true)}
+            >
+              Image
+            </Button>
+            <Button
+              icon="paperclip"
+              mode="contained-tonal"
+              compact
+              onPress={() => addAttachment(false)}
+            >
+              File
+            </Button>
+          </View>
+          {pending.length > 0 && (
+            <View style={styles.chipRow}>
+              {pending.map((p, i) => (
+                <Chip
+                  key={`${p.filename}-${i}`}
+                  icon={p.kind === "image" ? "image" : "file"}
+                  onClose={() => removeAttachment(i)}
+                  compact
+                >
+                  {p.filename}
+                </Chip>
+              ))}
+            </View>
+          )}
+        </View>
       )}
 
       {phase === "input" && (
@@ -631,4 +751,7 @@ const styles = StyleSheet.create({
   voiceHint: { opacity: 0.7 },
   personBlock: { gap: 12 },
   wordCounter: { opacity: 0.5, marginTop: 4, textAlign: "right" },
+  attachBlock: { gap: 8 },
+  attachRow: { flexDirection: "row", gap: 8 },
+  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
 });
