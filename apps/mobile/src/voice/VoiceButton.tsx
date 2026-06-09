@@ -526,6 +526,17 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       // pinned fallback (or none) — leave a breadcrumb so field logs explain the
       // swap instead of silently routing to a different recognizer.
       logEventRef.current('pkg.substituted', { requested: pkg, used: effectivePkg });
+      // Stage the pinned fallback for persist-on-first-result so a stale bad
+      // saved pkg (e.g. a rogue recognizer like com.anthropic.claude that's
+      // still in AsyncStorage) gets OVERWRITTEN once this engine actually works.
+      // Without this, the bad pkg is retried + fails every session and churns
+      // through failover, because the working fallback was never persisted.
+      if (effectivePkg && isPinnedRecognizer(effectivePkg)) {
+        pendingPersistRef.current = {
+          pkg: effectivePkg,
+          label: labelForPackage(effectivePkg),
+        };
+      }
     }
     if (effectivePkg === null) {
       if (!detectionRanRef.current) {
@@ -1095,7 +1106,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // suspended when the picker Activity backgrounds the app — the exact path
   // that was dropping the partial. No-op when not recording.
   const stopAndFlush = useCallback(() => {
-    if (!pressActiveRef.current) return;
+    if (!pressActiveRef.current) {
+      logEventRef.current('flush.noop', { reason: 'not-active' });
+      return;
+    }
     clearMaxTimer();
     const engine = activeEngineRef.current;
     // Tear the session down BEFORE running any parent code below, so a throw
@@ -1108,10 +1122,18 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       // end-listener re-commit to suppress and nothing to flush synchronously —
       // finishing transcribes the recording + commits on return. The
       // flushedExternallyRef guard is deliberately NOT set here.
+      logEventRef.current('flush.whisper');
       void finishWhisper();
       return;
     }
     const text = composeFlush(sessionTextRef.current, composeText());
+    // Diagnostics: len=0 means STT captured no transcript to flush (e.g. a Soda
+    // nomatch), NOT that the flush dropped it. session = chars already folded
+    // from prior auto-restarted segments.
+    logEventRef.current('flush.ondevice', {
+      len: text.length,
+      session: sessionTextRef.current.length,
+    });
     flushedExternallyRef.current = true; // suppress the end-listener re-commit
     sessionTextRef.current = '';
     resetAccumulator();
@@ -1121,11 +1143,14 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     if (text) {
       try {
         onTranscriptRef.current(text, true);
+        logEventRef.current('flush.emit', { len: text.length });
       } catch (e: unknown) {
         logEventRef.current('flush.emit.throw', {
           msg: e instanceof Error ? e.message : String(e),
         });
       }
+    } else {
+      logEventRef.current('flush.empty');
     }
   }, [composeText, finishWhisper, resetAccumulator, clearMaxTimer, stopOnDevice]);
 
