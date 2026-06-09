@@ -16,6 +16,7 @@ import { useTheme } from 'react-native-paper';
 import {
   type RecognizerOption,
   SYSTEM_DEFAULT_RECOGNIZER,
+  DEFAULT_RECOGNIZER_PKGS,
   orderRecognizerCandidates,
   isPinnedRecognizer,
   resolveEffectivePkg,
@@ -189,12 +190,37 @@ async function detectAvailableRecognizers(): Promise<RecognizerOption[]> {
       } catch {
         // non-fatal
       }
+      // Probe installed language models so a pinned engine with no on-device
+      // speech pack (e.g. a com.google.android.as that only returns code 12)
+      // ranks below a model-having one. Unknown/timeout → treat as has-model so
+      // a slow probe never wrongly demotes a working recognizer.
+      const candidates = Array.from(new Set([...DEFAULT_RECOGNIZER_PKGS, ...services]));
+      const modelByPkg = new Map<string, boolean>();
+      await Promise.all(
+        candidates.map(async (pkg) => {
+          try {
+            const res = (await Promise.race([
+              ExpoSpeechRecognitionModule.getSupportedLocales({ androidRecognitionServicePackage: pkg }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+            ])) as { installedLocales?: string[] } | undefined;
+            const installed = Array.isArray(res?.installedLocales) ? res.installedLocales : [];
+            modelByPkg.set(pkg, installed.length > 0);
+          } catch {
+            modelByPkg.set(pkg, true); // unknown → don't demote
+          }
+        }),
+      );
       // Always include our pinned Google recognizers (ranked first), even when
       // Android doesn't enumerate them — otherwise a device whose only
       // *enumerated* RecognitionService is a third-party app (e.g. an installed
       // assistant that can't actually serve STT) has no Google fallback, so that
       // app's recognizer gets picked and STT dies with code 5/9.
-      return orderRecognizerCandidates(services, defaultPkg, labelForPackage);
+      return orderRecognizerCandidates(
+        services,
+        defaultPkg,
+        labelForPackage,
+        (pkg) => modelByPkg.get(pkg) ?? true,
+      );
     }
   } catch {
     // fall through to legacy probe
@@ -306,6 +332,9 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // so an enumerated-but-broken engine can't get remembered and re-fail every
   // launch. Cleared at detection-start and session-start so it can't leak.
   const pendingPersistRef = useRef<{ pkg: string; label: string } | null>(null);
+  // Retry-once guard for code 11 (SERVER_DISCONNECTED), a transient Soda drop —
+  // retry the same engine before failing over to a possibly model-less fallback.
+  const serverDisconnectRetryRef = useRef(0);
   // Which engine the active session is using — used by handlePressOut to
   // route to stopOnDevice or finishWhisper without re-reading AsyncStorage.
   const activeEngineRef = useRef<'ondevice' | 'whisper' | null>(null);
@@ -667,6 +696,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         const transcript = event.results[0]?.transcript;
         logEventRef.current('result', { isFinal: event.isFinal, len: transcript?.length ?? 0 });
         audioSeenRef.current = true;
+        serverDisconnectRetryRef.current = 0; // recognizer produced output — recovered
         clearWatchdogRef.current();
         // Already committed via stopAndFlush() — ignore any trailing result the
         // recognizer emits during teardown so we don't re-accumulate or fire a
@@ -761,6 +791,23 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
             const rawMsg = `${event.error}${(event as any).message ? ': ' + (event as any).message : ''} (code ${code})`;
             showErrRef.current(sttErrorMessage(code, rawMsg), 4000);
           }
+          return;
+        }
+
+        // Code 11 (SERVER_DISCONNECTED) is usually a transient Soda drop, not a
+        // dead recognizer. Retry the SAME engine once — BEFORE marking it failed
+        // — instead of failing straight over to a possibly model-less fallback
+        // (e.g. com.google.android.as with no language pack, which just returns
+        // code 12 and lands on the no-service sheet). Reset on a real result.
+        if (code === 11 && serverDisconnectRetryRef.current < 1 && lastAttemptedPkgRef.current) {
+          serverDisconnectRetryRef.current += 1;
+          errorHandlingRef.current = false;
+          const retryPkg = lastAttemptedPkgRef.current;
+          showErrRef.current('Reconnecting…', 1500);
+          setTimeout(async () => {
+            if (!pressActiveRef.current) return;
+            await startRecognizerRef.current(retryPkg);
+          }, 400);
           return;
         }
 
@@ -1186,6 +1233,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     // Drop any persist staged by a prior session that never produced a result,
     // so this session can't accidentally commit the wrong recognizer.
     pendingPersistRef.current = null;
+    serverDisconnectRetryRef.current = 0;
     errPersistRef.current = false;
     setErrMsg('');
     clearMaxTimer();

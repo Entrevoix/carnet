@@ -84,6 +84,30 @@ describe('orderRecognizerCandidates', () => {
     const order = pkgs(orderRecognizerCandidates(['com.vendor.beta', 'com.vendor.alpha'], '', label));
     expect(order.indexOf('com.vendor.beta')).toBeLessThan(order.indexOf('com.vendor.alpha'));
   });
+
+  it('demotes a model-less pinned recognizer below model-having pinned, still above third-party', () => {
+    // `as` has no installed speech model; tts does; plus a third-party service.
+    const hasModel = (pkg: string) => pkg !== 'com.google.android.as';
+    const order = pkgs(
+      orderRecognizerCandidates(['com.google.android.as', 'com.vendor.zeta'], '', label, hasModel),
+    );
+    expect(order.indexOf('com.google.android.tts')).toBeLessThan(order.indexOf('com.google.android.as'));
+    // model-less pinned `as` is still ranked ABOVE the third-party service.
+    expect(order.indexOf('com.google.android.as')).toBeLessThan(order.indexOf('com.vendor.zeta'));
+  });
+
+  it('prefers a model-having pinned engine over a model-less one listed earlier', () => {
+    // tts is pinned FIRST but has no model; as is pinned second WITH a model → as wins.
+    const hasModel = (pkg: string) => pkg === 'com.google.android.as';
+    const order = pkgs(orderRecognizerCandidates([], '', label, hasModel));
+    expect(order.indexOf('com.google.android.as')).toBeLessThan(order.indexOf('com.google.android.tts'));
+  });
+
+  it('default hasModel leaves ordering unchanged (pinned first, in listed order)', () => {
+    const order = pkgs(orderRecognizerCandidates(['com.vendor.zeta'], 'com.vendor.zeta', label));
+    expect(order.slice(0, DEFAULT_RECOGNIZER_PKGS.length)).toEqual([...DEFAULT_RECOGNIZER_PKGS]);
+    expect(order.indexOf('com.google.android.as')).toBeLessThan(order.indexOf('com.vendor.zeta'));
+  });
 });
 
 describe('resolveEffectivePkg', () => {

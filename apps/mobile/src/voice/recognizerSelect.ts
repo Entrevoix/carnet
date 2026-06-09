@@ -92,18 +92,31 @@ export function composeFlush(sessionText: string, partial: string): string {
  * out Google's working engine. The OS default is ranked next, other third-party
  * recognizers last, and the System Default sentinel is appended as a final
  * fallback.
+ *
+ * `hasModel(pkg)` (optional) lets the caller demote a pinned engine that has no
+ * installed language model below the model-having pinned ones (still above any
+ * third-party). Defaults to always-true, leaving the order unchanged.
  */
 export function orderRecognizerCandidates(
   services: readonly string[],
   defaultPkg: string,
   labelFor: (pkg: string) => string,
+  hasModel: (pkg: string) => boolean = () => true,
 ): RecognizerOption[] {
   const merged = Array.from(new Set([...DEFAULT_RECOGNIZER_PKGS, ...services]));
+  const P = DEFAULT_RECOGNIZER_PKGS.length;
   const rank = (pkg: string): number => {
     const pinnedIdx = DEFAULT_RECOGNIZER_PKGS.indexOf(pkg);
-    if (pinnedIdx !== -1) return pinnedIdx; // pinned recognizers first, in listed order
-    if (pkg === defaultPkg) return DEFAULT_RECOGNIZER_PKGS.length; // then the OS default
-    return DEFAULT_RECOGNIZER_PKGS.length + 1; // then any other third-party recognizer
+    if (pinnedIdx !== -1) {
+      // Pinned recognizers first, in listed order — but demote a pinned engine
+      // with NO installed language model (e.g. a com.google.android.as whose
+      // on-device speech pack was never downloaded → it only returns code 12)
+      // below the model-having pinned ones, while still keeping it ABOVE any
+      // third-party service. Default hasModel=() => true leaves order unchanged.
+      return hasModel(pkg) ? pinnedIdx : P + pinnedIdx;
+    }
+    if (pkg === defaultPkg) return 2 * P; // then the OS default
+    return 2 * P + 1; // then any other third-party recognizer
   };
   const options = merged
     .map((pkg) => ({ pkg, label: labelFor(pkg) }))
