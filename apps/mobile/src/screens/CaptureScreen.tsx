@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type Ref } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
@@ -18,7 +18,7 @@ const localId = (): string =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 import type { RootStackParamList } from "../../App";
-import { VoiceButton } from "../voice/VoiceButton";
+import { VoiceButton, type VoiceButtonHandle } from "../voice/VoiceButton";
 import { CardScannerModal } from "../components/CardScannerModal";
 import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
@@ -132,9 +132,16 @@ export default function CaptureScreen({ route, navigation }: Props) {
     return ocrText.trim().length > 0 || text.trim().length > 0;
   }, [phase, mode, text, transcript, ocrText]);
 
+  // Handle to the active VoiceButton (Idea/Journal). Lets the attach handlers
+  // gracefully stop dictation + commit the partial transcript before the picker
+  // opens — otherwise the picker Activity backgrounds the app and the in-flight
+  // transcript is stranded (never emitted as final).
+  const voiceRef = useRef<VoiceButtonHandle>(null);
+
   /** Open the picker and stage the chosen attachment. Surfaces the friendly
    * cap/read error from pickAttachment rather than dropping it. */
   const addAttachment = async (imagesOnly: boolean): Promise<void> => {
+    voiceRef.current?.stopAndFlush();
     setError(null);
     try {
       const picked = await pickAttachment({ imagesOnly });
@@ -145,6 +152,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
   };
 
   const removeAttachment = (index: number): void => {
+    // No stopAndFlush() here: removing a staged chip is a pure state update with
+    // no Activity switch, so dictation isn't interrupted — flushing would only
+    // force-stop the mic mid-sentence. The picker path (addAttachment) is the one
+    // that backgrounds the app and needs the flush.
     setPending((prev) => prev.filter((_, i) => i !== index));
   };
 
@@ -426,6 +437,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           onTranscriptChange={setTranscript}
           ocrText={ocrText}
           onOcrChange={setOcrText}
+          voiceRef={voiceRef}
         />
       )}
 
@@ -570,6 +582,9 @@ interface ModeInputProps {
   onTranscriptChange: (v: string) => void;
   ocrText: string;
   onOcrChange: (v: string) => void;
+  /** Forwarded to the Idea/Journal VoiceButton so the parent can stop+flush
+   * dictation before opening the attachment picker. */
+  voiceRef?: Ref<VoiceButtonHandle>;
 }
 
 function ModeInput({
@@ -580,12 +595,14 @@ function ModeInput({
   onTranscriptChange,
   ocrText,
   onOcrChange,
+  voiceRef,
 }: ModeInputProps) {
   if (mode === "idea") {
     return (
       <View style={styles.ideaBlock}>
         <View style={styles.voiceRow}>
           <VoiceButton
+            ref={voiceRef}
             onTranscript={(t, isFinal) => {
               if (isFinal) {
                 onTextChange(text ? `${text}\n${t}`.trim() : t);
@@ -616,6 +633,7 @@ function ModeInput({
       <View style={styles.journalBlock}>
         <View style={styles.voiceRow}>
           <VoiceButton
+            ref={voiceRef}
             onTranscript={(t, isFinal) => {
               if (isFinal) {
                 onTranscriptChange(

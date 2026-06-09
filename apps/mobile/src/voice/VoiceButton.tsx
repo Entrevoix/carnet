@@ -10,9 +10,19 @@ import {
   type ExpoSpeechRecognitionErrorEvent,
   type ExpoSpeechRecognitionResultEvent,
 } from 'expo-speech-recognition';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Animated, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from 'react-native-paper';
+import {
+  type RecognizerOption,
+  SYSTEM_DEFAULT_RECOGNIZER,
+  DEFAULT_RECOGNIZER_PKGS,
+  orderRecognizerCandidates,
+  isPinnedRecognizer,
+  resolveEffectivePkg,
+  pinnedFailoverChain,
+  composeFlush,
+} from './recognizerSelect';
 
 // Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
 const MAX_RECORDING_MS = 3 * 60 * 1000;
@@ -25,25 +35,12 @@ const KNOWN_BAD_PKGS: readonly string[] = [];
 // after the Sept 2025 security patch. Without web_search, dictation returns
 // empty transcripts. See ./docs/learnings or memory/android16-stt-soda-ambient-fix.md.
 const SODA_DICTATION_MODEL = 'web_search';
-// Pixel devices have settings:secure:voice_recognition_service = null, so an
-// unpinned createSpeechRecognizer() throws code 5. com.google.android.tts is
-// the only package that actually exposes a RecognitionService on Pixel today.
-const DEFAULT_RECOGNIZER_PKGS = ['com.google.android.tts', 'com.google.android.as'];
-
 export const STT_ENGINE_KEY = 'stt_engine';
 export const STT_RECOGNIZER_PKG_KEY = 'stt_recognizer_pkg';
 export const STT_RECOGNIZER_LABEL_KEY = 'stt_recognizer_label';
 export const WHISPER_API_KEY_STORAGE = 'whisper_api_key';
 export const WHISPER_ENDPOINT_KEY = 'whisper_endpoint';
 export const DEFAULT_WHISPER_ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions';
-
-interface RecognizerOption {
-  pkg: string;
-  label: string;
-}
-
-// pkg: '' means "let Android pick the default recognizer"
-const SYSTEM_DEFAULT_RECOGNIZER: RecognizerOption = { pkg: '', label: 'System Default' };
 
 const KNOWN_RECOGNIZERS: RecognizerOption[] = [
   // Android System Intelligence — the actual on-device Google STT service. Prefer first.
@@ -193,17 +190,37 @@ async function detectAvailableRecognizers(): Promise<RecognizerOption[]> {
       } catch {
         // non-fatal
       }
-      const options: RecognizerOption[] = services.map((pkg) => ({
-        pkg,
-        label: labelForPackage(pkg),
-      }));
-      // Hoist default to the front so it's the first choice presented
-      options.sort((a, b) => {
-        if (a.pkg === defaultPkg) return -1;
-        if (b.pkg === defaultPkg) return 1;
-        return 0;
-      });
-      return [...options, SYSTEM_DEFAULT_RECOGNIZER];
+      // Probe installed language models so a pinned engine with no on-device
+      // speech pack (e.g. a com.google.android.as that only returns code 12)
+      // ranks below a model-having one. Unknown/timeout → treat as has-model so
+      // a slow probe never wrongly demotes a working recognizer.
+      const candidates = Array.from(new Set([...DEFAULT_RECOGNIZER_PKGS, ...services]));
+      const modelByPkg = new Map<string, boolean>();
+      await Promise.all(
+        candidates.map(async (pkg) => {
+          try {
+            const res = (await Promise.race([
+              ExpoSpeechRecognitionModule.getSupportedLocales({ androidRecognitionServicePackage: pkg }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+            ])) as { installedLocales?: string[] } | undefined;
+            const installed = Array.isArray(res?.installedLocales) ? res.installedLocales : [];
+            modelByPkg.set(pkg, installed.length > 0);
+          } catch {
+            modelByPkg.set(pkg, true); // unknown → don't demote
+          }
+        }),
+      );
+      // Always include our pinned Google recognizers (ranked first), even when
+      // Android doesn't enumerate them — otherwise a device whose only
+      // *enumerated* RecognitionService is a third-party app (e.g. an installed
+      // assistant that can't actually serve STT) has no Google fallback, so that
+      // app's recognizer gets picked and STT dies with code 5/9.
+      return orderRecognizerCandidates(
+        services,
+        defaultPkg,
+        labelForPackage,
+        (pkg) => modelByPkg.get(pkg) ?? true,
+      );
     }
   } catch {
     // fall through to legacy probe
@@ -239,9 +256,17 @@ interface VoiceButtonProps {
   disabled?: boolean;
 }
 
+export interface VoiceButtonHandle {
+  /** Stop recording and commit the in-progress transcript as final, instead of
+   * losing it. No-op when not recording. The parent calls this before it opens
+   * a picker / mutates state mid-dictation so the spoken words are saved. */
+  stopAndFlush: () => void;
+}
+
 type ErrAction = 'none' | 'no-service' | 'permission' | 'lang-unavailable' | 'diag';
 
-export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
+export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
+  function VoiceButton({ onTranscript, disabled }, ref) {
   const theme = useTheme();
   const [isListening, setIsListening] = useState(false);
   const [errMsg, setErrMsg] = useState('');
@@ -299,6 +324,17 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
   const sessionTextRef = useRef('');
   // Latest in-progress (isFinal=false) transcript for the current utterance.
   const interimRef = useRef('');
+  // Set by stopAndFlush() so the `end` listener's user-stop branch doesn't
+  // commit the transcript a second time after we've already flushed it.
+  const flushedExternallyRef = useRef(false);
+  // Recognizer auto-selected by detection but NOT yet persisted — we only write
+  // it to AsyncStorage once it yields a real result (see the result listener),
+  // so an enumerated-but-broken engine can't get remembered and re-fail every
+  // launch. Cleared at detection-start and session-start so it can't leak.
+  const pendingPersistRef = useRef<{ pkg: string; label: string } | null>(null);
+  // Retry-once guard for code 11 (SERVER_DISCONNECTED), a transient Soda drop —
+  // retry the same engine before failing over to a possibly model-less fallback.
+  const serverDisconnectRetryRef = useRef(0);
   // Which engine the active session is using — used by handlePressOut to
   // route to stopOnDevice or finishWhisper without re-reading AsyncStorage.
   const activeEngineRef = useRef<'ondevice' | 'whisper' | null>(null);
@@ -506,15 +542,30 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
   // Do NOT reintroduce requiresOnDeviceRecognition or EXTRA_PREFER_OFFLINE here:
   // both fail or are silently ignored on Android 16. See memory/android16-stt-soda-ambient-fix.md.
   const startRecognizerRef = useRef(async (pkg: string | null) => {
-    // pkg meanings: non-empty string = explicit package, '' = bare start
-    // (let Android pick the default, no explicit bind), null = try defaults list.
-    let effectivePkg: string | null;
-    if (pkg !== null && pkg.length === 0) {
-      effectivePkg = '';
-    } else if (pkg && pkg.length > 0) {
-      effectivePkg = sessionFailedPkgsRef.current.has(pkg) ? null : pkg;
-    } else {
-      effectivePkg = DEFAULT_RECOGNIZER_PKGS.find(p => !sessionFailedPkgsRef.current.has(p)) ?? null;
+    // pkg meanings: non-empty string = explicit package; '' ("system default")
+    // and null ("try defaults") both resolve to a pinned Google recognizer. We
+    // deliberately never do a bare start (which would hand STT to Android's
+    // registered default recognizer — on some devices a third-party app that
+    // can't serve STT). See resolveEffectivePkg for the full rationale.
+    const effectivePkg = resolveEffectivePkg(pkg, (p) =>
+      sessionFailedPkgsRef.current.has(p),
+    );
+    if (pkg && pkg.length > 0 && effectivePkg !== pkg) {
+      // The requested package already failed this session and was swapped for a
+      // pinned fallback (or none) — leave a breadcrumb so field logs explain the
+      // swap instead of silently routing to a different recognizer.
+      logEventRef.current('pkg.substituted', { requested: pkg, used: effectivePkg });
+      // Stage the pinned fallback for persist-on-first-result so a stale bad
+      // saved pkg (e.g. a rogue recognizer like com.anthropic.claude that's
+      // still in AsyncStorage) gets OVERWRITTEN once this engine actually works.
+      // Without this, the bad pkg is retried + fails every session and churns
+      // through failover, because the working fallback was never persisted.
+      if (effectivePkg && isPinnedRecognizer(effectivePkg)) {
+        pendingPersistRef.current = {
+          pkg: effectivePkg,
+          label: labelForPackage(effectivePkg),
+        };
+      }
     }
     if (effectivePkg === null) {
       if (!detectionRanRef.current) {
@@ -529,17 +580,21 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
       }
       return;
     }
-    lastAttemptedPkgRef.current = effectivePkg || null;
-    const lang = await pickBestLocale(effectivePkg || null);
-    if (!pressActiveRef.current && activeEngineRef.current === 'ondevice') return;
-    logEventRef.current('start.request', { pkg: effectivePkg || '(system-default)', lang });
+    lastAttemptedPkgRef.current = effectivePkg;
+    const lang = await pickBestLocale(effectivePkg);
+    // Session was stopped/flushed while we were awaiting locale — abort the
+    // pending start so we don't open the mic with no active session. (Dropped
+    // the `&& activeEngineRef==='ondevice'` qualifier: stopAndFlush clears the
+    // engine ref, and only on-device starts reach here anyway.)
+    if (!pressActiveRef.current) return;
+    logEventRef.current('start.request', { pkg: effectivePkg, lang });
     try {
       ExpoSpeechRecognitionModule.start({
         lang,
         interimResults: true,
         maxAlternatives: 1,
         continuous: true,
-        ...(effectivePkg ? { androidRecognitionServicePackage: effectivePkg } : {}),
+        androidRecognitionServicePackage: effectivePkg,
         androidIntentOptions: { EXTRA_LANGUAGE_MODEL: SODA_DICTATION_MODEL },
       });
       started.current = true;
@@ -558,6 +613,8 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
   // Detection flow — called from error handler (inside effect), so use ref
   const triggerDetectionRef = useRef(async () => {
     setDetecting(true);
+    // Fresh detection supersedes any persist staged by a prior auto-select.
+    pendingPersistRef.current = null;
     showErrRef.current(`Scanning ${KNOWN_RECOGNIZERS.length} speech services…`, 20000);
     try {
       const available = await detectAvailableRecognizers();
@@ -571,6 +628,29 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
       // explicit pkg, which is exactly what just failed — an infinite loop.
       // Skip straight to the no-service sheet (with diagnostics) instead.
       const realHits = available.filter((o) => o.pkg !== '' && !sessionFailedPkgsRef.current.has(o.pkg));
+
+      // Prefer a known-good pinned recognizer (Google's on-device engine) over
+      // any third-party RecognitionService that happens to be installed. Auto-use
+      // it without a picker and queue the rest as failover. This is the fix for an
+      // installed app (e.g. another assistant) registering a recognizer that
+      // getSpeechRecognitionServices() surfaces but that can't actually serve STT.
+      const pinnedHit = realHits.find((o) => isPinnedRecognizer(o.pkg));
+      if (pinnedHit) {
+        // Stage the persist rather than writing it now: we only remember this
+        // recognizer once it yields a real result (see the result listener), so a
+        // pinned engine that's enumerated-but-broken on some non-Google device
+        // can't get persisted and then re-fail every launch. Safe to defer here
+        // because auto-restart resolves a missing saved pkg back to the same
+        // pinned engine (null -> firstAvailablePinned in resolveEffectivePkg).
+        pendingPersistRef.current = { pkg: pinnedHit.pkg, label: pinnedHit.label };
+        showErrRef.current(`Using ${pinnedHit.label}`, 1500);
+        // Failover only among other pinned (Google) recognizers — never queue a
+        // third-party RecognitionService that can't serve STT.
+        failoverChainRef.current = pinnedFailoverChain(realHits, pinnedHit.pkg);
+        await startRecognizerRef.current(pinnedHit.pkg);
+        return;
+      }
+
       if (realHits.length === 0) {
         failoverChainRef.current = [];
         showErrRef.current(
@@ -595,8 +675,12 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
       // Multi-service: seed the failover chain with every detected package
       // (minus the one we'll show the picker for) so that, once the user
       // picks, subsequent failures can transparently try the rest.
+      // Keep the System Default sentinel ('') in the failover chain as an internal
+      // last resort, but don't offer it in the picker: with the pinned-recognizer
+      // hardening it no longer does a bare start (it resolves to a pinned Google
+      // engine), so presenting it as a distinct "System Default" choice would mislead.
       failoverChainRef.current = available.map((o) => o.pkg);
-      setPickerOptions(available);
+      setPickerOptions(available.filter((o) => o.pkg !== ''));
       setPickerVisible(true);
     } catch (e: unknown) {
       setDetecting(false);
@@ -612,8 +696,22 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
         const transcript = event.results[0]?.transcript;
         logEventRef.current('result', { isFinal: event.isFinal, len: transcript?.length ?? 0 });
         audioSeenRef.current = true;
+        serverDisconnectRetryRef.current = 0; // recognizer produced output — recovered
         clearWatchdogRef.current();
+        // Already committed via stopAndFlush() — ignore any trailing result the
+        // recognizer emits during teardown so we don't re-accumulate or fire a
+        // stray non-final update after the final flush.
+        if (flushedExternallyRef.current) return;
         if (!transcript) return;
+        // First real transcript proves this recognizer can serve STT — commit any
+        // persist staged by the pinnedHit auto-select now, so we only ever
+        // remember an engine that actually works.
+        if (pendingPersistRef.current) {
+          const { pkg, label } = pendingPersistRef.current;
+          pendingPersistRef.current = null;
+          void AsyncStorage.setItem(STT_RECOGNIZER_PKG_KEY, pkg).catch(() => { /* best-effort */ });
+          void AsyncStorage.setItem(STT_RECOGNIZER_LABEL_KEY, label).catch(() => { /* best-effort */ });
+        }
         // Accumulator: continuous: true emits multiple isFinal results
         // (one per utterance boundary). We collect finals and overwrite the
         // interim slot, then emit the composed text as a non-final update so
@@ -681,11 +779,35 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
         // must not clear the saved pkg or trigger detection, or the second tap
         // finds no service. Show a brief transient error and exit.
         if (!pressActiveRef.current) {
+          // A teardown error from an external stopAndFlush() (e.g. the picker
+          // Activity grabbed audio focus) — already committed; swallow it AND
+          // clear the guard here, since `end` may not arrive on the error path.
+          if (flushedExternallyRef.current) {
+            flushedExternallyRef.current = false;
+            return;
+          }
           if (code !== 6 && code !== 7) { // 6/7 = silence, expected after stop
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const rawMsg = `${event.error}${(event as any).message ? ': ' + (event as any).message : ''} (code ${code})`;
             showErrRef.current(sttErrorMessage(code, rawMsg), 4000);
           }
+          return;
+        }
+
+        // Code 11 (SERVER_DISCONNECTED) is usually a transient Soda drop, not a
+        // dead recognizer. Retry the SAME engine once — BEFORE marking it failed
+        // — instead of failing straight over to a possibly model-less fallback
+        // (e.g. com.google.android.as with no language pack, which just returns
+        // code 12 and lands on the no-service sheet). Reset on a real result.
+        if (code === 11 && serverDisconnectRetryRef.current < 1 && lastAttemptedPkgRef.current) {
+          serverDisconnectRetryRef.current += 1;
+          errorHandlingRef.current = false;
+          const retryPkg = lastAttemptedPkgRef.current;
+          showErrRef.current('Reconnecting…', 1500);
+          setTimeout(async () => {
+            if (!pressActiveRef.current) return;
+            await startRecognizerRef.current(retryPkg);
+          }, 400);
           return;
         }
 
@@ -713,6 +835,10 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
         //    than bouncing back through detection to the same picker.
         if (FAILOVER_CODES.has(code) && failoverChainRef.current.length > 0) {
           const nextPkg = failoverChainRef.current.shift()!;
+          // '' is the terminal sentinel: resolveEffectivePkg maps it back to a
+          // pinned engine, so it only does anything if a pinned pkg has since
+          // recovered this session; otherwise it no-ops into the no-service
+          // sheet. Intentionally kept in the chain, not dead code.
           const label = nextPkg ? labelForPackage(nextPkg) : 'System Default';
           showErrRef.current(`Retrying with ${label}…`, 2000);
           await startRecognizerRef.current(nextPkg);
@@ -788,6 +914,17 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
       clearWatchdogRef.current();
       const text = composeText();
 
+      // KNOWN EDGE (deferred): a native `end` for a flushed/stopped session can
+      // arrive AFTER a new session has started — the picker that triggers
+      // stopAndFlush backgrounds the app and delays `end`. flushedExternallyRef
+      // is reset at session start to self-heal, which leaves a small window where
+      // a stale `end` could be misread as the new session's. A session epoch would
+      // close it (bump a sessionEpochRef at each start, capture it per start(),
+      // and bail here if it has moved), but that needs threading through the
+      // result/end/error listeners plus on-device verification, so it's deferred.
+      // Low probability in practice: stopOnDevice() usually delivers `end` before
+      // the user can return from the picker and re-tap.
+
       // Tap-to-toggle: if user hasn't tapped stop yet (pressActiveRef still
       // true), Soda ended on its own (silence/timeout). Accumulate the text
       // from this segment and auto-restart after a brief delay.
@@ -810,10 +947,24 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
         return;
       }
 
+      // Already committed by an external stopAndFlush() — just tear down,
+      // don't emit the transcript a second time.
+      if (flushedExternallyRef.current) {
+        flushedExternallyRef.current = false;
+        sessionTextRef.current = '';
+        resetAccumulator();
+        pressActiveRef.current = false;
+        activeEngineRef.current = null;
+        if (maxDurationTimer.current) {
+          clearTimeout(maxDurationTimer.current);
+          maxDurationTimer.current = null;
+        }
+        stopListeningRef.current();
+        return;
+      }
+
       // User tapped stop (or whisper/max-duration) — send accumulated + final.
-      const finalText = sessionTextRef.current
-        ? (text ? `${sessionTextRef.current} ${text}` : sessionTextRef.current)
-        : text;
+      const finalText = composeFlush(sessionTextRef.current, text);
       if (finalText) onTranscriptRef.current(finalText, true);
       sessionTextRef.current = '';
       resetAccumulator();
@@ -996,6 +1147,62 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
     }
   }, []);
 
+  // ── External stop+flush (parent calls this before opening a picker etc.) ──
+  // Commits the in-progress transcript as final NOW (synchronously, from JS
+  // state) rather than relying on the native `end` round-trip, which can be
+  // suspended when the picker Activity backgrounds the app — the exact path
+  // that was dropping the partial. No-op when not recording.
+  const stopAndFlush = useCallback(() => {
+    if (!pressActiveRef.current) {
+      logEventRef.current('flush.noop', { reason: 'not-active' });
+      return;
+    }
+    clearMaxTimer();
+    const engine = activeEngineRef.current;
+    // Tear the session down BEFORE running any parent code below, so a throw
+    // from onTranscript can't strand the mic or wedge pressActiveRef.
+    pressActiveRef.current = false;
+    activeEngineRef.current = null;
+    if (engine === 'whisper') {
+      // Whisper has no interim AND doesn't go through the ExpoSpeechRecognition
+      // result/end/error listeners (it records via expo-av), so there's no
+      // end-listener re-commit to suppress and nothing to flush synchronously —
+      // finishing transcribes the recording + commits on return. The
+      // flushedExternallyRef guard is deliberately NOT set here.
+      logEventRef.current('flush.whisper');
+      void finishWhisper();
+      return;
+    }
+    const text = composeFlush(sessionTextRef.current, composeText());
+    // Diagnostics: len=0 means STT captured no transcript to flush (e.g. a Soda
+    // nomatch), NOT that the flush dropped it. session = chars already folded
+    // from prior auto-restarted segments.
+    logEventRef.current('flush.ondevice', {
+      len: text.length,
+      session: sessionTextRef.current.length,
+    });
+    flushedExternallyRef.current = true; // suppress the end-listener re-commit
+    sessionTextRef.current = '';
+    resetAccumulator();
+    stopOnDevice(); // release the mic; `end` fires and short-circuits on the flag
+    // Emit LAST and contained: teardown is done and the mic is released, so a
+    // throwing parent callback can't leave the recognizer running.
+    if (text) {
+      try {
+        onTranscriptRef.current(text, true);
+        logEventRef.current('flush.emit', { len: text.length });
+      } catch (e: unknown) {
+        logEventRef.current('flush.emit.throw', {
+          msg: e instanceof Error ? e.message : String(e),
+        });
+      }
+    } else {
+      logEventRef.current('flush.empty');
+    }
+  }, [composeText, finishWhisper, resetAccumulator, clearMaxTimer, stopOnDevice]);
+
+  useImperativeHandle(ref, () => ({ stopAndFlush }), [stopAndFlush]);
+
   // ── Tap-to-toggle router (tap once to start, tap again to stop) ─────────
 
   const handleToggle = useCallback(async () => {
@@ -1019,6 +1226,14 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
     pressActiveRef.current = true;
     errorHandlingRef.current = false;
     sessionTextRef.current = '';
+    // Self-heal the external-flush guard at the start of every session so a
+    // prior session whose `end` never arrived can't make this one skip its
+    // real commit.
+    flushedExternallyRef.current = false;
+    // Drop any persist staged by a prior session that never produced a result,
+    // so this session can't accidentally commit the wrong recognizer.
+    pendingPersistRef.current = null;
+    serverDisconnectRetryRef.current = 0;
     errPersistRef.current = false;
     setErrMsg('');
     clearMaxTimer();
@@ -1213,7 +1428,9 @@ export function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
       </View>
     </View>
   );
-}
+});
+
+VoiceButton.displayName = 'VoiceButton';
 
 const styles = StyleSheet.create({
   btn: {
