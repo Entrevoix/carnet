@@ -301,6 +301,11 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // Set by stopAndFlush() so the `end` listener's user-stop branch doesn't
   // commit the transcript a second time after we've already flushed it.
   const flushedExternallyRef = useRef(false);
+  // Recognizer auto-selected by detection but NOT yet persisted — we only write
+  // it to AsyncStorage once it yields a real result (see the result listener),
+  // so an enumerated-but-broken engine can't get remembered and re-fail every
+  // launch. Cleared at detection-start and session-start so it can't leak.
+  const pendingPersistRef = useRef<{ pkg: string; label: string } | null>(null);
   // Which engine the active session is using — used by handlePressOut to
   // route to stopOnDevice or finishWhisper without re-reading AsyncStorage.
   const activeEngineRef = useRef<'ondevice' | 'whisper' | null>(null);
@@ -568,6 +573,8 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // Detection flow — called from error handler (inside effect), so use ref
   const triggerDetectionRef = useRef(async () => {
     setDetecting(true);
+    // Fresh detection supersedes any persist staged by a prior auto-select.
+    pendingPersistRef.current = null;
     showErrRef.current(`Scanning ${KNOWN_RECOGNIZERS.length} speech services…`, 20000);
     try {
       const available = await detectAvailableRecognizers();
@@ -589,14 +596,13 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       // getSpeechRecognitionServices() surfaces but that can't actually serve STT.
       const pinnedHit = realHits.find((o) => isPinnedRecognizer(o.pkg));
       if (pinnedHit) {
-        // TODO(stt): we persist the pinned pkg BEFORE start() proves it works.
-        // On Pixel these engines are known-good, but on a non-Google device where
-        // com.google.android.tts is enumerated-but-broken this re-persists +
-        // re-fails each launch before reaching the no-service sheet. To fully
-        // honor "don't persist until success", move this write to the first
-        // successful `result` event (stage it in a pendingPersistRef).
-        await AsyncStorage.setItem(STT_RECOGNIZER_PKG_KEY, pinnedHit.pkg);
-        await AsyncStorage.setItem(STT_RECOGNIZER_LABEL_KEY, pinnedHit.label);
+        // Stage the persist rather than writing it now: we only remember this
+        // recognizer once it yields a real result (see the result listener), so a
+        // pinned engine that's enumerated-but-broken on some non-Google device
+        // can't get persisted and then re-fail every launch. Safe to defer here
+        // because auto-restart resolves a missing saved pkg back to the same
+        // pinned engine (null -> firstAvailablePinned in resolveEffectivePkg).
+        pendingPersistRef.current = { pkg: pinnedHit.pkg, label: pinnedHit.label };
         showErrRef.current(`Using ${pinnedHit.label}`, 1500);
         // Failover only among other pinned (Google) recognizers — never queue a
         // third-party RecognitionService that can't serve STT.
@@ -656,6 +662,15 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         // stray non-final update after the final flush.
         if (flushedExternallyRef.current) return;
         if (!transcript) return;
+        // First real transcript proves this recognizer can serve STT — commit any
+        // persist staged by the pinnedHit auto-select now, so we only ever
+        // remember an engine that actually works.
+        if (pendingPersistRef.current) {
+          const { pkg, label } = pendingPersistRef.current;
+          pendingPersistRef.current = null;
+          void AsyncStorage.setItem(STT_RECOGNIZER_PKG_KEY, pkg).catch(() => { /* best-effort */ });
+          void AsyncStorage.setItem(STT_RECOGNIZER_LABEL_KEY, label).catch(() => { /* best-effort */ });
+        }
         // Accumulator: continuous: true emits multiple isFinal results
         // (one per utterance boundary). We collect finals and overwrite the
         // interim slot, then emit the composed text as a non-final update so
@@ -1143,6 +1158,9 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     // prior session whose `end` never arrived can't make this one skip its
     // real commit.
     flushedExternallyRef.current = false;
+    // Drop any persist staged by a prior session that never produced a result,
+    // so this session can't accidentally commit the wrong recognizer.
+    pendingPersistRef.current = null;
     errPersistRef.current = false;
     setErrMsg('');
     clearMaxTimer();
