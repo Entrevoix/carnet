@@ -636,6 +636,31 @@ export function stripFrontmatter(markdown: string): string {
   return afterFirst.slice(endIdx + 4).replace(/^\n+/, "");
 }
 
+/**
+ * Split a note into its raw YAML frontmatter header and its body, such that
+ * `header + body === markdown` BYTE-FOR-BYTE. Unlike stripFrontmatter (which
+ * trims), this preserves the header verbatim so it can be re-prepended exactly
+ * after a body-only edit — the #1 documented WYSIWYG corruption mode is the
+ * frontmatter block collapsing, so the editor must never see or rewrite it.
+ *
+ * The header includes the closing `---` line AND its trailing newline, so
+ * `header + editedBody` can never merge the closing fence into the body even if
+ * the editor drops the blank line that followed it. A note with no valid
+ * frontmatter returns `{ header: "", body: markdown }`.
+ */
+export function splitFrontmatter(markdown: string): { header: string; body: string } {
+  if (!markdown.startsWith("---")) return { header: "", body: markdown };
+  const afterFirst = markdown.slice(3);
+  const endIdx = afterFirst.indexOf("\n---");
+  if (endIdx === -1) return { header: "", body: markdown };
+  // Index (in afterFirst) of the closing fence's own line; advance past "---"
+  // then to the end of that line (its trailing newline, or end of string).
+  const closeFenceStart = endIdx + 1;
+  const nlAfterClose = afterFirst.indexOf("\n", closeFenceStart + 3);
+  const splitAt = 3 + (nlAfterClose === -1 ? afterFirst.length : nlAfterClose + 1);
+  return { header: markdown.slice(0, splitAt), body: markdown.slice(splitAt) };
+}
+
 /** Rewrite a single YAML frontmatter field, preserving the rest byte-identical. */
 export function rewriteFrontmatterField(
   content: string,
