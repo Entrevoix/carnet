@@ -14,6 +14,7 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     omniRouteTranscriptionModel: "gemini/gemini-2.5-flash-lite",
     persistentNotificationEnabled: false,
     autoTranscribeOnSave: false,
+    richEditorEnabled: false,
     captureFolderPath: "",
     promptOverrides: {},
   },
@@ -408,6 +409,7 @@ describe("HTTPS enforcement", () => {
       omniRouteTranscriptionModel: "whisper-1",
       persistentNotificationEnabled: false,
       autoTranscribeOnSave: false,
+      richEditorEnabled: false,
       captureFolderPath: "",
       promptOverrides: {},
     });
@@ -425,6 +427,7 @@ describe("HTTPS enforcement", () => {
       omniRouteTranscriptionModel: "whisper-1",
       persistentNotificationEnabled: false,
       autoTranscribeOnSave: false,
+      richEditorEnabled: false,
       captureFolderPath: "",
       promptOverrides: {},
     });
