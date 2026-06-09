@@ -13,6 +13,13 @@ import {
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Animated, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from 'react-native-paper';
+import {
+  type RecognizerOption,
+  SYSTEM_DEFAULT_RECOGNIZER,
+  orderRecognizerCandidates,
+  isPinnedRecognizer,
+  resolveEffectivePkg,
+} from './recognizerSelect';
 
 // Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
 const MAX_RECORDING_MS = 3 * 60 * 1000;
@@ -25,25 +32,12 @@ const KNOWN_BAD_PKGS: readonly string[] = [];
 // after the Sept 2025 security patch. Without web_search, dictation returns
 // empty transcripts. See ./docs/learnings or memory/android16-stt-soda-ambient-fix.md.
 const SODA_DICTATION_MODEL = 'web_search';
-// Pixel devices have settings:secure:voice_recognition_service = null, so an
-// unpinned createSpeechRecognizer() throws code 5. com.google.android.tts is
-// the only package that actually exposes a RecognitionService on Pixel today.
-const DEFAULT_RECOGNIZER_PKGS = ['com.google.android.tts', 'com.google.android.as'];
-
 export const STT_ENGINE_KEY = 'stt_engine';
 export const STT_RECOGNIZER_PKG_KEY = 'stt_recognizer_pkg';
 export const STT_RECOGNIZER_LABEL_KEY = 'stt_recognizer_label';
 export const WHISPER_API_KEY_STORAGE = 'whisper_api_key';
 export const WHISPER_ENDPOINT_KEY = 'whisper_endpoint';
 export const DEFAULT_WHISPER_ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions';
-
-interface RecognizerOption {
-  pkg: string;
-  label: string;
-}
-
-// pkg: '' means "let Android pick the default recognizer"
-const SYSTEM_DEFAULT_RECOGNIZER: RecognizerOption = { pkg: '', label: 'System Default' };
 
 const KNOWN_RECOGNIZERS: RecognizerOption[] = [
   // Android System Intelligence — the actual on-device Google STT service. Prefer first.
@@ -193,17 +187,12 @@ async function detectAvailableRecognizers(): Promise<RecognizerOption[]> {
       } catch {
         // non-fatal
       }
-      const options: RecognizerOption[] = services.map((pkg) => ({
-        pkg,
-        label: labelForPackage(pkg),
-      }));
-      // Hoist default to the front so it's the first choice presented
-      options.sort((a, b) => {
-        if (a.pkg === defaultPkg) return -1;
-        if (b.pkg === defaultPkg) return 1;
-        return 0;
-      });
-      return [...options, SYSTEM_DEFAULT_RECOGNIZER];
+      // Always include our pinned Google recognizers (ranked first), even when
+      // Android doesn't enumerate them — otherwise a device whose only
+      // *enumerated* RecognitionService is a third-party app (e.g. an installed
+      // assistant that can't actually serve STT) has no Google fallback, so that
+      // app's recognizer gets picked and STT dies with code 5/9.
+      return orderRecognizerCandidates(services, defaultPkg, labelForPackage);
     }
   } catch {
     // fall through to legacy probe
@@ -517,15 +506,19 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // Do NOT reintroduce requiresOnDeviceRecognition or EXTRA_PREFER_OFFLINE here:
   // both fail or are silently ignored on Android 16. See memory/android16-stt-soda-ambient-fix.md.
   const startRecognizerRef = useRef(async (pkg: string | null) => {
-    // pkg meanings: non-empty string = explicit package, '' = bare start
-    // (let Android pick the default, no explicit bind), null = try defaults list.
-    let effectivePkg: string | null;
-    if (pkg !== null && pkg.length === 0) {
-      effectivePkg = '';
-    } else if (pkg && pkg.length > 0) {
-      effectivePkg = sessionFailedPkgsRef.current.has(pkg) ? null : pkg;
-    } else {
-      effectivePkg = DEFAULT_RECOGNIZER_PKGS.find(p => !sessionFailedPkgsRef.current.has(p)) ?? null;
+    // pkg meanings: non-empty string = explicit package; '' ("system default")
+    // and null ("try defaults") both resolve to a pinned Google recognizer. We
+    // deliberately never do a bare start (which would hand STT to Android's
+    // registered default recognizer — on some devices a third-party app that
+    // can't serve STT). See resolveEffectivePkg for the full rationale.
+    const effectivePkg = resolveEffectivePkg(pkg, (p) =>
+      sessionFailedPkgsRef.current.has(p),
+    );
+    if (pkg && pkg.length > 0 && effectivePkg !== pkg) {
+      // The requested package already failed this session and was swapped for a
+      // pinned fallback (or none) — leave a breadcrumb so field logs explain the
+      // swap instead of silently routing to a different recognizer.
+      logEventRef.current('pkg.substituted', { requested: pkg, used: effectivePkg });
     }
     if (effectivePkg === null) {
       if (!detectionRanRef.current) {
@@ -540,21 +533,21 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       }
       return;
     }
-    lastAttemptedPkgRef.current = effectivePkg || null;
-    const lang = await pickBestLocale(effectivePkg || null);
+    lastAttemptedPkgRef.current = effectivePkg;
+    const lang = await pickBestLocale(effectivePkg);
     // Session was stopped/flushed while we were awaiting locale — abort the
     // pending start so we don't open the mic with no active session. (Dropped
     // the `&& activeEngineRef==='ondevice'` qualifier: stopAndFlush clears the
     // engine ref, and only on-device starts reach here anyway.)
     if (!pressActiveRef.current) return;
-    logEventRef.current('start.request', { pkg: effectivePkg || '(system-default)', lang });
+    logEventRef.current('start.request', { pkg: effectivePkg, lang });
     try {
       ExpoSpeechRecognitionModule.start({
         lang,
         interimResults: true,
         maxAlternatives: 1,
         continuous: true,
-        ...(effectivePkg ? { androidRecognitionServicePackage: effectivePkg } : {}),
+        androidRecognitionServicePackage: effectivePkg,
         androidIntentOptions: { EXTRA_LANGUAGE_MODEL: SODA_DICTATION_MODEL },
       });
       started.current = true;
@@ -586,6 +579,26 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       // explicit pkg, which is exactly what just failed — an infinite loop.
       // Skip straight to the no-service sheet (with diagnostics) instead.
       const realHits = available.filter((o) => o.pkg !== '' && !sessionFailedPkgsRef.current.has(o.pkg));
+
+      // Prefer a known-good pinned recognizer (Google's on-device engine) over
+      // any third-party RecognitionService that happens to be installed. Auto-use
+      // it without a picker and queue the rest as failover. This is the fix for an
+      // installed app (e.g. another assistant) registering a recognizer that
+      // getSpeechRecognitionServices() surfaces but that can't actually serve STT.
+      const pinnedHit = realHits.find((o) => isPinnedRecognizer(o.pkg));
+      if (pinnedHit) {
+        await AsyncStorage.setItem(STT_RECOGNIZER_PKG_KEY, pinnedHit.pkg);
+        await AsyncStorage.setItem(STT_RECOGNIZER_LABEL_KEY, pinnedHit.label);
+        showErrRef.current(`Using ${pinnedHit.label}`, 1500);
+        // Failover only among other pinned (Google) recognizers — never queue a
+        // third-party RecognitionService that can't serve STT.
+        failoverChainRef.current = realHits
+          .filter((o) => o.pkg !== pinnedHit.pkg && isPinnedRecognizer(o.pkg))
+          .map((o) => o.pkg);
+        await startRecognizerRef.current(pinnedHit.pkg);
+        return;
+      }
+
       if (realHits.length === 0) {
         failoverChainRef.current = [];
         showErrRef.current(
@@ -610,8 +623,12 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       // Multi-service: seed the failover chain with every detected package
       // (minus the one we'll show the picker for) so that, once the user
       // picks, subsequent failures can transparently try the rest.
+      // Keep the System Default sentinel ('') in the failover chain as an internal
+      // last resort, but don't offer it in the picker: with the pinned-recognizer
+      // hardening it no longer does a bare start (it resolves to a pinned Google
+      // engine), so presenting it as a distinct "System Default" choice would mislead.
       failoverChainRef.current = available.map((o) => o.pkg);
-      setPickerOptions(available);
+      setPickerOptions(available.filter((o) => o.pkg !== ''));
       setPickerVisible(true);
     } catch (e: unknown) {
       setDetecting(false);
