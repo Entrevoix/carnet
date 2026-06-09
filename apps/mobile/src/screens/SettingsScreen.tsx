@@ -502,6 +502,26 @@ export default function SettingsScreen() {
           Doubles the OmniRoute API spend per audio capture. Skip if you only
           transcribe occasionally.
         </HelperText>
+        <List.Item
+          title="Rich editor (experimental)"
+          description={
+            form.richEditorEnabled
+              ? "Edit notes visually (WYSIWYG); still saves markdown on disk"
+              : "Off — edit raw markdown with the formatting toolbar"
+          }
+          left={(p) => <List.Icon {...p} icon="format-text" />}
+          right={() => (
+            <Switch
+              value={form.richEditorEnabled}
+              onValueChange={(next) => update({ richEditorEnabled: next })}
+            />
+          )}
+          style={styles.notificationRow}
+        />
+        <HelperText type="info" visible>
+          Experimental visual editor for note editing. Notes stay markdown;
+          underscores in prose may pick up backslash-escapes. Off by default.
+        </HelperText>
       </View>
 
       <View style={styles.notificationSection}>
