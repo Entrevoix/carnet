@@ -152,7 +152,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
   };
 
   const removeAttachment = (index: number): void => {
-    voiceRef.current?.stopAndFlush();
+    // No stopAndFlush() here: removing a staged chip is a pure state update with
+    // no Activity switch, so dictation isn't interrupted — flushing would only
+    // force-stop the mic mid-sentence. The picker path (addAttachment) is the one
+    // that backgrounds the app and needs the flush.
     setPending((prev) => prev.filter((_, i) => i !== index));
   };
 

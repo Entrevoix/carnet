@@ -19,6 +19,8 @@ import {
   orderRecognizerCandidates,
   isPinnedRecognizer,
   resolveEffectivePkg,
+  pinnedFailoverChain,
+  composeFlush,
 } from './recognizerSelect';
 
 // Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
@@ -587,14 +589,18 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       // getSpeechRecognitionServices() surfaces but that can't actually serve STT.
       const pinnedHit = realHits.find((o) => isPinnedRecognizer(o.pkg));
       if (pinnedHit) {
+        // TODO(stt): we persist the pinned pkg BEFORE start() proves it works.
+        // On Pixel these engines are known-good, but on a non-Google device where
+        // com.google.android.tts is enumerated-but-broken this re-persists +
+        // re-fails each launch before reaching the no-service sheet. To fully
+        // honor "don't persist until success", move this write to the first
+        // successful `result` event (stage it in a pendingPersistRef).
         await AsyncStorage.setItem(STT_RECOGNIZER_PKG_KEY, pinnedHit.pkg);
         await AsyncStorage.setItem(STT_RECOGNIZER_LABEL_KEY, pinnedHit.label);
         showErrRef.current(`Using ${pinnedHit.label}`, 1500);
         // Failover only among other pinned (Google) recognizers — never queue a
         // third-party RecognitionService that can't serve STT.
-        failoverChainRef.current = realHits
-          .filter((o) => o.pkg !== pinnedHit.pkg && isPinnedRecognizer(o.pkg))
-          .map((o) => o.pkg);
+        failoverChainRef.current = pinnedFailoverChain(realHits, pinnedHit.pkg);
         await startRecognizerRef.current(pinnedHit.pkg);
         return;
       }
@@ -756,6 +762,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         //    than bouncing back through detection to the same picker.
         if (FAILOVER_CODES.has(code) && failoverChainRef.current.length > 0) {
           const nextPkg = failoverChainRef.current.shift()!;
+          // '' is the terminal sentinel: resolveEffectivePkg maps it back to a
+          // pinned engine, so it only does anything if a pinned pkg has since
+          // recovered this session; otherwise it no-ops into the no-service
+          // sheet. Intentionally kept in the chain, not dead code.
           const label = nextPkg ? labelForPackage(nextPkg) : 'System Default';
           showErrRef.current(`Retrying with ${label}…`, 2000);
           await startRecognizerRef.current(nextPkg);
@@ -831,6 +841,17 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       clearWatchdogRef.current();
       const text = composeText();
 
+      // KNOWN EDGE (deferred): a native `end` for a flushed/stopped session can
+      // arrive AFTER a new session has started — the picker that triggers
+      // stopAndFlush backgrounds the app and delays `end`. flushedExternallyRef
+      // is reset at session start to self-heal, which leaves a small window where
+      // a stale `end` could be misread as the new session's. A session epoch would
+      // close it (bump a sessionEpochRef at each start, capture it per start(),
+      // and bail here if it has moved), but that needs threading through the
+      // result/end/error listeners plus on-device verification, so it's deferred.
+      // Low probability in practice: stopOnDevice() usually delivers `end` before
+      // the user can return from the picker and re-tap.
+
       // Tap-to-toggle: if user hasn't tapped stop yet (pressActiveRef still
       // true), Soda ended on its own (silence/timeout). Accumulate the text
       // from this segment and auto-restart after a brief delay.
@@ -870,9 +891,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       }
 
       // User tapped stop (or whisper/max-duration) — send accumulated + final.
-      const finalText = sessionTextRef.current
-        ? (text ? `${sessionTextRef.current} ${text}` : sessionTextRef.current)
-        : text;
+      const finalText = composeFlush(sessionTextRef.current, text);
       if (finalText) onTranscriptRef.current(finalText, true);
       sessionTextRef.current = '';
       resetAccumulator();
@@ -1064,25 +1083,35 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     if (!pressActiveRef.current) return;
     clearMaxTimer();
     const engine = activeEngineRef.current;
+    // Tear the session down BEFORE running any parent code below, so a throw
+    // from onTranscript can't strand the mic or wedge pressActiveRef.
+    pressActiveRef.current = false;
+    activeEngineRef.current = null;
     if (engine === 'whisper') {
-      // Whisper has no interim; finishing transcribes the recording + commits
-      // on return. Nothing to flush synchronously.
-      pressActiveRef.current = false;
-      activeEngineRef.current = null;
+      // Whisper has no interim AND doesn't go through the ExpoSpeechRecognition
+      // result/end/error listeners (it records via expo-av), so there's no
+      // end-listener re-commit to suppress and nothing to flush synchronously —
+      // finishing transcribes the recording + commits on return. The
+      // flushedExternallyRef guard is deliberately NOT set here.
       void finishWhisper();
       return;
     }
-    const partial = composeText();
-    const text = sessionTextRef.current
-      ? (partial ? `${sessionTextRef.current} ${partial}` : sessionTextRef.current)
-      : partial;
-    if (text) onTranscriptRef.current(text, true);
+    const text = composeFlush(sessionTextRef.current, composeText());
     flushedExternallyRef.current = true; // suppress the end-listener re-commit
     sessionTextRef.current = '';
     resetAccumulator();
-    pressActiveRef.current = false;
-    activeEngineRef.current = null;
     stopOnDevice(); // release the mic; `end` fires and short-circuits on the flag
+    // Emit LAST and contained: teardown is done and the mic is released, so a
+    // throwing parent callback can't leave the recognizer running.
+    if (text) {
+      try {
+        onTranscriptRef.current(text, true);
+      } catch (e: unknown) {
+        logEventRef.current('flush.emit.throw', {
+          msg: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
   }, [composeText, finishWhisper, resetAccumulator, clearMaxTimer, stopOnDevice]);
 
   useImperativeHandle(ref, () => ({ stopAndFlush }), [stopAndFlush]);

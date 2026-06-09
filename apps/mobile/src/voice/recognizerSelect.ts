@@ -1,8 +1,9 @@
 // Copyright (C) 2025 Entrevoix, Inc.
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Pure recognizer-selection helpers, split out of VoiceButton so they can be
-// unit-tested without pulling in React Native / the native speech module.
+// Pure helpers for the voice module (recognizer selection + transcript
+// composition), split out of VoiceButton so they can be unit-tested without
+// pulling in React Native / the native speech module.
 
 export interface RecognizerOption {
   pkg: string;
@@ -53,6 +54,31 @@ export function resolveEffectivePkg(
     return hasFailed(requested) ? firstAvailablePinned : requested;
   }
   return firstAvailablePinned;
+}
+
+/**
+ * Build the failover queue used after auto-selecting a pinned recognizer.
+ * Includes ONLY the other pinned (Google) recognizers — never a third-party
+ * RecognitionService, which can't serve STT and must never re-enter failover —
+ * and excludes the recognizer we just chose.
+ */
+export function pinnedFailoverChain(
+  realHits: readonly RecognizerOption[],
+  chosenPkg: string,
+): string[] {
+  return realHits
+    .filter((o) => o.pkg !== chosenPkg && isPinnedRecognizer(o.pkg))
+    .map((o) => o.pkg);
+}
+
+/**
+ * Join the accumulated session text with the current segment's partial into the
+ * final transcript to commit. Shared by the `end`-listener user-stop flush and
+ * the external stopAndFlush() so both promote the in-progress partial to final
+ * identically (`session` + ' ' + `partial`, dropping whichever side is empty).
+ */
+export function composeFlush(sessionText: string, partial: string): string {
+  return sessionText ? (partial ? `${sessionText} ${partial}` : sessionText) : partial;
 }
 
 /**

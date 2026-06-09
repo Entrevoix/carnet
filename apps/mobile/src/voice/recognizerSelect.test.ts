@@ -5,6 +5,8 @@ import { describe, it, expect } from 'vitest';
 import {
   orderRecognizerCandidates,
   resolveEffectivePkg,
+  pinnedFailoverChain,
+  composeFlush,
   isPinnedRecognizer,
   DEFAULT_RECOGNIZER_PKGS,
   SYSTEM_DEFAULT_RECOGNIZER,
@@ -132,5 +134,43 @@ describe('isPinnedRecognizer', () => {
   it('rejects third-party recognizers', () => {
     expect(isPinnedRecognizer('com.anthropic.claude')).toBe(false);
     expect(isPinnedRecognizer('')).toBe(false);
+  });
+});
+
+describe('pinnedFailoverChain', () => {
+  const opt = (pkg: string) => ({ pkg, label: label(pkg) });
+
+  it('queues only the other pinned recognizers, excluding the chosen one', () => {
+    const realHits = [opt(PINNED_1), opt(PINNED_2), opt('com.anthropic.claude')];
+    expect(pinnedFailoverChain(realHits, PINNED_1)).toEqual([PINNED_2]);
+  });
+
+  it('SECURITY: never queues a third-party RecognitionService', () => {
+    // The hijack property: a rogue service that can't serve STT must never be
+    // retried via failover, even when enumerated as a real hit.
+    const realHits = [opt(PINNED_1), opt(PINNED_2), opt('com.vendor.zeta'), opt('com.anthropic.claude')];
+    const chain = pinnedFailoverChain(realHits, PINNED_1);
+    expect(chain).not.toContain('com.vendor.zeta');
+    expect(chain).not.toContain('com.anthropic.claude');
+    expect(chain).toEqual([PINNED_2]); // only the other pinned recognizer survives
+  });
+
+  it('returns an empty chain when the chosen pinned pkg is the only pinned hit', () => {
+    expect(pinnedFailoverChain([opt(PINNED_1), opt('com.vendor.zeta')], PINNED_1)).toEqual([]);
+  });
+});
+
+describe('composeFlush', () => {
+  it('joins session text and the in-progress partial with a space', () => {
+    expect(composeFlush('hello there', 'world now')).toBe('hello there world now');
+  });
+  it('returns the session text alone when there is no partial', () => {
+    expect(composeFlush('hello there', '')).toBe('hello there');
+  });
+  it('returns the partial alone when there is no session text', () => {
+    expect(composeFlush('', 'world now')).toBe('world now');
+  });
+  it('returns empty string when both are empty', () => {
+    expect(composeFlush('', '')).toBe('');
   });
 });
