@@ -85,6 +85,7 @@ import {
   safLastSegment,
   injectImageEmbed,
   stripFrontmatter,
+  splitFrontmatter,
   extractFrontmatterField,
   mimeFromFilename,
   readPairedBinaryFromNote,
@@ -631,6 +632,52 @@ describe("stripFrontmatter", () => {
   it("returns input unchanged on an unterminated frontmatter block", () => {
     const md = "---\nkind: idea\n\nno closing fence\n";
     expect(stripFrontmatter(md)).toBe(md);
+  });
+});
+
+// ── splitFrontmatter (byte-exact header/body split for the WYSIWYG edit path) ─
+
+describe("splitFrontmatter", () => {
+  it("reassembles byte-for-byte: header + body === input", () => {
+    const md = "---\nkind: idea\ntags: [a, b]\n---\n\n# Title\n\nbody\n";
+    const { header, body } = splitFrontmatter(md);
+    expect(header + body).toBe(md);
+  });
+
+  it("keeps the closing fence + its newline in the header (never merges into body)", () => {
+    const md = "---\nkind: idea\n---\n\n# Title\n";
+    const { header, body } = splitFrontmatter(md);
+    expect(header).toBe("---\nkind: idea\n---\n");
+    expect(header.endsWith("---\n")).toBe(true);
+    expect(body).toBe("\n# Title\n");
+  });
+
+  it("returns empty header + whole input when there is no frontmatter", () => {
+    const md = "# Title\n\nbody\n";
+    expect(splitFrontmatter(md)).toEqual({ header: "", body: md });
+  });
+
+  it("treats an unterminated frontmatter block as no frontmatter", () => {
+    const md = "---\nkind: idea\n\nno closing fence\n";
+    expect(splitFrontmatter(md)).toEqual({ header: "", body: md });
+  });
+
+  it("handles a frontmatter-only note (empty body)", () => {
+    const md = "---\nkind: idea\n---\n";
+    const { header, body } = splitFrontmatter(md);
+    expect(header).toBe(md);
+    expect(body).toBe("");
+    expect(header + body).toBe(md);
+  });
+
+  it("round-trips reattach with an editor-normalized body (no leading blank line)", () => {
+    // Simulates the WYSIWYG save: the editor drops the blank line after the
+    // fence; the header's trailing newline still keeps the fence on its own line.
+    const md = "---\nkind: idea\n---\n\nold body\n";
+    const { header } = splitFrontmatter(md);
+    const reattached = header + "new body\n";
+    expect(reattached).toBe("---\nkind: idea\n---\nnew body\n");
+    expect(reattached.startsWith("---\nkind: idea\n---\n")).toBe(true);
   });
 });
 
