@@ -46,6 +46,7 @@ import {
   readPairedBinaryUri,
   resolvePairedUri,
   slugify,
+  splitFrontmatter,
   stripFrontmatter,
   stripPairedBinaryLinks,
   updateNote,
@@ -60,12 +61,14 @@ import {
 } from "../lib/markdownEdit";
 import { pickAttachment } from "../lib/attachments";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
+import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
 import { enrichSharedImage, transcribeAudio } from "../lib/omniroute";
 import {
   removeFromHistory,
   updateCaptureTitle,
   type CaptureEntry,
 } from "../lib/storage";
+import { getSettings } from "../lib/settings";
 
 type Props = NativeStackScreenProps<RootStackParamList, "RecentDetail">;
 
@@ -99,6 +102,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // image tap can't mutate `draft` after handleSaveEdit captured it (which
   // would be discarded when the save exits edit mode).
   const [saving, setSaving] = useState(false);
+  // Rich (WYSIWYG / TenTap) editor, gated behind the off-by-default
+  // richEditorEnabled setting. When on, edit mode mounts WysiwygEditor over the
+  // note BODY only: frontmatter is split off on enter and reattached byte-exact
+  // on save, so the editor never sees or rewrites the `---` block.
+  const [richEditorEnabled, setRichEditorEnabled] = useState(false);
+  const [wysiwygSeed, setWysiwygSeed] = useState<string>("");
+  const wysiwygRef = useRef<WysiwygEditorRef>(null);
+  const editHeaderRef = useRef<string>("");
   const insertingImageRef = useRef(false);
   // Guard against fast double-taps on Delete — the in-flight archive can
   // race with a second handler call and produce a confusing UI state.
@@ -121,6 +132,20 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+    };
+  }, []);
+
+  // Load the rich-editor toggle once on mount (off by default; a change in
+  // Settings takes effect next time this screen opens).
+  useEffect(() => {
+    let active = true;
+    getSettings()
+      .then((s) => {
+        if (active) setRichEditorEnabled(s.richEditorEnabled);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
     };
   }, []);
 
@@ -252,16 +277,28 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // True iff the user is in edit mode AND has typed something different
   // from the on-disk body. Drives the beforeRemove guard + Cancel button's
   // decision to skip the discard dialog when there's nothing to discard.
-  const isDirty = editMode && draft !== body;
+  // The WYSIWYG editor holds its content inside the WebView; diffing it per
+  // keystroke would cost a bridge round-trip each time, so we conservatively
+  // treat any rich-editor session as dirty — the discard prompt may appear with
+  // no real change, but edits are never silently lost.
+  const isDirty = editMode && (richEditorEnabled ? true : draft !== body);
 
   const enterEdit = useCallback(() => {
-    setDraft(body);
     setEditError(null);
-    setSelection({ start: 0, end: 0 });
-    setForceSelection(null);
-    setPreview(false);
+    if (richEditorEnabled) {
+      // Split frontmatter off and stash it; the editor only ever sees the body,
+      // and the header is reattached byte-exact on save (splitFrontmatter docs).
+      const { header, body: noteBody } = splitFrontmatter(body);
+      editHeaderRef.current = header;
+      setWysiwygSeed(noteBody);
+    } else {
+      setDraft(body);
+      setSelection({ start: 0, end: 0 });
+      setForceSelection(null);
+      setPreview(false);
+    }
     setEditMode(true);
-  }, [body]);
+  }, [body, richEditorEnabled]);
 
   const exitEdit = useCallback(() => {
     setEditMode(false);
@@ -386,6 +423,61 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     }
     savingEditRef.current = false;
   }, [draft, entry.filepath, entry.id, entry.title]);
+
+  // WYSIWYG save: pull the edited body back out of the WebView as markdown, then
+  // reattach the stashed frontmatter header byte-exact. Mirrors handleSaveEdit's
+  // disk-then-title flow and its guards (in-flight ref, mounted ref, banner).
+  const handleSaveWysiwyg = useCallback(async () => {
+    if (savingEditRef.current) return;
+    savingEditRef.current = true;
+    setSaving(true);
+    setEditError(null);
+    let next: string;
+    try {
+      // Race a timeout so a never-resolving bridge (e.g. Save tapped before the
+      // editor mounted) surfaces as an error instead of a stuck, disabled UI.
+      const editedBody = await Promise.race([
+        wysiwygRef.current?.getMarkdown() ??
+          Promise.reject(new Error("Editor not mounted")),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Editor timed out — try again.")), 5000),
+        ),
+      ]);
+      next = editHeaderRef.current + editedBody;
+      await updateNote(entry.filepath, next);
+      if (!mountedRef.current) {
+        savingEditRef.current = false;
+        return;
+      }
+      setBody(next);
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.warn("[RecentDetail] save (rich) failed:", reason);
+      if (mountedRef.current) {
+        setEditError(reason);
+        setSaving(false);
+      }
+      savingEditRef.current = false;
+      return;
+    }
+
+    // Best-effort recents-title refresh, same as the markdown path.
+    const newTitle = deriveTitle(next) || entry.title;
+    if (newTitle !== entry.title) {
+      try {
+        await updateCaptureTitle(entry.id, newTitle);
+      } catch (e: unknown) {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.warn("[RecentDetail] title update failed:", reason);
+      }
+    }
+
+    if (mountedRef.current) {
+      setEditMode(false);
+      setSaving(false);
+    }
+    savingEditRef.current = false;
+  }, [entry.filepath, entry.id, entry.title]);
 
   // Unsaved-changes guard. preventDefault + show dialog when the user
   // tries to navigate away with dirty edits. Re-subscribes whenever
@@ -612,52 +704,67 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
 
         {editMode ? (
           <Card style={styles.card}>
-            <Card.Title title="Editing" subtitle="Markdown + frontmatter" />
+            <Card.Title
+              title="Editing"
+              subtitle={
+                richEditorEnabled ? "Rich text · body only" : "Markdown + frontmatter"
+              }
+            />
             <Card.Content>
-              <MarkdownToolbar
-                onFormat={applyFmt}
-                onInsertImage={insertImage}
-                disabled={saving}
-              />
-              <TextInput
-                mode="outlined"
-                multiline
-                numberOfLines={16}
-                value={draft}
-                onChangeText={(t) => {
-                  setDraft(t);
-                  // User is typing — stop forcing the caret so the IME owns it.
-                  if (forceSelection) setForceSelection(null);
-                }}
-                selection={forceSelection ?? undefined}
-                onSelectionChange={(e) => {
-                  setSelection(e.nativeEvent.selection);
-                  if (forceSelection) setForceSelection(null);
-                }}
-                style={styles.editor}
-                autoCorrect={false}
-                autoCapitalize="none"
-              />
-              {preview ? (
-                <View style={styles.editPreview}>
-                  <Markdown style={markdownStyle(theme)}>
-                    {stripPairedBinaryLinks(stripFrontmatter(draft))}
-                  </Markdown>
+              {richEditorEnabled ? (
+                <View style={styles.wysiwygContainer}>
+                  <WysiwygEditor ref={wysiwygRef} value={wysiwygSeed} />
                 </View>
-              ) : null}
+              ) : (
+                <>
+                  <MarkdownToolbar
+                    onFormat={applyFmt}
+                    onInsertImage={insertImage}
+                    disabled={saving}
+                  />
+                  <TextInput
+                    mode="outlined"
+                    multiline
+                    numberOfLines={16}
+                    value={draft}
+                    onChangeText={(t) => {
+                      setDraft(t);
+                      // User is typing — stop forcing the caret so the IME owns it.
+                      if (forceSelection) setForceSelection(null);
+                    }}
+                    selection={forceSelection ?? undefined}
+                    onSelectionChange={(e) => {
+                      setSelection(e.nativeEvent.selection);
+                      if (forceSelection) setForceSelection(null);
+                    }}
+                    style={styles.editor}
+                    autoCorrect={false}
+                    autoCapitalize="none"
+                  />
+                  {preview ? (
+                    <View style={styles.editPreview}>
+                      <Markdown style={markdownStyle(theme)}>
+                        {stripPairedBinaryLinks(stripFrontmatter(draft))}
+                      </Markdown>
+                    </View>
+                  ) : null}
+                </>
+              )}
             </Card.Content>
             <Card.Actions>
-              <Button
-                mode="text"
-                icon={preview ? "eye-off" : "eye"}
-                onPress={() => setPreview((v) => !v)}
-              >
-                {preview ? "Hide preview" : "Preview"}
-              </Button>
+              {!richEditorEnabled ? (
+                <Button
+                  mode="text"
+                  icon={preview ? "eye-off" : "eye"}
+                  onPress={() => setPreview((v) => !v)}
+                >
+                  {preview ? "Hide preview" : "Preview"}
+                </Button>
+              ) : null}
               <Button onPress={cancelEdit}>Cancel</Button>
               <Button
                 mode="contained"
-                onPress={handleSaveEdit}
+                onPress={richEditorEnabled ? handleSaveWysiwyg : handleSaveEdit}
                 disabled={!isDirty}
               >
                 Save
@@ -903,6 +1010,11 @@ const styles = StyleSheet.create({
   editor: {
     fontFamily: "monospace",
     minHeight: 320,
+  },
+  wysiwygContainer: {
+    // The WebView/RichText needs a bounded height inside the ScrollView; the
+    // editor scrolls internally and its toolbar anchors to the keyboard.
+    height: 420,
   },
   editPreview: {
     marginTop: 12,
