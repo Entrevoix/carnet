@@ -4,7 +4,42 @@ import { EditorContent } from '@tiptap/react';
 import { useTenTap, TenTapStartKit } from '@10play/tentap-editor';
 import { Markdown } from '@tiptap/markdown';
 import CodeBlock from '@tiptap/extension-code-block';
+import { Extension } from '@tiptap/core';
+import { Plugin } from '@tiptap/pm/state';
 import { MarkdownBridge } from '../src/bridges/MarkdownBridge';
+
+/**
+ * Paste raw markdown as formatted content. The official @tiptap/markdown (v3) has no
+ * paste option (unlike the community `tiptap-markdown`'s transformPastedText), so we add
+ * a ProseMirror handler: a plain-text paste (no HTML clipboard payload) is parsed as
+ * markdown and inserted at the cursor; rich/HTML pastes fall through to the default
+ * handler. Typing markdown shortcuts already works via TipTap input rules — this covers
+ * pasting a whole markdown block at once.
+ */
+const MarkdownPaste = Extension.create({
+  name: 'markdownPaste',
+  addProseMirrorPlugins() {
+    const editor = this.editor;
+    return [
+      new Plugin({
+        props: {
+          handlePaste(_view, event) {
+            const clipboard = event.clipboardData;
+            if (!clipboard) return false;
+            // Real rich content (web pages, docs) carries text/html — let the default
+            // handler take it so we don't mangle pasted formatting.
+            if (clipboard.getData('text/html').trim()) return false;
+            const text = clipboard.getData('text/plain');
+            if (!text) return false;
+            event.preventDefault();
+            editor.commands.insertContent(text, { contentType: 'markdown' });
+            return true;
+          },
+        },
+      }),
+    ];
+  },
+});
 
 /**
  * The tiptap editor that runs INSIDE the TenTap WebView.
@@ -25,6 +60,7 @@ export const MarkdownEditor = () => {
       extensions: [
         CodeBlock,
         Markdown.configure({ markedOptions: { gfm: true } }), // gfm REQUIRED for "- [ ]" task parsing
+        MarkdownPaste,
       ],
     },
   });
