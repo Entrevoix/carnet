@@ -72,6 +72,7 @@ interface FormState {
   omniRouteTranscriptionModel: string;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
+  richEditorEnabled: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
 }
@@ -166,6 +167,7 @@ export default function SettingsScreen() {
         omniRouteTranscriptionModel: s.omniRouteTranscriptionModel,
         persistentNotificationEnabled: initialNotificationEnabled,
         autoTranscribeOnSave: s.autoTranscribeOnSave,
+        richEditorEnabled: s.richEditorEnabled,
         captureFolderPath: s.captureFolderPath,
         promptOverrides: s.promptOverrides,
       });
@@ -196,6 +198,7 @@ export default function SettingsScreen() {
         form.omniRouteTranscriptionModel || DEFAULT_TRANSCRIPTION_MODEL,
       persistentNotificationEnabled: form.persistentNotificationEnabled,
       autoTranscribeOnSave: form.autoTranscribeOnSave,
+      richEditorEnabled: form.richEditorEnabled,
       // Pass an empty string here so saveSettings doesn't touch the key.
       // Then we handle the key write separately below.
       omniRouteApiKey: "",
@@ -498,6 +501,26 @@ export default function SettingsScreen() {
         <HelperText type="info" visible>
           Doubles the OmniRoute API spend per audio capture. Skip if you only
           transcribe occasionally.
+        </HelperText>
+        <List.Item
+          title="Rich editor (experimental)"
+          description={
+            form.richEditorEnabled
+              ? "Edit notes visually (WYSIWYG); still saves markdown on disk"
+              : "Off — edit raw markdown with the formatting toolbar"
+          }
+          left={(p) => <List.Icon {...p} icon="format-text" />}
+          right={() => (
+            <Switch
+              value={form.richEditorEnabled}
+              onValueChange={(next) => update({ richEditorEnabled: next })}
+            />
+          )}
+          style={styles.notificationRow}
+        />
+        <HelperText type="info" visible>
+          Experimental visual editor for note editing. Notes stay markdown;
+          underscores in prose may pick up backslash-escapes. Off by default.
         </HelperText>
       </View>
 
