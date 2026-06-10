@@ -4,6 +4,18 @@ import { RichText, Toolbar, useEditorBridge, TenTapStartKit } from '@10play/tent
 import { editorHtml } from '../../editor-web/generated/editorHtml';
 import { MarkdownBridge, awaitMarkdownResponse } from '../bridges/MarkdownBridge';
 
+// Higher-contrast toolbar icons than TenTap's washed-out greys. Deep-merged over
+// the default theme by useEditorBridge (lodash merge), so only these keys change:
+// active icons go near-black, and the disabled state (shown whenever the editor
+// isn't focused) stays clearly visible instead of fading to a faint #CACACA.
+const EDITOR_THEME = {
+  toolbar: {
+    icon: { tintColor: '#1F2430' },
+    iconDisabled: { tintColor: '#8A9099' },
+    iconWrapperDisabled: { opacity: 0.55 },
+  },
+};
+
 export interface WysiwygEditorRef {
   /** Resolve the current editor content as a markdown string (read on save). */
   getMarkdown: () => Promise<string>;
@@ -33,6 +45,10 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
       // initialContent is HTML-only; the markdown body is injected after mount
       // via editor.setMarkdown (markdown passed here would be parsed as HTML).
       initialContent: '<p></p>',
+      // Darken the toolbar icons. TenTap's defaults are low-contrast greys
+      // (#898989 active, #CACACA @ 0.3 opacity when disabled) which read as
+      // "greyed out" against the white bar; deep-merged over the defaults.
+      theme: EDITOR_THEME,
     });
     const initializedRef = useRef(false);
 
@@ -69,8 +85,21 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
 
     return (
       <View style={styles.container}>
-        <RichText editor={editor} onLoad={injectBody} />
-        <Toolbar editor={editor} />
+        {/* Formatting toolbar (bold/italic/headings/lists/code/link/quote) docked at
+            the TOP of the editor, always visible. TenTap's Toolbar auto-hides when the
+            keyboard is down (hidden===undefined), so we force hidden={false}.
+            We dock it at the top rather than floating above the keyboard: the
+            above-keyboard approach needs a native keyboard-inset module
+            (react-native-keyboard-controller) whose transitive Google-Maven deps
+            can't be fetched in this build environment. RN's own Keyboard height
+            under-reports the Android edge-to-edge IME (it omits the suggestion strip),
+            so a JS-only above-keyboard dock would tuck the toolbar behind that strip. */}
+        <View style={styles.toolbarBar}>
+          <Toolbar editor={editor} hidden={false} />
+        </View>
+        <View style={styles.editor}>
+          <RichText editor={editor} onLoad={injectBody} />
+        </View>
       </View>
     );
   }
@@ -78,4 +107,9 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  // Pin the toolbar to a single row. TenTap's toolbarBody has flex:1, so as a
+  // flex-column child it would otherwise balloon to fill half the screen; a
+  // fixed-height parent forces it to its intended ~48px row.
+  toolbarBar: { height: 48 },
+  editor: { flex: 1 },
 });

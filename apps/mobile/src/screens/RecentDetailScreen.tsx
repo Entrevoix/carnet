@@ -636,6 +636,57 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // card below (the markdown renderer can't resolve the relative URIs anyway).
   const renderBody = stripPairedBinaryLinks(stripFrontmatter(body));
 
+  // Rich (WYSIWYG) editing takes the whole screen so TenTap's formatting toolbar
+  // can dock above the keyboard. Frontmatter is split off and reattached on save,
+  // so the editor only shows the body — the path/attachments cards aren't needed
+  // here, and the scrolling card layout would trap the toolbar in a small box.
+  if (editMode && richEditorEnabled) {
+    return (
+      <View style={[styles.richRoot, { backgroundColor: theme.colors.background }]}>
+        {editError ? (
+          <Banner visible icon="alert" actions={[]}>
+            {`Save failed: ${editError}`}
+          </Banner>
+        ) : null}
+        <View style={styles.richBar}>
+          <Text variant="titleMedium">Editing · Rich text</Text>
+          <View style={styles.richBarActions}>
+            <Button onPress={cancelEdit} disabled={saving}>
+              Cancel
+            </Button>
+            <Button
+              mode="contained"
+              onPress={handleSaveWysiwyg}
+              loading={saving}
+              disabled={saving}
+            >
+              Save
+            </Button>
+          </View>
+        </View>
+        <View style={styles.richEditor}>
+          <WysiwygEditor ref={wysiwygRef} value={wysiwygSeed} />
+        </View>
+        <Portal>
+          <Dialog visible={discardVisible} onDismiss={keepEditing}>
+            <Dialog.Title>Discard changes?</Dialog.Title>
+            <Dialog.Content>
+              <Text variant="bodyMedium">
+                You have unsaved edits. Discard them and leave?
+              </Text>
+            </Dialog.Content>
+            <Dialog.Actions>
+              <Button onPress={keepEditing}>Keep editing</Button>
+              <Button onPress={confirmDiscard} textColor={theme.colors.error}>
+                Discard
+              </Button>
+            </Dialog.Actions>
+          </Dialog>
+        </Portal>
+      </View>
+    );
+  }
+
   return (
     <>
       <ScrollView contentContainerStyle={styles.content}>
@@ -1016,6 +1067,20 @@ const styles = StyleSheet.create({
     // editor scrolls internally and its toolbar anchors to the keyboard.
     height: 420,
   },
+  // Full-screen rich-edit layout (lets the formatting toolbar dock above the keyboard).
+  richRoot: { flex: 1 },
+  richBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingLeft: 16,
+    paddingRight: 8,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#8884",
+  },
+  richBarActions: { flexDirection: "row", alignItems: "center", gap: 4 },
+  richEditor: { flex: 1 },
   editPreview: {
     marginTop: 12,
     paddingTop: 12,
