@@ -12,6 +12,25 @@ The risky parts are **already de-risked**. Fidelity is proven; the build recipe 
 
 ---
 
+## UPDATE 2026-06-09 — gate GREEN + editor built (Tasks 6–7 done); 3 handoff bugs corrected
+
+Branch: **`feat/wysiwyg-native-editor`** (off `main`; the old `feat/wysiwyg-tentap-editor` is stale/superseded — do not reuse). Two commits:
+- `ba52f87` — Task 6 GATE: `@10play/tentap-editor@1.0.1` + `react-native-webview@13.15.0` COMPILE on Expo SDK54/RN0.81/NewArch (`prebuild --clean` + `assembleRelease` BUILD SUCCESSFUL, 106 MB APK). **On-device launch NOT yet verified — Pixel was off USB.**
+- `bd662e9` — Task 7: editor-web bundle + `MarkdownBridge` + `WysiwygEditor`. `npm run editor:build` builds (93 modules, 924 KB); `tsc` clean; 323/323 vitest green.
+
+**THREE bugs in the recipe below were found by reading the installed node_modules. The steps below are NOT fully correct as written — trust the shipped code (`src/bridges/MarkdownBridge.ts`, `editor-web/MarkdownEditor.tsx`, `editor-web/vite.config.mts`) over this doc:**
+1. **Do NOT add `TaskItem` to MarkdownEditor extensions.** `TenTapStartKit`'s `TaskListBridge` already registers `TaskItem.configure({nested:true})` as a dep → re-adding is a tiptap v3 duplicate-extension **runtime crash**. (Step 2's `MarkdownEditor.tsx` snippet is wrong here.)
+2. **`TenTapStartKit` has NO code-block node** (`CodeBridge` is the inline `code` mark only; `code.ts` even has `//tiptapExtensionDeps:[CodeBlock]` commented out). Fenced code blocks — a must-have in the fidelity gate — would silently corrupt. FIX (shipped): add `CodeBlock` from `@tiptap/extension-code-block@^3.26.0`. Net MarkdownEditor extensions = `[CodeBlock, Markdown.configure({markedOptions:{gfm:true}})]` only.
+3. **`setContent` is tiptap v3:** `editor.commands.setContent(md, { contentType: 'markdown' })` (2 args), NOT the v2 `setContent(md, false, {...})` in Step 3.
+
+Other deltas from the recipe: buildEditor.js emits `editorHtml.js` (not `.ts`); node_modules is HOISTED to repo root (post-build path `../../node_modules/...`). Output dir is **`editor-web/generated/`** (NOT `build/` — that's gitignored); `editorHtml.js` is committed. The bundler is **vite 5 (rollup)** via `--legacy-peer-deps` + esbuild automatic JSX (vite 8/rolldown broke the `/web` alias; `@vitejs/plugin-react` dropped). Known dep debt: duplicate vite 5/7 + triple react-dom — do a clean `rm -rf node_modules && npm install` before the next build.
+
+**REMAINING (both need the Pixel reconnected — do them together so the wiring is QA'd immediately):**
+- **Task 9 — RecentDetail edit-mode switch** (Step 5 below). NOT started. Deterministic but edits a hot-path screen; wire it WITH the device so it's testable on the spot. Gated behind `richEditorEnabled` (off by default → zero risk to current behavior until flipped). Import: `import { WysiwygEditor } from '../components/WysiwygEditor'`; on save `const body = await editorRef.current.getMarkdown(); await updateNote(filepath, header + body)`.
+- **Task 11 — on-device QA** (Step 6). The editor's markdown FIDELITY is already proven headlessly (the 13-test gate); on-device QA is to confirm the WebView mounts, the bridge round-trips (setMarkdown/getMarkdown), and the toolbar works — plus frontmatter stays byte-identical.
+
+---
+
 ## Current state (what's done)
 
 | Item | Status | Where |
