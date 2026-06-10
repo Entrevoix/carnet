@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { RichText, Toolbar, useEditorBridge, TenTapStartKit } from '@10play/tentap-editor';
 import { editorHtml } from '../../editor-web/generated/editorHtml';
@@ -24,6 +24,9 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
   function WysiwygEditor({ value }, ref) {
     const editor = useEditorBridge({
       customSource: editorHtml,
+      // Give the WebView a real origin; without a baseUrl, Android loads with a
+      // null origin and the bundle's <script type="module"> can be blocked.
+      webviewBaseURL: 'https://localhost/',
       bridgeExtensions: [...TenTapStartKit, MarkdownBridge],
       autofocus: false,
       avoidIosKeyboard: true,
@@ -33,16 +36,24 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
     });
     const initializedRef = useRef(false);
 
-    useEffect(() => {
+    // Inject the note body once the editor is live. A setMarkdown sent before the
+    // WebView bridge is listening is silently dropped, and the ~800 KB bundle's
+    // cold start can outlast a blind timer — so anchor to the WebView load event
+    // (onLoad below) and re-send across a short staircase. Runs once, before any
+    // user edit; setMarkdown is idempotent.
+    const injectBody = useCallback(() => {
       if (initializedRef.current) return;
-      // TenTap 1.0.1 emits no "editor ready" event; the documented pattern is a
-      // short post-mount delay so the WebView bridge is live before we inject.
-      const timer = setTimeout(() => {
-        editor.setMarkdown(value);
-        initializedRef.current = true;
-      }, 150);
-      return () => clearTimeout(timer);
+      initializedRef.current = true;
+      [100, 400, 900].forEach((delay) =>
+        setTimeout(() => editor.setMarkdown(value), delay),
+      );
     }, [editor, value]);
+
+    // Fallback in case the WebView onLoad never fires.
+    useEffect(() => {
+      const timer = setTimeout(injectBody, 2500);
+      return () => clearTimeout(timer);
+    }, [injectBody]);
 
     useImperativeHandle(
       ref,
@@ -58,7 +69,7 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
 
     return (
       <View style={styles.container}>
-        <RichText editor={editor} />
+        <RichText editor={editor} onLoad={injectBody} />
         <Toolbar editor={editor} />
       </View>
     );
