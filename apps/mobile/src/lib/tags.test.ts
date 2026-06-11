@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addTag, mergeUserTags, suggestionsFor } from "./tags";
+import { addTag, applyTagsToHeader, mergeUserTags, sameTagSet, suggestionsFor } from "./tags";
 import { getFrontmatterTags } from "./frontmatter";
 
 // ── addTag ────────────────────────────────────────────────────────────────────
@@ -85,6 +85,60 @@ describe("mergeUserTags", () => {
   it("synthesizes a frontmatter block for an unfrontmattered note", () => {
     expect(mergeUserTags("# T\n\nbody\n", ["work"])).toBe(
       "---\ntags: [work]\n---\n# T\n\nbody\n",
+    );
+  });
+});
+
+// ── sameTagSet ────────────────────────────────────────────────────────────────
+
+describe("sameTagSet", () => {
+  it("is true for the same tags regardless of order", () => {
+    expect(sameTagSet(["a", "b"], ["b", "a"])).toBe(true);
+  });
+
+  it("is false on different length or membership", () => {
+    expect(sameTagSet(["a"], ["a", "b"])).toBe(false);
+    expect(sameTagSet(["a", "b"], ["a", "c"])).toBe(false);
+  });
+
+  it("is true for two empty lists", () => {
+    expect(sameTagSet([], [])).toBe(true);
+  });
+});
+
+// ── applyTagsToHeader ─────────────────────────────────────────────────────────
+
+describe("applyTagsToHeader", () => {
+  it("returns the header byte-exact when the tag set is unchanged", () => {
+    const header = "---\nkind: idea\ntags: [a, b]\n---\n";
+    // Reordered edit list, same set → no rewrite (preserves original formatting).
+    expect(applyTagsToHeader(header, ["b", "a"], ["a", "b"])).toBe(header);
+  });
+
+  it("does not add a tags field to a frontmatter-less note left untouched", () => {
+    expect(applyTagsToHeader("", [], [])).toBe("");
+  });
+
+  it("rewrites the tags line when a tag is added", () => {
+    const header = "---\nkind: idea\ntags: [a]\n---\n";
+    expect(applyTagsToHeader(header, ["a", "b"], ["a"])).toBe(
+      "---\nkind: idea\ntags: [a, b]\n---\n",
+    );
+  });
+
+  it("inserts a tags field into a header that had none", () => {
+    expect(applyTagsToHeader("---\nkind: idea\n---\n", ["work"], [])).toBe(
+      "---\nkind: idea\ntags: [work]\n---\n",
+    );
+  });
+
+  it("synthesizes a frontmatter block when adding tags to a header-less note", () => {
+    expect(applyTagsToHeader("", ["work"], [])).toBe("---\ntags: [work]\n---\n");
+  });
+
+  it("writes an empty array when the user clears every tag", () => {
+    expect(applyTagsToHeader("---\ntags: [a, b]\n---\n", [], ["a", "b"])).toBe(
+      "---\ntags: []\n---\n",
     );
   });
 });

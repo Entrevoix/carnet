@@ -48,3 +48,29 @@ export function mergeUserTags(markdown: string, userTags?: string[]): string {
   if (!userTags || userTags.length === 0) return markdown;
   return setFrontmatterTags(markdown, [...getFrontmatterTags(markdown), ...userTags]);
 }
+
+/** Order-independent equality of two tag lists (treated as sets). */
+export function sameTagSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const seen = new Set(a);
+  return b.every((tag) => seen.has(tag));
+}
+
+/**
+ * Reattach edited tags onto a note's stashed frontmatter header during a detail
+ * edit. When the tag set is unchanged from `originalTags`, the header is
+ * returned BYTE-EXACT (so editing only the body never rewrites the frontmatter,
+ * nor adds a `tags:` field to a note that never had one). Otherwise the tags are
+ * written as a canonical inline flow array — creating the block/field if absent.
+ *
+ * `header` is a frontmatter-only string (e.g. from splitFrontmatter), or "" for
+ * a note with no frontmatter.
+ */
+export function applyTagsToHeader(
+  header: string,
+  editTags: string[],
+  originalTags: string[],
+): string {
+  if (sameTagSet(editTags, originalTags)) return header;
+  return setFrontmatterTags(header, editTags);
+}
