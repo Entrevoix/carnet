@@ -62,6 +62,9 @@ import {
 import { pickAttachment } from "../lib/attachments";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
 import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
+import { TagInput } from "../components/TagInput";
+import { applyTagsToHeader } from "../lib/tags";
+import { getTagIndex, tagsForNote } from "../lib/vault";
 import { enrichSharedImage, transcribeAudio } from "../lib/omniroute";
 import {
   removeFromHistory,
@@ -112,6 +115,12 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [wysiwygSeed, setWysiwygSeed] = useState<string>("");
   const wysiwygRef = useRef<WysiwygEditorRef>(null);
   const editHeaderRef = useRef<string>("");
+  // Tag editing (rich edit mode). `editTags` is the live chip set; the ref holds
+  // the tags as they were on entering edit so save can skip rewriting the
+  // frontmatter byte-exact when the set is unchanged. `knownTags` backs autocomplete.
+  const [editTags, setEditTags] = useState<string[]>([]);
+  const [knownTags, setKnownTags] = useState<string[]>([]);
+  const editOriginalTagsRef = useRef<string[]>([]);
   const insertingImageRef = useRef(false);
   // Guard against fast double-taps on Delete — the in-flight archive can
   // race with a second handler call and produce a confusing UI state.
@@ -144,6 +153,19 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     getSettings()
       .then((s) => {
         if (active) setRichEditorEnabled(s.richEditorEnabled);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Load the vault tag index for edit-mode autocomplete (cache-first; best-effort).
+  useEffect(() => {
+    let active = true;
+    getTagIndex()
+      .then((index) => {
+        if (active) setKnownTags(index.tags.map((e) => e.tag));
       })
       .catch(() => undefined);
     return () => {
@@ -293,6 +315,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       const { header, body: noteBody } = splitFrontmatter(body);
       editHeaderRef.current = header;
       setWysiwygSeed(noteBody);
+      // Seed the tag chips from the note's frontmatter (distinct + normalized).
+      const noteTags = tagsForNote(body);
+      editOriginalTagsRef.current = noteTags;
+      setEditTags(noteTags);
     } else {
       setDraft(body);
       setSelection({ start: 0, end: 0 });
@@ -308,6 +334,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     setEditError(null);
     setForceSelection(null);
     setPreview(false);
+    setEditTags([]);
   }, []);
 
   /** Apply a toolbar formatting intent to the draft + reposition the caret. */
@@ -441,7 +468,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       // as an error instead of a stuck, disabled UI, and never leaks the resolver.
       const editedBody = await (wysiwygRef.current?.getMarkdown() ??
         Promise.reject(new Error("Editor not mounted")));
-      next = editHeaderRef.current + editedBody;
+      // Reattach the stashed frontmatter, applying any tag edits. Unchanged tags
+      // keep the header byte-exact (no spurious frontmatter rewrite).
+      const header = applyTagsToHeader(
+        editHeaderRef.current,
+        editTags,
+        editOriginalTagsRef.current,
+      );
+      next = header + editedBody;
       if (next === body) {
         // Editor returned the exact on-disk content — nothing changed. Skip the
         // write so opening + saving a note never churns its content/mtime. (Real
@@ -487,7 +521,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       setSaving(false);
     }
     savingEditRef.current = false;
-  }, [body, entry.filepath, entry.id, entry.title]);
+  }, [body, editTags, entry.filepath, entry.id, entry.title]);
 
   // Unsaved-changes guard. preventDefault + show dialog when the user
   // tries to navigate away with dirty edits. Re-subscribes whenever
@@ -678,6 +712,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
               Save
             </Button>
           </View>
+        </View>
+        <View style={styles.richTags}>
+          <TagInput tags={editTags} onChange={setEditTags} knownTags={knownTags} />
         </View>
         <View style={styles.richEditor}>
           <WysiwygEditor ref={wysiwygRef} value={wysiwygSeed} />
@@ -1081,6 +1118,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   richBarActions: { flexDirection: "row", alignItems: "center", gap: 4 },
+  richTags: { paddingHorizontal: 16, paddingBottom: 4 },
   richEditor: { flex: 1 },
   editPreview: {
     marginTop: 12,
