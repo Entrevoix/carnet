@@ -13,5 +13,8 @@
     "mobile": "npm -w @carnet/mobile start",
     "desktop": "npm -w @carnet/desktop run dev",
     "desktop:tauri": "npm -w @carnet/desktop run tauri dev"
+  },
+  "devDependencies": {
+    "metro-runtime": "0.83.3"
   }
 }
