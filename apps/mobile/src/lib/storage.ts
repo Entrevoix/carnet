@@ -39,6 +39,20 @@ export async function removeFromHistory(id: string): Promise<void> {
 }
 
 /**
+ * Remove any history entry pointing at `filepath`. Used when a note is deleted
+ * from a context that doesn't carry its recents id (e.g. the tag browser, which
+ * opens notes via a synthesized entry) — without this, archiving the file would
+ * leave a ghost recents row pointing at a now-archived path. Skips the write
+ * when nothing matched.
+ */
+export async function removeFromHistoryByFilepath(filepath: string): Promise<void> {
+  const existing = await getRecentCaptures();
+  const next = existing.filter((e) => e.filepath !== filepath);
+  if (next.length === existing.length) return;
+  await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+}
+
+/**
  * Remove many entries by id in a single write. Used by Home's multi-select
  * bulk delete so cleaning up N rows is one AsyncStorage round-trip instead
  * of N. Unknown ids are silently ignored. Skips the write when no entries

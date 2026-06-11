@@ -40,6 +40,7 @@ import {
   type AttachmentRef,
 } from "./writer";
 import { mergeUserTags } from "./tags";
+import { invalidateTagIndex } from "./vault";
 import { deriveTitle } from "@carnet/shared";
 
 export type CaptureMode = "idea" | "journal" | "person";
@@ -280,6 +281,9 @@ async function processRow(payload: QueuePayload): Promise<void> {
     // Extract name — pass empty strings to writePerson so it falls back to markdown
     await writePerson("", "", mergeUserTags(result.markdown, payload.tags));
   }
+  // A drained capture adds tags to the vault — drop the stale index cache so the
+  // browser + autocomplete rebuild. Best-effort; never fail the drain on this.
+  void invalidateTagIndex().catch(() => undefined);
 }
 
 /**

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { addTag, applyTagsToHeader, mergeUserTags, sameTagSet, suggestionsFor } from "./tags";
+import {
+  addTag,
+  applyTagsToHeader,
+  mergeUserTags,
+  sameTagSet,
+  splitTagInput,
+  suggestionsFor,
+} from "./tags";
 import { getFrontmatterTags } from "./frontmatter";
 
 // ── addTag ────────────────────────────────────────────────────────────────────
@@ -86,6 +93,30 @@ describe("mergeUserTags", () => {
     expect(mergeUserTags("# T\n\nbody\n", ["work"])).toBe(
       "---\ntags: [work]\n---\n# T\n\nbody\n",
     );
+  });
+});
+
+// ── splitTagInput ─────────────────────────────────────────────────────────────
+
+describe("splitTagInput", () => {
+  it("commits nothing while typing a single token (no separator)", () => {
+    expect(splitTagInput("wor")).toEqual({ committed: [], trailing: "wor" });
+  });
+
+  it("commits a token on a trailing space or comma", () => {
+    expect(splitTagInput("work ")).toEqual({ committed: ["work"], trailing: "" });
+    expect(splitTagInput("work,")).toEqual({ committed: ["work"], trailing: "" });
+  });
+
+  it("commits all complete tokens and keeps the trailing partial", () => {
+    expect(splitTagInput("a, b, c")).toEqual({ committed: ["a", "b"], trailing: "c" });
+  });
+
+  it("splits a pasted multi-token string", () => {
+    expect(splitTagInput("one two three")).toEqual({
+      committed: ["one", "two"],
+      trailing: "three",
+    });
   });
 });
 

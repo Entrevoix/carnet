@@ -65,6 +65,11 @@ export function sameTagSet(a: string[], b: string[]): boolean {
  *
  * `header` is a frontmatter-only string (e.g. from splitFrontmatter), or "" for
  * a note with no frontmatter.
+ *
+ * NOTE: the byte-exact guarantee is CONDITIONAL on the tag set being unchanged.
+ * The first tag change canonicalizes the whole line (a hand-written
+ * `tags: [My Tag]` becomes `tags: [my-tag]`), so pre-existing tags get
+ * normalized as a side effect. That is intended — it de-fragments the vault.
  */
 export function applyTagsToHeader(
   header: string,
@@ -73,4 +78,20 @@ export function applyTagsToHeader(
 ): string {
   if (sameTagSet(editTags, originalTags)) return header;
   return setFrontmatterTags(header, editTags);
+}
+
+/**
+ * Parse a tag-field change into the tokens to commit as chips plus the trailing
+ * partial that stays in the input. A separator (whitespace or comma) finalizes
+ * every complete token before it; with no separator nothing is committed yet.
+ * Pure so the TagInput entry behavior is testable without a renderer.
+ *
+ *   "wor"      → { committed: [],            trailing: "wor" }
+ *   "work "    → { committed: ["work"],      trailing: "" }
+ *   "a, b, c"  → { committed: ["a", "b"],    trailing: "c" }
+ */
+export function splitTagInput(text: string): { committed: string[]; trailing: string } {
+  if (!/[,\s]/.test(text)) return { committed: [], trailing: text };
+  const parts = text.split(/[,\s]+/);
+  return { committed: parts.slice(0, -1), trailing: parts[parts.length - 1] ?? "" };
 }

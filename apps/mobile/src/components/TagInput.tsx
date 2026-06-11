@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { Chip, TextInput } from "react-native-paper";
 
-import { addTag, suggestionsFor } from "../lib/tags";
+import { addTag, splitTagInput, suggestionsFor } from "../lib/tags";
 
 interface TagInputProps {
   /** Current tags (already normalized). */
@@ -37,16 +37,15 @@ export function TagInput({ tags, onChange, knownTags = [], label = "Tags" }: Tag
   const onChangeText = (text: string): void => {
     // A separator (space/comma) finalizes every complete token in the input,
     // keeping only the trailing partial token as the live draft.
-    if (/[,\s]/.test(text)) {
-      const parts = text.split(/[,\s]+/);
-      const trailing = parts.pop() ?? "";
-      let acc = tags;
-      for (const part of parts) acc = addTag(acc, part);
-      if (acc !== tags) onChange(acc);
-      setDraft(trailing);
+    const { committed, trailing } = splitTagInput(text);
+    if (committed.length === 0) {
+      setDraft(text);
       return;
     }
-    setDraft(text);
+    let acc = tags;
+    for (const part of committed) acc = addTag(acc, part);
+    if (acc !== tags) onChange(acc);
+    setDraft(trailing);
   };
 
   const remove = (tag: string): void => {

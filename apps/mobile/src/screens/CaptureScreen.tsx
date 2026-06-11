@@ -48,7 +48,7 @@ import {
 import { pickAttachment, type PickedAttachment } from "../lib/attachments";
 import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
 import { mergeUserTags } from "../lib/tags";
-import { getTagIndex } from "../lib/vault";
+import { getTagIndex, invalidateTagIndex } from "../lib/vault";
 import {
   IDEA_STATUSES,
   deriveTitle,
@@ -353,6 +353,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingIdea.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
+        void invalidateTagIndex().catch(() => undefined);
         console.log("[confirmSave] recordCapture ok");
         setPhase("saved");
         navigation.goBack();
@@ -376,6 +377,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingJournal.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
+        void invalidateTagIndex().catch(() => undefined);
         setPhase("saved");
         navigation.goBack();
       } catch (e: unknown) {
@@ -400,6 +402,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingPerson.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
+        void invalidateTagIndex().catch(() => undefined);
         setPhase("saved");
         navigation.goBack();
       } catch (e: unknown) {
