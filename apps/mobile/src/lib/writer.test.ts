@@ -94,8 +94,11 @@ import {
   listPairedBinaries,
   resolvePairedUri,
   stripPairedBinaryLinks,
+  listNoteFiles,
   type AttachmentRef,
 } from "./writer";
+import * as FileSystem from "expo-file-system/legacy";
+import { getSettings } from "./settings";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -392,6 +395,87 @@ describe("appendJournal", () => {
     // The first entry has opening `---` and closing `---`, so exactly 2 `---` lines
     // but the date field appears only once
     expect(content.match(/^date:/gm)?.length).toBe(1);
+  });
+
+  it("preserves a second same-day entry's tags by merging them into the day file", async () => {
+    // Regression: appendJournal strips the appended entry's frontmatter, so user
+    // tags on a 2nd+ same-day capture were silently lost. The day file must end
+    // up carrying the union of both entries' tags.
+    const first = "---\ndate: 2026-05-16\ntags: [journal, morning]\n---\n# First\n\n## Notes\n- a\n";
+    const second = "---\ndate: 2026-05-16\ntags: [journal, errand]\n---\n# Second\n\n## Notes\n- b\n";
+
+    const { filepath } = await appendJournal("2026-05-16", first);
+    await appendJournal("2026-05-16", second);
+
+    const content = _files.get(filepath)!.content;
+    // Union of both entries' tags, deduped, in a single inline flow array.
+    expect(content).toContain("tags: [journal, morning, errand]");
+    // Still exactly one frontmatter block.
+    expect(content.match(/^date:/gm)?.length).toBe(1);
+    // Both bodies present.
+    expect(content).toContain("- a");
+    expect(content).toContain("- b");
+  });
+});
+
+// ── listNoteFiles (vault enumeration backing the tag index) ──────────────────
+
+describe("listNoteFiles", () => {
+  beforeEach(clearFiles);
+
+  it("enumerates .md notes across Ideas/Journal/People with subdir + full uri", async () => {
+    await writeIdea("my-idea", "# My Idea\n");
+    await appendJournal("2026-05-16", "---\ndate: 2026-05-16\n---\n# Entry\n");
+    await writePerson("Jane", "Doe", "---\nname: Jane Doe\n---\n# Jane Doe\n");
+
+    const notes = await listNoteFiles();
+    const byName = Object.fromEntries(notes.map((n) => [n.name, n.subdir]));
+    expect(byName["my-idea.md"]).toBe("Ideas");
+    expect(byName["2026-05-16.md"]).toBe("Journal");
+    expect(byName["Jane-Doe.md"]).toBe("People");
+    // Every URI is a full file:// path ending in the basename (readNote-ready).
+    for (const n of notes) {
+      expect(n.uri.startsWith("file://")).toBe(true);
+      expect(n.uri.endsWith(`/${n.name}`)).toBe(true);
+    }
+  });
+
+  it("excludes non-markdown files sitting in a note subdir", async () => {
+    await writeIdea("keeper", "# Keeper\n");
+    // Inject stray files directly into Ideas/ via the FS mock.
+    _files.set("file:///data/carnet/Ideas/.DS_Store", { content: "junk" });
+    _files.set("file:///data/carnet/Ideas/notes.txt", { content: "text" });
+
+    const notes = await listNoteFiles();
+    expect(notes.every((n) => n.name.toLowerCase().endsWith(".md"))).toBe(true);
+    expect(notes.some((n) => n.name === "keeper.md")).toBe(true);
+  });
+
+  it("lists notes over a SAF (content://) vault, preserving document URIs", async () => {
+    const ROOT = "content://auth/tree/primary%3ACarnet";
+    const doc = (rel: string) =>
+      `${ROOT}/document/primary%3ACarnet%2F${rel.split("/").join("%2F")}`;
+    // content:// root → resolveRoot returns isSaf:true (one getSettings call).
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      captureFolderPath: ROOT,
+    } as unknown as Awaited<ReturnType<typeof getSettings>>);
+    vi.mocked(FileSystem.StorageAccessFramework.readDirectoryAsync).mockImplementation(
+      async (uri: string) => {
+        if (uri === ROOT) return [doc("Ideas"), doc("Journal"), doc("People")];
+        if (uri === doc("Ideas")) return [doc("Ideas/spark.md"), doc("Ideas/cover.png")];
+        if (uri === doc("Journal")) return [doc("Journal/2026-05-16.md")];
+        return [];
+      },
+    );
+
+    const notes = await listNoteFiles();
+    const byName = Object.fromEntries(notes.map((n) => [n.name, n]));
+    expect(byName["cover.png"]).toBeUndefined(); // non-md excluded
+    expect(byName["spark.md"].subdir).toBe("Ideas");
+    expect(byName["spark.md"].uri).toBe(doc("Ideas/spark.md")); // full doc URI preserved
+    expect(byName["2026-05-16.md"].subdir).toBe("Journal");
+
+    vi.mocked(FileSystem.StorageAccessFramework.readDirectoryAsync).mockReset();
   });
 });
 

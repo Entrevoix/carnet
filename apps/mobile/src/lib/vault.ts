@@ -65,13 +65,15 @@ async function mapWithConcurrency<T>(
 export async function buildTagIndex(): Promise<TagIndex> {
   const files = await listNoteFiles();
   const tagToFiles = new Map<string, Set<string>>();
+  let skipped = 0;
 
   await mapWithConcurrency(files, SCAN_CONCURRENCY, async (file) => {
     let markdown: string;
     try {
       markdown = await readNote(file.uri);
     } catch {
-      return; // unreadable note — skip rather than fail the whole scan
+      skipped += 1; // unreadable (deleted mid-scan / perm revoked) — skip, don't fail
+      return;
     }
     for (const raw of getFrontmatterTags(markdown)) {
       const tag = normalizeTag(raw);
@@ -84,6 +86,10 @@ export async function buildTagIndex(): Promise<TagIndex> {
       set.add(file.uri);
     }
   });
+
+  if (skipped > 0) {
+    console.warn(`[vault] tag index skipped ${skipped}/${files.length} unreadable note(s)`);
+  }
 
   const tags: TagIndexEntry[] = [...tagToFiles.entries()]
     .map(([tag, set]) => ({ tag, count: set.size, files: [...set] }))
@@ -112,6 +118,16 @@ export async function refreshTagIndex(): Promise<TagIndex> {
   const index = await buildTagIndex();
   await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(index));
   return index;
+}
+
+/**
+ * Drop the cached index so the next getTagIndex rebuilds from the vault. Call
+ * (fire-and-forget) after any write that can change tags — a capture, an
+ * offline drain, or a tag edit — so the browser counts and capture autocomplete
+ * don't keep serving stale data for the rest of the session.
+ */
+export async function invalidateTagIndex(): Promise<void> {
+  await AsyncStorage.removeItem(CACHE_KEY);
 }
 
 /**
@@ -163,7 +179,9 @@ function basenameTitle(uri: string): string {
   return last.replace(/\.md$/i, "");
 }
 
-/** Infer the capture mode from which note subdir a URI lives in. */
+/** Infer the capture mode from the note's IMMEDIATE parent subdir. We match the
+ * parent segment (not a substring anywhere in the path) so a vault rooted under
+ * a folder literally named "Journal"/"People" doesn't misclassify its Ideas. */
 export function inferNoteMode(uri: string): CaptureMode {
   let decoded = uri;
   try {
@@ -171,8 +189,10 @@ export function inferNoteMode(uri: string): CaptureMode {
   } catch {
     /* keep raw */
   }
-  if (decoded.includes("/Journal/")) return "journal";
-  if (decoded.includes("/People/")) return "person";
+  const segments = decoded.split("/").filter(Boolean);
+  const parent = segments[segments.length - 2];
+  if (parent === "Journal") return "journal";
+  if (parent === "People") return "person";
   return "idea";
 }
 

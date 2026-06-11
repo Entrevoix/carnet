@@ -25,7 +25,12 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { getSettings } from "./settings";
 // Pure frontmatter helpers used internally; the full set is re-exported below.
-import { extractFrontmatterField, stripFrontmatter } from "./frontmatter";
+import {
+  extractFrontmatterField,
+  getFrontmatterTags,
+  setFrontmatterTags,
+  stripFrontmatter,
+} from "./frontmatter";
 
 const { StorageAccessFramework } = FileSystem;
 
@@ -686,8 +691,15 @@ export async function appendJournal(
       const existing = await readByUri(existingUri);
       const now = new Date();
       const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+      // The appended entry's frontmatter is stripped (only the day file's first
+      // block survives), so merge this entry's tags into that block — otherwise
+      // user/LLM tags on a 2nd+ same-day capture would be silently lost.
+      const newTags = getFrontmatterTags(markdown);
+      const base = newTags.length
+        ? setFrontmatterTags(existing, [...getFrontmatterTags(existing), ...newTags])
+        : existing;
       const appended = stripFrontmatter(markdown);
-      const finalMarkdown = `${existing.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
+      const finalMarkdown = `${base.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
       await writeByUri(existingUri, finalMarkdown);
       return { filepath: existingUri };
     }

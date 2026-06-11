@@ -64,10 +64,11 @@ import { MarkdownToolbar } from "../components/MarkdownToolbar";
 import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
 import { TagInput } from "../components/TagInput";
 import { applyTagsToHeader } from "../lib/tags";
-import { getTagIndex, tagsForNote } from "../lib/vault";
+import { getTagIndex, invalidateTagIndex, tagsForNote } from "../lib/vault";
 import { enrichSharedImage, transcribeAudio } from "../lib/omniroute";
 import {
   removeFromHistory,
+  removeFromHistoryByFilepath,
   updateCaptureTitle,
   type CaptureEntry,
 } from "../lib/storage";
@@ -208,7 +209,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       console.warn("[RecentDetail] archive failed:", msg);
     }
     try {
+      // Remove by id (recents-opened) AND by filepath (tag-browser-opened notes
+      // carry a synthesized id that won't match) so no ghost row survives.
       await removeFromHistory(entry.id);
+      await removeFromHistoryByFilepath(entry.filepath);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[RecentDetail] removeFromHistory failed:", msg);
@@ -475,6 +479,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
         editTags,
         editOriginalTagsRef.current,
       );
+      // applyTagsToHeader returns the header verbatim when the tag set is
+      // unchanged, so a differing header means the tags changed.
+      const tagsChanged = header !== editHeaderRef.current;
       next = header + editedBody;
       if (next === body) {
         // Editor returned the exact on-disk content — nothing changed. Skip the
@@ -494,6 +501,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
         return;
       }
       setBody(next);
+      // A tag change makes the vault index stale — drop the cache so the
+      // browser counts + capture autocomplete rebuild on next read.
+      if (tagsChanged) void invalidateTagIndex().catch(() => undefined);
     } catch (e: unknown) {
       const reason = e instanceof Error ? e.message : String(e);
       console.warn("[RecentDetail] save (rich) failed:", reason);

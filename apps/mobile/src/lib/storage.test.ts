@@ -21,6 +21,7 @@ import {
   getRecentCaptures,
   recordCapture,
   removeFromHistory,
+  removeFromHistoryByFilepath,
   removeManyFromHistory,
   updateCaptureTitle,
   type CaptureEntry,
@@ -136,6 +137,29 @@ describe("removeManyFromHistory", () => {
     await removeManyFromHistory(["a", "a"]);
     const xs = await getRecentCaptures();
     expect(xs.map((e) => e.id)).toEqual(["b"]);
+  });
+});
+
+describe("removeFromHistoryByFilepath", () => {
+  beforeEach(() => {
+    _store.clear();
+    vi.mocked(AsyncStorage.setItem).mockClear();
+  });
+
+  it("removes the entry whose filepath matches (id-agnostic)", async () => {
+    await recordCapture(entry("a")); // filepath /vault/Ideas/a.md
+    await recordCapture(entry("b"));
+    await removeFromHistoryByFilepath("/vault/Ideas/a.md");
+    const xs = await getRecentCaptures();
+    expect(xs.map((e) => e.id)).toEqual(["b"]);
+  });
+
+  it("is a no-op (skips the write) when no filepath matches", async () => {
+    await recordCapture(entry("a"));
+    vi.mocked(AsyncStorage.setItem).mockClear();
+    await removeFromHistoryByFilepath("/vault/Ideas/ghost.md");
+    expect(vi.mocked(AsyncStorage.setItem)).not.toHaveBeenCalled();
+    expect((await getRecentCaptures()).map((e) => e.id)).toEqual(["a"]);
   });
 });
 

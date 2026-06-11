@@ -42,6 +42,7 @@ import {
   buildTagIndex,
   getTagIndex,
   inferNoteMode,
+  invalidateTagIndex,
   loadCachedTagIndex,
   notesForTag,
   refreshTagIndex,
@@ -171,6 +172,15 @@ describe("tag index cache", () => {
     _store.set("carnet:tagindex:v1", "{not json");
     expect(await loadCachedTagIndex()).toBeNull();
   });
+
+  it("invalidateTagIndex drops the cache so the next read rebuilds", async () => {
+    addNote("file:///v/Ideas/a.md", "Ideas", "---\ntags: [work]\n---\n");
+    await refreshTagIndex();
+    expect(await loadCachedTagIndex()).not.toBeNull();
+
+    await invalidateTagIndex();
+    expect(await loadCachedTagIndex()).toBeNull();
+  });
 });
 
 // ── suggestTags ───────────────────────────────────────────────────────────────
@@ -239,6 +249,12 @@ describe("inferNoteMode", () => {
 
   it("defaults to idea for an unrecognized location", () => {
     expect(inferNoteMode("file:///v/Misc/x.md")).toBe("idea");
+  });
+
+  it("matches the immediate parent dir, not any path segment", () => {
+    // Vault rooted under a folder named "Journal" must not misclassify Ideas.
+    expect(inferNoteMode("file:///storage/Journal/carnet/Ideas/note.md")).toBe("idea");
+    expect(inferNoteMode("file:///mnt/People/vault/Journal/2026-01-01.md")).toBe("journal");
   });
 });
 
