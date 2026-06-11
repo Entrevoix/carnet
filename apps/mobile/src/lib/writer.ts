@@ -24,6 +24,8 @@
 
 import * as FileSystem from "expo-file-system/legacy";
 import { getSettings } from "./settings";
+// Pure frontmatter helpers used internally; the full set is re-exported below.
+import { extractFrontmatterField, stripFrontmatter } from "./frontmatter";
 
 const { StorageAccessFramework } = FileSystem;
 
@@ -605,112 +607,16 @@ function extractH1(markdown: string): string | null {
   return null;
 }
 
-/** Extract a YAML frontmatter field value. Exported so screens (e.g.
- * RecentDetail's retro-enrich gate) can route off the `kind:` field. */
-export function extractFrontmatterField(markdown: string, field: string): string | null {
-  const s = markdown.trimStart();
-  if (!s.startsWith("---")) return null;
-  const afterFirst = s.slice(3);
-  const endIdx = afterFirst.indexOf("\n---");
-  if (endIdx === -1) return null;
-  const block = afterFirst.slice(0, endIdx);
-  const prefix = `${field}:`;
-  for (const line of block.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith(prefix)) {
-      const value = trimmed.slice(prefix.length).trim().replace(/^['"]|['"]$/g, "");
-      if (value) return value;
-    }
-  }
-  return null;
-}
-
-/** Strip frontmatter block, returning only the body. Exported so screens
- * that preview a saved note can render the body without the YAML noise. */
-export function stripFrontmatter(markdown: string): string {
-  const s = markdown.trimStart();
-  if (!s.startsWith("---")) return markdown;
-  const afterFirst = s.slice(3);
-  const endIdx = afterFirst.indexOf("\n---");
-  if (endIdx === -1) return markdown;
-  return afterFirst.slice(endIdx + 4).replace(/^\n+/, "");
-}
-
-/**
- * Split a note into its raw YAML frontmatter header and its body, such that
- * `header + body === markdown` BYTE-FOR-BYTE. Unlike stripFrontmatter (which
- * trims), this preserves the header verbatim so it can be re-prepended exactly
- * after a body-only edit — the #1 documented WYSIWYG corruption mode is the
- * frontmatter block collapsing, so the editor must never see or rewrite it.
- *
- * The header includes the closing `---` line AND its trailing newline, so
- * `header + editedBody` can never merge the closing fence into the body even if
- * the editor drops the blank line that followed it. A note with no valid
- * frontmatter returns `{ header: "", body: markdown }`.
- */
-export function splitFrontmatter(markdown: string): { header: string; body: string } {
-  if (!markdown.startsWith("---")) return { header: "", body: markdown };
-  const afterFirst = markdown.slice(3);
-  const endIdx = afterFirst.indexOf("\n---");
-  if (endIdx === -1) return { header: "", body: markdown };
-  // Index (in afterFirst) of the closing fence's own line; advance past "---"
-  // then to the end of that line (its trailing newline, or end of string).
-  const closeFenceStart = endIdx + 1;
-  const nlAfterClose = afterFirst.indexOf("\n", closeFenceStart + 3);
-  const splitAt = 3 + (nlAfterClose === -1 ? afterFirst.length : nlAfterClose + 1);
-  return { header: markdown.slice(0, splitAt), body: markdown.slice(splitAt) };
-}
-
-/** Rewrite a single YAML frontmatter field, preserving the rest byte-identical. */
-export function rewriteFrontmatterField(
-  content: string,
-  field: string,
-  newValue: string,
-): string {
-  if (newValue.includes("\n") || newValue.includes("\r")) {
-    throw new Error("frontmatter values cannot contain newlines or carriage returns");
-  }
-  const s = content.trimStart();
-  if (!s.startsWith("---")) {
-    throw new Error("file has no YAML frontmatter");
-  }
-  const afterFirst = s.slice(3);
-
-  // Line-aware scan for closing --- to avoid mis-cutting on body horizontal rules.
-  let blockEnd: number | null = null;
-  let offset = 0;
-  for (const line of afterFirst.split("\n")) {
-    if (line.trim() === "---") {
-      blockEnd = offset;
-      break;
-    }
-    offset += line.length + 1; // +1 for the \n
-  }
-  if (blockEnd === null) {
-    throw new Error("unterminated frontmatter block");
-  }
-  const block = afterFirst.slice(0, blockEnd);
-  const body = afterFirst.slice(blockEnd);
-
-  const prefix = `${field}:`;
-  let found = false;
-  const newBlock = block
-    .split("\n")
-    .map((line) => {
-      if (!found && line.trimStart().startsWith(prefix)) {
-        found = true;
-        const leadingWs = line.slice(0, line.length - line.trimStart().length);
-        return `${leadingWs}${prefix} ${newValue}`;
-      }
-      return line;
-    })
-    .join("\n");
-
-  if (!found) {
-    throw new Error(`field \`${field}\` not present in frontmatter`);
-  }
-  return `---${newBlock}${body}`;
-}
+// Frontmatter parse/serialize logic lives in ./frontmatter — a pure, native-free
+// module so it can be unit-tested without mocks. Re-exported here so existing
+// importers (RecentDetailScreen, CaptureScreen, tests) keep their `./writer`
+// import path unchanged.
+export {
+  extractFrontmatterField,
+  stripFrontmatter,
+  splitFrontmatter,
+  rewriteFrontmatterField,
+} from "./frontmatter";
 
 /**
  * Per-filepath promise chain. Used to serialize concurrent reads-then-writes
