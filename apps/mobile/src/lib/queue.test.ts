@@ -271,6 +271,68 @@ describe("drainQueue", () => {
     expect(rows().length).toBe(0);
   });
 
+  it("merges queued tags into the idea frontmatter on drain (offline parity)", async () => {
+    const { enrichIdea } = await import("./omniroute");
+    const { writeIdea } = await import("./writer");
+    vi.mocked(enrichIdea).mockResolvedValue({
+      markdown: "---\nstatus: seedling\n---\n# Tagged Idea\n\nbody\n",
+      model: "t",
+    });
+
+    await enqueue({ mode: "idea", text: "tag me", tags: ["work", "urgent"] });
+    await drainQueue();
+
+    const writtenBody = vi.mocked(writeIdea).mock.calls[0][1];
+    expect(writtenBody).toContain("tags: [work, urgent]");
+    expect(rows().length).toBe(0);
+  });
+
+  it("preserves LLM-emitted tags when merging queued user tags (idea)", async () => {
+    const { enrichIdea } = await import("./omniroute");
+    const { writeIdea } = await import("./writer");
+    vi.mocked(enrichIdea).mockResolvedValue({
+      markdown: "---\ntags: [seedling]\n---\n# Merge Idea\n\nbody\n",
+      model: "t",
+    });
+
+    await enqueue({ mode: "idea", text: "merge me", tags: ["Work"] });
+    await drainQueue();
+
+    expect(vi.mocked(writeIdea).mock.calls[0][1]).toContain("tags: [seedling, work]");
+  });
+
+  it("merges queued tags into journal + person frontmatter on drain", async () => {
+    const { appendJournal, writePerson } = await import("./writer");
+
+    await enqueue({
+      mode: "journal",
+      transcript: "did things",
+      notes: "",
+      date: "2026-05-16",
+      tags: ["daily"],
+    });
+    await enqueue({ mode: "person", ocrResult: "Jane", context: "conf", tags: ["lead"] });
+    await drainQueue();
+
+    expect(vi.mocked(appendJournal).mock.calls[0][1]).toContain("tags: [daily]");
+    // writePerson(firstName, lastName, markdown) — markdown is the 3rd arg.
+    expect(vi.mocked(writePerson).mock.calls[0][2]).toContain("tags: [lead]");
+  });
+
+  it("leaves the body untouched when a queued row carries no tags", async () => {
+    const { enrichIdea } = await import("./omniroute");
+    const { writeIdea } = await import("./writer");
+    vi.mocked(enrichIdea).mockResolvedValue({
+      markdown: "---\nstatus: seedling\n---\n# Untagged\n\nbody\n",
+      model: "t",
+    });
+
+    await enqueue({ mode: "idea", text: "no tags", tags: [] });
+    await drainQueue();
+
+    expect(vi.mocked(writeIdea).mock.calls[0][1]).not.toContain("tags:");
+  });
+
   it("marks 4xx (permanent) errors as permanent failure immediately", async () => {
     const { enrichIdea, isPermanentError } = await import("./omniroute");
     vi.mocked(enrichIdea).mockRejectedValue(new Error("401 Unauthorized"));
