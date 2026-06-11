@@ -782,6 +782,64 @@ export async function updateNote(filepath: string, markdown: string): Promise<vo
   await writeByUri(filepath, markdown);
 }
 
+/** Vault subdirs that hold markdown notes. Photos/Audio/Files hold binaries
+ * and are deliberately excluded from note enumeration. */
+const NOTE_SUBDIRS = ["Ideas", "Journal", "People"] as const;
+export type NoteSubdir = (typeof NOTE_SUBDIRS)[number];
+
+export interface NoteFileRef {
+  /** Full readable URI (file:// path or SAF content:// document URI). */
+  uri: string;
+  /** Basename, e.g. "my-idea.md". */
+  name: string;
+  /** Which note subdir it came from. */
+  subdir: NoteSubdir;
+}
+
+/**
+ * List `{ uri, name }` for every child of `parentUri`, preserving the FULL
+ * URI (SAF readDirectory returns document URIs; file:// builds them from the
+ * basename). Unlike listChildNames, this keeps the URI so callers can read the
+ * file. A missing directory yields `[]`.
+ */
+async function listDirEntries(
+  parentUri: string,
+  isSaf: boolean,
+): Promise<Array<{ uri: string; name: string }>> {
+  if (isSaf) {
+    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
+    return children.map((uri) => ({ uri, name: safLastSegment(uri) }));
+  }
+  try {
+    const names = await FileSystem.readDirectoryAsync(parentUri);
+    const base = parentUri.replace(/\/$/, "");
+    return names.map((name) => ({ uri: `${base}/${name}`, name }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Enumerate every markdown note across the vault's note subdirs (Ideas,
+ * Journal, People). Binaries (Photos/Audio/Files) are excluded. This is the
+ * source the tag index scans — Recents (AsyncStorage, max 20) is a capture
+ * history, NOT a vault scan, so it cannot back tag enumeration.
+ */
+export async function listNoteFiles(): Promise<NoteFileRef[]> {
+  const root = await resolveRoot();
+  const out: NoteFileRef[] = [];
+  for (const subdir of NOTE_SUBDIRS) {
+    const subdirUri = await findOrCreateSubdir(root, subdir);
+    const entries = await listDirEntries(subdirUri, root.isSaf);
+    for (const { uri, name } of entries) {
+      if (name.toLowerCase().endsWith(".md")) {
+        out.push({ uri, name, subdir });
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Soft-delete a note. Copies the .md (and any paired binary referenced by a
  * relative `../{Photos|Audio|Files}/{name}.{ext}` link in the body) into the
