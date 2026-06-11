@@ -40,8 +40,14 @@ import {
   type AttachmentRef,
 } from "./writer";
 import { mergeUserTags } from "./tags";
+import { upsertFrontmatterField } from "./frontmatter";
 import { invalidateTagIndex } from "./vault";
 import { deriveTitle } from "@carnet/shared";
+
+/** Inject a `location: lat,lon` frontmatter field, or a no-op when unset. */
+function injectLocation(markdown: string, location?: string): string {
+  return location ? upsertFrontmatterField(markdown, "location", location) : markdown;
+}
 
 export type CaptureMode = "idea" | "journal" | "person";
 
@@ -62,6 +68,8 @@ export interface IdeaPayload {
   attachments?: AttachmentRef[];
   /** User-entered tags, merged into frontmatter on drain (offline parity). */
   tags?: string[];
+  /** User-selected `lat,lon`, injected into frontmatter on drain. */
+  location?: string;
 }
 
 export interface JournalPayload {
@@ -72,6 +80,8 @@ export interface JournalPayload {
   attachments?: AttachmentRef[];
   /** User-entered tags, merged into frontmatter on drain (offline parity). */
   tags?: string[];
+  /** User-selected `lat,lon`, injected into frontmatter on drain. */
+  location?: string;
 }
 
 export interface PersonPayload {
@@ -80,6 +90,8 @@ export interface PersonPayload {
   context: string;
   /** User-entered tags, merged into frontmatter on drain (offline parity). */
   tags?: string[];
+  /** User-selected `lat,lon`, injected into frontmatter on drain. */
+  location?: string;
 }
 
 export type QueuePayload = IdeaPayload | JournalPayload | PersonPayload;
@@ -258,9 +270,9 @@ async function processRow(payload: QueuePayload): Promise<void> {
     // Binaries were already written to disk at enqueue; fold their rel-paths
     // back into the body so the drained note matches the online capture.
     // Tags are merged AFTER attachments so the frontmatter merge sees the final body.
-    const md = mergeUserTags(
-      injectAttachments(result.markdown, payload.attachments ?? []),
-      payload.tags,
+    const md = injectLocation(
+      mergeUserTags(injectAttachments(result.markdown, payload.attachments ?? []), payload.tags),
+      payload.location,
     );
     await writeIdea(slug, md);
   } else if (payload.mode === "journal") {
@@ -268,9 +280,9 @@ async function processRow(payload: QueuePayload): Promise<void> {
       transcript: payload.transcript,
       notes: payload.notes,
     });
-    const md = mergeUserTags(
-      injectAttachments(result.markdown, payload.attachments ?? []),
-      payload.tags,
+    const md = injectLocation(
+      mergeUserTags(injectAttachments(result.markdown, payload.attachments ?? []), payload.tags),
+      payload.location,
     );
     await appendJournal(payload.date, md);
   } else if (payload.mode === "person") {
@@ -279,7 +291,11 @@ async function processRow(payload: QueuePayload): Promise<void> {
       context: payload.context,
     });
     // Extract name — pass empty strings to writePerson so it falls back to markdown
-    await writePerson("", "", mergeUserTags(result.markdown, payload.tags));
+    await writePerson(
+      "",
+      "",
+      injectLocation(mergeUserTags(result.markdown, payload.tags), payload.location),
+    );
   }
   // A drained capture adds tags to the vault — drop the stale index cache so the
   // browser + autocomplete rebuild. Best-effort; never fail the drain on this.

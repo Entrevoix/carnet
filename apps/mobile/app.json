@@ -13,7 +13,8 @@
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Carnet uses speech recognition to transcribe your voice notes into journal entries.",
         "NSMicrophoneUsageDescription": "Carnet uses the microphone to capture voice notes.",
-        "NSCameraUsageDescription": "Carnet uses the camera to capture business cards for the contact mode."
+        "NSCameraUsageDescription": "Carnet uses the camera to capture business cards for the contact mode.",
+        "NSLocationWhenInUseUsageDescription": "Carnet can tag a capture with your current location."
       }
     },
     "android": {
@@ -29,11 +30,19 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.RECEIVE_BOOT_COMPLETED"
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
       ]
     },
     "plugins": [
       "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Carnet can tag a capture with your current location."
+        }
+      ],
       [
         "expo-camera",
         {

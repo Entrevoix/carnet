@@ -333,6 +333,37 @@ describe("drainQueue", () => {
     expect(vi.mocked(writeIdea).mock.calls[0][1]).not.toContain("tags:");
   });
 
+  it("injects a queued location into the idea frontmatter on drain", async () => {
+    const { enrichIdea } = await import("./omniroute");
+    const { writeIdea } = await import("./writer");
+    vi.mocked(enrichIdea).mockResolvedValue({
+      markdown: "---\nstatus: seedling\n---\n# Located\n\nbody\n",
+      model: "t",
+    });
+
+    await enqueue({ mode: "idea", text: "where", location: "38.90720,-77.03690" });
+    await drainQueue();
+
+    expect(vi.mocked(writeIdea).mock.calls[0][1]).toContain("location: 38.90720,-77.03690");
+  });
+
+  it("injects a queued location into journal + person frontmatter on drain", async () => {
+    const { appendJournal, writePerson } = await import("./writer");
+
+    await enqueue({
+      mode: "journal",
+      transcript: "t",
+      notes: "",
+      date: "2026-05-16",
+      location: "1,2",
+    });
+    await enqueue({ mode: "person", ocrResult: "Jane", context: "conf", location: "3,4" });
+    await drainQueue();
+
+    expect(vi.mocked(appendJournal).mock.calls[0][1]).toContain("location: 1,2");
+    expect(vi.mocked(writePerson).mock.calls[0][2]).toContain("location: 3,4");
+  });
+
   it("marks 4xx (permanent) errors as permanent failure immediately", async () => {
     const { enrichIdea, isPermanentError } = await import("./omniroute");
     vi.mocked(enrichIdea).mockRejectedValue(new Error("401 Unauthorized"));

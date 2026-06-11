@@ -416,6 +416,18 @@ describe("appendJournal", () => {
     expect(content).toContain("- a");
     expect(content).toContain("- b");
   });
+
+  it("carries a 2nd same-day entry's location onto the day file (latest wins)", async () => {
+    const first = "---\ndate: 2026-05-16\nlocation: 38.90000,-77.00000\n---\n# First\n\n## Notes\n- a\n";
+    const second = "---\ndate: 2026-05-16\nlocation: 40.00000,-74.00000\n---\n# Second\n\n## Notes\n- b\n";
+
+    const { filepath } = await appendJournal("2026-05-16", first);
+    await appendJournal("2026-05-16", second);
+
+    const content = _files.get(filepath)!.content;
+    expect(content).toContain("location: 40.00000,-74.00000"); // latest same-day wins
+    expect(content.match(/^location:/gm)?.length).toBe(1); // single frontmatter block
+  });
 });
 
 // ── listNoteFiles (vault enumeration backing the tag index) ──────────────────
