@@ -102,11 +102,13 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // image tap can't mutate `draft` after handleSaveEdit captured it (which
   // would be discarded when the save exits edit mode).
   const [saving, setSaving] = useState(false);
-  // Rich (WYSIWYG / TenTap) editor, gated behind the off-by-default
-  // richEditorEnabled setting. When on, edit mode mounts WysiwygEditor over the
-  // note BODY only: frontmatter is split off on enter and reattached byte-exact
-  // on save, so the editor never sees or rewrites the `---` block.
-  const [richEditorEnabled, setRichEditorEnabled] = useState(false);
+  // Rich (WYSIWYG / TenTap) editor — now the default note editor (the
+  // experimental Settings toggle was removed). Edit mode mounts WysiwygEditor
+  // over the note BODY only: frontmatter is split off on enter and reattached
+  // byte-exact on save, so the editor never sees or rewrites the `---` block.
+  // Still backed by `richEditorEnabled` (default true) so it stays easy to gate
+  // again later; the markdown TextInput path remains as the false branch.
+  const [richEditorEnabled, setRichEditorEnabled] = useState(true);
   const [wysiwygSeed, setWysiwygSeed] = useState<string>("");
   const wysiwygRef = useRef<WysiwygEditorRef>(null);
   const editHeaderRef = useRef<string>("");
@@ -135,8 +137,8 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     };
   }, []);
 
-  // Load the rich-editor toggle once on mount (off by default; a change in
-  // Settings takes effect next time this screen opens).
+  // Reconcile with the persisted setting once on mount (default true). Kept so a
+  // future gate can flip it off again without re-plumbing the screen.
   useEffect(() => {
     let active = true;
     getSettings()

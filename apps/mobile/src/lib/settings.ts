@@ -86,7 +86,7 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   omniRouteTranscriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
-  richEditorEnabled: false,
+  richEditorEnabled: true,
   captureFolderPath: "",
   promptOverrides: {},
 };
@@ -129,7 +129,7 @@ async function readPersisted(): Promise<PersistedSettings> {
         omniRouteTranscriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
-        richEditorEnabled: false,
+        richEditorEnabled: true,
         captureFolderPath: legacy.captureFolderPath ?? "",
         promptOverrides: {},
       };
