@@ -30,6 +30,7 @@ import {
   getFrontmatterTags,
   setFrontmatterTags,
   stripFrontmatter,
+  upsertFrontmatterField,
 } from "./frontmatter";
 
 const { StorageAccessFramework } = FileSystem;
@@ -692,12 +693,16 @@ export async function appendJournal(
       const now = new Date();
       const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
       // The appended entry's frontmatter is stripped (only the day file's first
-      // block survives), so merge this entry's tags into that block — otherwise
-      // user/LLM tags on a 2nd+ same-day capture would be silently lost.
+      // block survives), so carry this entry's metadata into that block —
+      // otherwise tags/location on a 2nd+ same-day capture would be silently lost.
       const newTags = getFrontmatterTags(markdown);
-      const base = newTags.length
+      let base = newTags.length
         ? setFrontmatterTags(existing, [...getFrontmatterTags(existing), ...newTags])
         : existing;
+      // Tags accumulate (union); location is a scalar — a day file has one
+      // frontmatter, so the latest same-day capture's location wins.
+      const newLocation = extractFrontmatterField(markdown, "location");
+      if (newLocation) base = upsertFrontmatterField(base, "location", newLocation);
       const appended = stripFrontmatter(markdown);
       const finalMarkdown = `${base.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
       await writeByUri(existingUri, finalMarkdown);

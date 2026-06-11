@@ -21,6 +21,7 @@ import type { RootStackParamList } from "../../App";
 import { VoiceButton, type VoiceButtonHandle } from "../voice/VoiceButton";
 import { CardScannerModal } from "../components/CardScannerModal";
 import { TagInput } from "../components/TagInput";
+import { LocationChip } from "../components/LocationChip";
 import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
 import {
@@ -48,6 +49,7 @@ import {
 import { pickAttachment, type PickedAttachment } from "../lib/attachments";
 import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
 import { mergeUserTags } from "../lib/tags";
+import { upsertFrontmatterField } from "../lib/frontmatter";
 import { getTagIndex, invalidateTagIndex } from "../lib/vault";
 import {
   IDEA_STATUSES,
@@ -120,6 +122,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // online and offline paths). knownTags backs the autocomplete.
   const [tags, setTags] = useState<string[]>([]);
   const [knownTags, setKnownTags] = useState<string[]>([]);
+  // User-selected location as a `lat,lon` string, injected into frontmatter on save.
+  const [location, setLocation] = useState<string | null>(null);
+
+  /** Inject the selected location into a note's frontmatter (no-op when unset). */
+  const withLocation = (markdown: string): string =>
+    location ? upsertFrontmatterField(markdown, "location", location) : markdown;
 
   useEffect(() => {
     void getQueueDepth().then(setQueueDepth);
@@ -247,6 +255,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setOcrText("");
       setPending([]);
       setTags([]);
+      setLocation(null);
     } catch (qe: unknown) {
       const qmsg = qe instanceof Error ? qe.message : String(qe);
       setError(`Couldn't reach OmniRoute, and queuing offline failed: ${qmsg}`);
@@ -278,7 +287,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
           // Write the binaries to disk first (local + offline-safe), then
           // queue only their rel-paths — never base64.
           const refs = await persistAttachments();
-          await enqueue({ mode: "idea", text: text.trim(), attachments: refs, tags });
+          await enqueue({
+            mode: "idea",
+            text: text.trim(),
+            attachments: refs,
+            tags,
+            location: location ?? undefined,
+          });
         });
       }
       return;
@@ -308,6 +323,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
             date: todayLocal(),
             attachments: refs,
             tags,
+            location: location ?? undefined,
           });
         });
       }
@@ -334,7 +350,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setPhase("preview");
     } catch (e: unknown) {
       await handleCaptureError(e, () =>
-        enqueue({ mode: "person", ocrResult: ocrText.trim(), context: text.trim(), tags }),
+        enqueue({
+          mode: "person",
+          ocrResult: ocrText.trim(),
+          context: text.trim(),
+          tags,
+          location: location ?? undefined,
+        }),
       );
     }
   };
@@ -345,11 +367,14 @@ export default function CaptureScreen({ route, navigation }: Props) {
       try {
         console.log("[confirmSave] writeIdea start", { slug: pendingIdea.slug });
         const refs = await persistAttachments();
-        const markdown = mergeUserTags(injectAttachments(pendingIdea.markdown, refs), tags);
+        const markdown = withLocation(
+          mergeUserTags(injectAttachments(pendingIdea.markdown, refs), tags),
+        );
         const { filepath } = await writeIdea(pendingIdea.slug, markdown);
         console.log("[confirmSave] writeIdea ok", filepath);
         setPending([]);
         setTags([]);
+        setLocation(null);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingIdea.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
@@ -369,11 +394,14 @@ export default function CaptureScreen({ route, navigation }: Props) {
       try {
         console.log("[confirmSave] appendJournal start", { date: pendingJournal.date });
         const refs = await persistAttachments();
-        const markdown = mergeUserTags(injectAttachments(pendingJournal.markdown, refs), tags);
+        const markdown = withLocation(
+          mergeUserTags(injectAttachments(pendingJournal.markdown, refs), tags),
+        );
         const { filepath } = await appendJournal(pendingJournal.date, markdown);
         console.log("[confirmSave] appendJournal ok", filepath);
         setPending([]);
         setTags([]);
+        setLocation(null);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingJournal.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
@@ -391,7 +419,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
     if (mode === "person" && pendingPerson) {
       try {
         console.log("[confirmSave] writePerson start");
-        const markdown = mergeUserTags(pendingPerson.markdown, tags);
+        const markdown = withLocation(mergeUserTags(pendingPerson.markdown, tags));
         const { filepath } = await writePerson(
           pendingPerson.firstName,
           pendingPerson.lastName,
@@ -399,6 +427,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         );
         console.log("[confirmSave] writePerson ok", filepath);
         setTags([]);
+        setLocation(null);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingPerson.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
@@ -501,6 +530,8 @@ export default function CaptureScreen({ route, navigation }: Props) {
       {phase === "input" && (
         <TagInput tags={tags} onChange={setTags} knownTags={knownTags} />
       )}
+
+      {phase === "input" && <LocationChip location={location} onChange={setLocation} />}
 
       {phase === "input" && (
         <>

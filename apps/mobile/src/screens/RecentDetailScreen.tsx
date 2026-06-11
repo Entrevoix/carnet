@@ -12,13 +12,14 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Image, ScrollView, StyleSheet, View } from "react-native";
+import { Image, Linking, ScrollView, StyleSheet, View } from "react-native";
 import * as Sharing from "expo-sharing";
 import {
   ActivityIndicator,
   Banner,
   Button,
   Card,
+  Chip,
   Dialog,
   IconButton,
   type MD3Theme,
@@ -689,6 +690,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // then strip paired-binary embeds/links — those render in the Attachments
   // card below (the markdown renderer can't resolve the relative URIs anyway).
   const renderBody = stripPairedBinaryLinks(stripFrontmatter(body));
+  const noteLocation = extractFrontmatterField(body, "location");
 
   // Rich (WYSIWYG) editing takes the whole screen so TenTap's formatting toolbar
   // can dock above the keyboard. Frontmatter is split off and reattached on save,
@@ -812,6 +814,21 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
             <Text variant="bodySmall" selectable style={styles.path}>
               {entry.filepath}
             </Text>
+            {noteLocation ? (
+              <View style={styles.metaRow}>
+                <Chip
+                  icon="map-marker"
+                  compact
+                  onPress={() =>
+                    void Linking.openURL(`geo:${noteLocation}?q=${noteLocation}`).catch(
+                      () => undefined,
+                    )
+                  }
+                >
+                  {noteLocation}
+                </Chip>
+              </View>
+            ) : null}
           </Card.Content>
         </Card>
 
@@ -1104,6 +1121,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, gap: 12 },
   card: { marginTop: 4 },
   path: { opacity: 0.6, fontFamily: "monospace" },
+  metaRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
   dim: { opacity: 0.6 },
   loading: { flex: 1, alignItems: "center", justifyContent: "center" },
   inlineLoading: {
