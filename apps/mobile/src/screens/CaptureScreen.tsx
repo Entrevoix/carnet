@@ -20,6 +20,7 @@ const localId = (): string =>
 import type { RootStackParamList } from "../../App";
 import { VoiceButton, type VoiceButtonHandle } from "../voice/VoiceButton";
 import { CardScannerModal } from "../components/CardScannerModal";
+import { TagInput } from "../components/TagInput";
 import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
 import {
@@ -46,6 +47,8 @@ import {
 } from "../lib/writer";
 import { pickAttachment, type PickedAttachment } from "../lib/attachments";
 import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
+import { mergeUserTags } from "../lib/tags";
+import { getTagIndex } from "../lib/vault";
 import {
   IDEA_STATUSES,
   deriveTitle,
@@ -113,11 +116,19 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // (confirmSave online, or enqueue offline) so cancelling at preview leaves
   // no orphaned binaries on disk. Idea + Journal only.
   const [pending, setPending] = useState<PickedAttachment[]>([]);
+  // User-entered tags, merged into the note frontmatter at write time (both the
+  // online and offline paths). knownTags backs the autocomplete.
+  const [tags, setTags] = useState<string[]>([]);
+  const [knownTags, setKnownTags] = useState<string[]>([]);
 
   useEffect(() => {
     void getQueueDepth().then(setQueueDepth);
     // Drain any queued captures on screen open
     void drainQueue().then(() => getQueueDepth().then(setQueueDepth));
+    // Load the vault tag index for autocomplete (cache-first; never blocks UI).
+    void getTagIndex()
+      .then((index) => setKnownTags(index.tags.map((entry) => entry.tag)))
+      .catch(() => {});
   }, []);
 
   const currentStatus = useMemo(
@@ -235,6 +246,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setTranscript("");
       setOcrText("");
       setPending([]);
+      setTags([]);
     } catch (qe: unknown) {
       const qmsg = qe instanceof Error ? qe.message : String(qe);
       setError(`Couldn't reach OmniRoute, and queuing offline failed: ${qmsg}`);
@@ -266,7 +278,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           // Write the binaries to disk first (local + offline-safe), then
           // queue only their rel-paths — never base64.
           const refs = await persistAttachments();
-          await enqueue({ mode: "idea", text: text.trim(), attachments: refs });
+          await enqueue({ mode: "idea", text: text.trim(), attachments: refs, tags });
         });
       }
       return;
@@ -295,6 +307,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
             notes: "",
             date: todayLocal(),
             attachments: refs,
+            tags,
           });
         });
       }
@@ -321,7 +334,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setPhase("preview");
     } catch (e: unknown) {
       await handleCaptureError(e, () =>
-        enqueue({ mode: "person", ocrResult: ocrText.trim(), context: text.trim() }),
+        enqueue({ mode: "person", ocrResult: ocrText.trim(), context: text.trim(), tags }),
       );
     }
   };
@@ -332,10 +345,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
       try {
         console.log("[confirmSave] writeIdea start", { slug: pendingIdea.slug });
         const refs = await persistAttachments();
-        const markdown = injectAttachments(pendingIdea.markdown, refs);
+        const markdown = mergeUserTags(injectAttachments(pendingIdea.markdown, refs), tags);
         const { filepath } = await writeIdea(pendingIdea.slug, markdown);
         console.log("[confirmSave] writeIdea ok", filepath);
         setPending([]);
+        setTags([]);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingIdea.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
@@ -354,10 +368,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
       try {
         console.log("[confirmSave] appendJournal start", { date: pendingJournal.date });
         const refs = await persistAttachments();
-        const markdown = injectAttachments(pendingJournal.markdown, refs);
+        const markdown = mergeUserTags(injectAttachments(pendingJournal.markdown, refs), tags);
         const { filepath } = await appendJournal(pendingJournal.date, markdown);
         console.log("[confirmSave] appendJournal ok", filepath);
         setPending([]);
+        setTags([]);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingJournal.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
@@ -374,12 +389,14 @@ export default function CaptureScreen({ route, navigation }: Props) {
     if (mode === "person" && pendingPerson) {
       try {
         console.log("[confirmSave] writePerson start");
+        const markdown = mergeUserTags(pendingPerson.markdown, tags);
         const { filepath } = await writePerson(
           pendingPerson.firstName,
           pendingPerson.lastName,
-          pendingPerson.markdown,
+          markdown,
         );
         console.log("[confirmSave] writePerson ok", filepath);
+        setTags([]);
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingPerson.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
@@ -476,6 +493,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
             </View>
           )}
         </View>
+      )}
+
+      {phase === "input" && (
+        <TagInput tags={tags} onChange={setTags} knownTags={knownTags} />
       )}
 
       {phase === "input" && (

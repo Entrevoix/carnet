@@ -39,6 +39,7 @@ import {
   injectAttachments,
   type AttachmentRef,
 } from "./writer";
+import { mergeUserTags } from "./tags";
 import { deriveTitle } from "@carnet/shared";
 
 export type CaptureMode = "idea" | "journal" | "person";
@@ -58,6 +59,8 @@ export interface IdeaPayload {
   mode: "idea";
   text: string;
   attachments?: AttachmentRef[];
+  /** User-entered tags, merged into frontmatter on drain (offline parity). */
+  tags?: string[];
 }
 
 export interface JournalPayload {
@@ -66,12 +69,16 @@ export interface JournalPayload {
   notes: string;
   date: string;
   attachments?: AttachmentRef[];
+  /** User-entered tags, merged into frontmatter on drain (offline parity). */
+  tags?: string[];
 }
 
 export interface PersonPayload {
   mode: "person";
   ocrResult: string;
   context: string;
+  /** User-entered tags, merged into frontmatter on drain (offline parity). */
+  tags?: string[];
 }
 
 export type QueuePayload = IdeaPayload | JournalPayload | PersonPayload;
@@ -249,14 +256,21 @@ async function processRow(payload: QueuePayload): Promise<void> {
     const slug = slugify(title) || "untitled";
     // Binaries were already written to disk at enqueue; fold their rel-paths
     // back into the body so the drained note matches the online capture.
-    const md = injectAttachments(result.markdown, payload.attachments ?? []);
+    // Tags are merged AFTER attachments so the frontmatter merge sees the final body.
+    const md = mergeUserTags(
+      injectAttachments(result.markdown, payload.attachments ?? []),
+      payload.tags,
+    );
     await writeIdea(slug, md);
   } else if (payload.mode === "journal") {
     const result = await enrichJournal({
       transcript: payload.transcript,
       notes: payload.notes,
     });
-    const md = injectAttachments(result.markdown, payload.attachments ?? []);
+    const md = mergeUserTags(
+      injectAttachments(result.markdown, payload.attachments ?? []),
+      payload.tags,
+    );
     await appendJournal(payload.date, md);
   } else if (payload.mode === "person") {
     const result = await enrichPerson({
@@ -264,7 +278,7 @@ async function processRow(payload: QueuePayload): Promise<void> {
       context: payload.context,
     });
     // Extract name — pass empty strings to writePerson so it falls back to markdown
-    await writePerson("", "", result.markdown);
+    await writePerson("", "", mergeUserTags(result.markdown, payload.tags));
   }
 }
 
