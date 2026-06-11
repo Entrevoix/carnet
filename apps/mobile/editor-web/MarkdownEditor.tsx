@@ -7,6 +7,7 @@ import CodeBlock from '@tiptap/extension-code-block';
 import { Extension } from '@tiptap/core';
 import { Plugin } from '@tiptap/pm/state';
 import { MarkdownBridge } from '../src/bridges/MarkdownBridge';
+import { markdownFromClipboard } from '../src/lib/markdownPaste';
 
 /**
  * Paste raw markdown as formatted content. The official @tiptap/markdown (v3) has no
@@ -26,13 +27,13 @@ const MarkdownPaste = Extension.create({
           handlePaste(_view, event) {
             const clipboard = event.clipboardData;
             if (!clipboard) return false;
-            // Real rich content (web pages, docs) carries text/html — let the default
-            // handler take it so we don't mangle pasted formatting.
-            if (clipboard.getData('text/html').trim()) return false;
-            const text = clipboard.getData('text/plain');
-            if (!text) return false;
+            const markdown = markdownFromClipboard(
+              clipboard.getData('text/html'),
+              clipboard.getData('text/plain'),
+            );
+            if (markdown == null) return false; // rich/HTML or empty → default handler
             event.preventDefault();
-            editor.commands.insertContent(text, { contentType: 'markdown' });
+            editor.commands.insertContent(markdown, { contentType: 'markdown' });
             return true;
           },
         },

@@ -434,16 +434,24 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     setEditError(null);
     let next: string;
     try {
-      // Race a timeout so a never-resolving bridge (e.g. Save tapped before the
-      // editor mounted) surfaces as an error instead of a stuck, disabled UI.
-      const editedBody = await Promise.race([
-        wysiwygRef.current?.getMarkdown() ??
-          Promise.reject(new Error("Editor not mounted")),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Editor timed out — try again.")), 5000),
-        ),
-      ]);
+      // getMarkdown() rejects on its own 5s timeout (awaitMarkdownResponse), so a
+      // never-resolving bridge — Save tapped before the editor mounted — surfaces
+      // as an error instead of a stuck, disabled UI, and never leaks the resolver.
+      const editedBody = await (wysiwygRef.current?.getMarkdown() ??
+        Promise.reject(new Error("Editor not mounted")));
       next = editHeaderRef.current + editedBody;
+      if (next === body) {
+        // Editor returned the exact on-disk content — nothing changed. Skip the
+        // write so opening + saving a note never churns its content/mtime. (Real
+        // edits, and any whitespace/underscore-escape normalization, still differ
+        // and do write.)
+        if (mountedRef.current) {
+          setEditMode(false);
+          setSaving(false);
+        }
+        savingEditRef.current = false;
+        return;
+      }
       await updateNote(entry.filepath, next);
       if (!mountedRef.current) {
         savingEditRef.current = false;
@@ -477,7 +485,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       setSaving(false);
     }
     savingEditRef.current = false;
-  }, [entry.filepath, entry.id, entry.title]);
+  }, [body, entry.filepath, entry.id, entry.title]);
 
   // Unsaved-changes guard. preventDefault + show dialog when the user
   // tries to navigate away with dirty edits. Re-subscribes whenever
@@ -648,7 +656,12 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
             {`Save failed: ${editError}`}
           </Banner>
         ) : null}
-        <View style={styles.richBar}>
+        <View
+          style={[
+            styles.richBar,
+            { borderBottomColor: theme.colors.outlineVariant },
+          ]}
+        >
           <Text variant="titleMedium">Editing · Rich text</Text>
           <View style={styles.richBarActions}>
             <Button onPress={cancelEdit} disabled={saving}>
@@ -755,52 +768,43 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
 
         {editMode ? (
           <Card style={styles.card}>
-            <Card.Title
-              title="Editing"
-              subtitle={
-                richEditorEnabled ? "Rich text · body only" : "Markdown + frontmatter"
-              }
-            />
+            {/* Reached only in markdown mode: the rich (WYSIWYG) editor renders
+                full-screen via the early return near the top of render(). */}
+            <Card.Title title="Editing" subtitle="Markdown + frontmatter" />
             <Card.Content>
-              {richEditorEnabled ? (
-                <View style={styles.wysiwygContainer}>
-                  <WysiwygEditor ref={wysiwygRef} value={wysiwygSeed} />
-                </View>
-              ) : (
-                <>
-                  <MarkdownToolbar
-                    onFormat={applyFmt}
-                    onInsertImage={insertImage}
-                    disabled={saving}
-                  />
-                  <TextInput
-                    mode="outlined"
-                    multiline
-                    numberOfLines={16}
-                    value={draft}
-                    onChangeText={(t) => {
-                      setDraft(t);
-                      // User is typing — stop forcing the caret so the IME owns it.
-                      if (forceSelection) setForceSelection(null);
-                    }}
-                    selection={forceSelection ?? undefined}
-                    onSelectionChange={(e) => {
-                      setSelection(e.nativeEvent.selection);
-                      if (forceSelection) setForceSelection(null);
-                    }}
-                    style={styles.editor}
-                    autoCorrect={false}
-                    autoCapitalize="none"
-                  />
-                  {preview ? (
-                    <View style={styles.editPreview}>
-                      <Markdown style={markdownStyle(theme)}>
-                        {stripPairedBinaryLinks(stripFrontmatter(draft))}
-                      </Markdown>
-                    </View>
-                  ) : null}
-                </>
-              )}
+              <>
+                <MarkdownToolbar
+                  onFormat={applyFmt}
+                  onInsertImage={insertImage}
+                  disabled={saving}
+                />
+                <TextInput
+                  mode="outlined"
+                  multiline
+                  numberOfLines={16}
+                  value={draft}
+                  onChangeText={(t) => {
+                    setDraft(t);
+                    // User is typing — stop forcing the caret so the IME owns it.
+                    if (forceSelection) setForceSelection(null);
+                  }}
+                  selection={forceSelection ?? undefined}
+                  onSelectionChange={(e) => {
+                    setSelection(e.nativeEvent.selection);
+                    if (forceSelection) setForceSelection(null);
+                  }}
+                  style={styles.editor}
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                />
+                {preview ? (
+                  <View style={styles.editPreview}>
+                    <Markdown style={markdownStyle(theme)}>
+                      {stripPairedBinaryLinks(stripFrontmatter(draft))}
+                    </Markdown>
+                  </View>
+                ) : null}
+              </>
             </Card.Content>
             <Card.Actions>
               {!richEditorEnabled ? (
@@ -1062,12 +1066,8 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     minHeight: 320,
   },
-  wysiwygContainer: {
-    // The WebView/RichText needs a bounded height inside the ScrollView; the
-    // editor scrolls internally and its toolbar anchors to the keyboard.
-    height: 420,
-  },
-  // Full-screen rich-edit layout (lets the formatting toolbar dock above the keyboard).
+  // Full-screen rich-edit layout. The toolbar docks at the top of the editor
+  // (Android edge-to-edge can't lift it above the keyboard — see WysiwygEditor).
   richRoot: { flex: 1 },
   richBar: {
     flexDirection: "row",
@@ -1077,7 +1077,6 @@ const styles = StyleSheet.create({
     paddingRight: 8,
     paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#8884",
   },
   richBarActions: { flexDirection: "row", alignItems: "center", gap: 4 },
   richEditor: { flex: 1 },

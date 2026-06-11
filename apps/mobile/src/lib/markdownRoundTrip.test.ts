@@ -33,6 +33,15 @@ const emptyRects = () => Object.assign([], { item: () => null });
 (document as any).elementFromPoint = () => null;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+// Proxy for the shipped editor's extension set. The WebView runs
+// TenTapStartKit + @tiptap/extension-code-block + Markdown(gfm) (see
+// editor-web/MarkdownEditor.tsx); TenTap's bridges can't load headless, so we
+// stand in the equivalent raw tiptap extensions that register the SAME
+// ProseMirror nodes/marks — StarterKit covers bold/italic/headings/lists/link/
+// inline-code AND the fenced code-block node (the construct TenTapStartKit omits
+// and the editor re-adds via extension-code-block), plus TaskList/TaskItem/Image.
+// This gate proves the markdown<->doc fidelity of those constructs; the paste
+// path's safety is covered separately in markdownPasteSafety.test.ts.
 const EXTENSIONS = [
   StarterKit,
   TaskList,

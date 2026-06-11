@@ -1,5 +1,6 @@
 import { BridgeExtension } from '@10play/tentap-editor';
 import type { Editor } from '@tiptap/core';
+import { resolveMarkdownResponse } from './markdownResponse';
 
 /**
  * Custom TenTap bridge that exchanges MARKDOWN (not HTML) across the WebView
@@ -29,16 +30,11 @@ interface WebMarkdownEditor {
   };
 }
 
-// Save-on-demand issues one requestMarkdown() at a time, so a single pending
-// resolver suffices; an overlapping second request would drop the first.
-let pendingResolve: ((markdown: string) => void) | null = null;
-
-/** Call immediately before editor.requestMarkdown(); resolves when the WebView replies. */
-export function awaitMarkdownResponse(): Promise<string> {
-  return new Promise<string>((resolve) => {
-    pendingResolve = resolve;
-  });
-}
+// The in-flight requestMarkdown() reply is owned by markdownResponse.ts (a
+// dependency-free module, so its timeout/cleanup logic is unit-testable without
+// loading this TenTap bridge headless). Re-exported so callers keep importing
+// awaitMarkdownResponse from here.
+export { awaitMarkdownResponse } from './markdownResponse';
 
 export interface MarkdownBridgeInstance {
   setMarkdown: (markdown: string) => void;
@@ -76,8 +72,7 @@ export const MarkdownBridge = new BridgeExtension<
   // ── RN side: receive the reply from the WebView ──
   onEditorMessage: (message) => {
     if (message.type === 'markdown-response') {
-      pendingResolve?.(message.payload);
-      pendingResolve = null;
+      resolveMarkdownResponse(message.payload);
       return true;
     }
     return false;

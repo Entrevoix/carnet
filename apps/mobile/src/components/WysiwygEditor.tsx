@@ -57,6 +57,10 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
     // cold start can outlast a blind timer — so anchor to the WebView load event
     // (onLoad below) and re-send across a short staircase. Runs once, before any
     // user edit; setMarkdown is idempotent.
+    //
+    // `value` is a MOUNT-ONLY seed: injection is one-shot (initializedRef), so a
+    // later change to the prop is intentionally ignored. The caller remounts the
+    // editor per edit session, which is the supported way to load a new body.
     const injectBody = useCallback(() => {
       if (initializedRef.current) return;
       initializedRef.current = true;
