@@ -41,9 +41,12 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
 import {
   buildTagIndex,
   getTagIndex,
+  inferNoteMode,
   loadCachedTagIndex,
+  notesForTag,
   refreshTagIndex,
   suggestTags,
+  synthesizeEntry,
   tagsForNote,
   type TagIndex,
 } from "./vault";
@@ -216,5 +219,87 @@ describe("tagsForNote", () => {
 
   it("returns [] for a note with no tags", () => {
     expect(tagsForNote("# Just prose\n")).toEqual([]);
+  });
+});
+
+// ── inferNoteMode ─────────────────────────────────────────────────────────────
+
+describe("inferNoteMode", () => {
+  it("maps file:// subdirs to capture modes", () => {
+    expect(inferNoteMode("file:///v/Ideas/a.md")).toBe("idea");
+    expect(inferNoteMode("file:///v/Journal/2026-05-16.md")).toBe("journal");
+    expect(inferNoteMode("file:///v/People/Jane-Doe.md")).toBe("person");
+  });
+
+  it("decodes SAF document URIs before matching the subdir", () => {
+    const saf =
+      "content://com.android.externalstorage.documents/tree/primary%3ACarnet/document/primary%3ACarnet%2FJournal%2F2026-05-16.md";
+    expect(inferNoteMode(saf)).toBe("journal");
+  });
+
+  it("defaults to idea for an unrecognized location", () => {
+    expect(inferNoteMode("file:///v/Misc/x.md")).toBe("idea");
+  });
+});
+
+// ── synthesizeEntry ───────────────────────────────────────────────────────────
+
+describe("synthesizeEntry", () => {
+  it("derives title from the H1, mode from the subdir, date from frontmatter", () => {
+    const md = "---\ncreated: 2026-05-08\n---\n# My Idea\n\nbody\n";
+    const entry = synthesizeEntry("file:///v/Ideas/my-idea.md", md);
+    expect(entry).toEqual({
+      id: "vault:file:///v/Ideas/my-idea.md",
+      mode: "idea",
+      title: "My Idea",
+      filepath: "file:///v/Ideas/my-idea.md",
+      createdAt: Date.parse("2026-05-08"),
+    });
+  });
+
+  it("falls back to the filename title and createdAt 0 for an empty note", () => {
+    const entry = synthesizeEntry("file:///v/Journal/2026-05-16.md", "");
+    expect(entry.title).toBe("2026-05-16");
+    expect(entry.mode).toBe("journal");
+    expect(entry.createdAt).toBe(0);
+  });
+
+  it("uses an unknown id no recents helper will match (no history corruption)", () => {
+    const entry = synthesizeEntry("file:///v/Ideas/a.md", "# A\n");
+    expect(entry.id.startsWith("vault:")).toBe(true);
+  });
+});
+
+// ── notesForTag ───────────────────────────────────────────────────────────────
+
+describe("notesForTag", () => {
+  it("resolves a tag's notes into entries, newest first", async () => {
+    addNote("file:///v/Ideas/a.md", "Ideas", "---\ncreated: 2026-01-01\ntags: [work]\n---\n# A\n");
+    addNote("file:///v/Ideas/b.md", "Ideas", "---\ncreated: 2026-03-01\ntags: [work]\n---\n# B\n");
+    const index = await buildTagIndex();
+
+    const notes = await notesForTag(index, "work");
+    expect(notes.map((n) => n.title)).toEqual(["B", "A"]); // 2026-03 before 2026-01
+  });
+
+  it("normalizes the tag argument", async () => {
+    addNote("file:///v/Ideas/a.md", "Ideas", "---\ntags: [my-tag]\n---\n# A\n");
+    const index = await buildTagIndex();
+    expect(await notesForTag(index, "My Tag")).toHaveLength(1);
+  });
+
+  it("returns [] for an unknown tag", async () => {
+    const index = await buildTagIndex();
+    expect(await notesForTag(index, "nope")).toEqual([]);
+  });
+
+  it("skips notes that became unreadable after indexing", async () => {
+    addNote("file:///v/Ideas/a.md", "Ideas", "---\ntags: [x]\n---\n# A\n");
+    addNote("file:///v/Ideas/b.md", "Ideas", "---\ntags: [x]\n---\n# B\n");
+    const index = await buildTagIndex();
+    _unreadable.add("file:///v/Ideas/b.md");
+
+    const notes = await notesForTag(index, "x");
+    expect(notes.map((n) => n.title)).toEqual(["A"]);
   });
 });
