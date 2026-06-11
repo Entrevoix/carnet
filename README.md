@@ -1,6 +1,23 @@
-# Carnet
+<!-- glowup:hero start -->
+<div align="center">
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner.svg">
+    <img src="docs/assets/banner-light.svg" alt="Carnet — mobile-first knowledge capture for Obsidian" width="880">
+  </picture>
+</h1>
 
-Mobile-first knowledge capture for Obsidian, with LLM enrichment via OmniRoute and sync via Syncthing.
+[![Build](https://img.shields.io/github/actions/workflow/status/Entrevoix/carnet/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=build)](https://github.com/Entrevoix/carnet/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-7C5CE0?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
+
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Expo](https://img.shields.io/badge/Expo-000020?style=for-the-badge&logo=expo&logoColor=white)
+![React Native](https://img.shields.io/badge/React_Native-61DAFB?style=for-the-badge&logo=react&logoColor=black)
+![Tauri](https://img.shields.io/badge/Tauri-24C8D8?style=for-the-badge&logo=tauri&logoColor=black)
+![Obsidian](https://img.shields.io/badge/Obsidian-7C3AED?style=for-the-badge&logo=obsidian&logoColor=white)
+
+</div>
+<!-- glowup:hero end -->
 
 ## Architecture
 
