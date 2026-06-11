@@ -12,9 +12,11 @@
  * after a capture), not on every keystroke.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { deriveTitle } from "@carnet/shared";
 
-import { getFrontmatterTags, normalizeTag } from "./frontmatter";
+import { extractFrontmatterField, getFrontmatterTags, normalizeTag } from "./frontmatter";
 import { listNoteFiles, readNote } from "./writer";
+import type { CaptureEntry, CaptureMode } from "./storage";
 
 const CACHE_KEY = "carnet:tagindex:v1";
 
@@ -145,4 +147,80 @@ export function suggestTags(index: TagIndex, query: string, limit = 8): string[]
   const prefix = all.filter((tag) => tag.startsWith(q));
   const substring = all.filter((tag) => !tag.startsWith(q) && tag.includes(q));
   return [...prefix, ...substring].slice(0, limit);
+}
+
+// ── Tag browser: notes for a tag ──────────────────────────────────────────────
+
+/** Decoded basename of a note URI with the `.md` extension stripped. */
+function basenameTitle(uri: string): string {
+  let decoded = uri;
+  try {
+    decoded = decodeURIComponent(uri);
+  } catch {
+    /* keep raw */
+  }
+  const last = decoded.split("/").pop() ?? decoded;
+  return last.replace(/\.md$/i, "");
+}
+
+/** Infer the capture mode from which note subdir a URI lives in. */
+export function inferNoteMode(uri: string): CaptureMode {
+  let decoded = uri;
+  try {
+    decoded = decodeURIComponent(uri);
+  } catch {
+    /* keep raw */
+  }
+  if (decoded.includes("/Journal/")) return "journal";
+  if (decoded.includes("/People/")) return "person";
+  return "idea";
+}
+
+/** Parse a `created:`/`date:` frontmatter value to epoch ms, or null. */
+function frontmatterDateMs(markdown: string): number | null {
+  const raw =
+    extractFrontmatterField(markdown, "created") ?? extractFrontmatterField(markdown, "date");
+  if (!raw) return null;
+  const ms = Date.parse(raw);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/**
+ * Build a minimal CaptureEntry for a vault-scanned note that may not be in the
+ * 20-item Recents history. Mode comes from the subdir, title from the H1 (else
+ * the filename), createdAt from the frontmatter date (else 0). The id is
+ * filepath-derived and deliberately NOT a recents id — RecentDetail's history
+ * mutations (remove/updateTitle) no-op on unknown ids, so opening or deleting a
+ * browsed note never corrupts the recents list.
+ */
+export function synthesizeEntry(uri: string, markdown: string): CaptureEntry {
+  return {
+    id: `vault:${uri}`,
+    mode: inferNoteMode(uri),
+    title: deriveTitle(markdown) || basenameTitle(uri),
+    filepath: uri,
+    createdAt: frontmatterDateMs(markdown) ?? 0,
+  };
+}
+
+/**
+ * Resolve the notes carrying `tag` into CaptureEntry rows (newest first), ready
+ * to hand to RecentDetail. Reads each note (bounded concurrency); unreadable
+ * notes are skipped.
+ */
+export async function notesForTag(index: TagIndex, tag: string): Promise<CaptureEntry[]> {
+  const entry = index.tags.find((t) => t.tag === normalizeTag(tag));
+  if (!entry) return [];
+  const out: CaptureEntry[] = [];
+  await mapWithConcurrency(entry.files, SCAN_CONCURRENCY, async (uri) => {
+    let markdown: string;
+    try {
+      markdown = await readNote(uri);
+    } catch {
+      return;
+    }
+    out.push(synthesizeEntry(uri, markdown));
+  });
+  out.sort((a, b) => b.createdAt - a.createdAt || a.title.localeCompare(b.title));
+  return out;
 }

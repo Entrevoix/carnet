@@ -39,10 +39,13 @@ export default function HomeScreen({ navigation }: Props) {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <IconButton
-          icon="cog"
-          onPress={() => navigation.navigate("Settings")}
-        />
+        <View style={styles.headerActions}>
+          <IconButton
+            icon="tag-multiple-outline"
+            onPress={() => navigation.navigate("TagBrowser")}
+          />
+          <IconButton icon="cog" onPress={() => navigation.navigate("Settings")} />
+        </View>
       ),
     });
   }, [navigation]);
@@ -340,4 +343,5 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   selectionTitle: { flex: 1, marginLeft: 4 },
+  headerActions: { flexDirection: "row", alignItems: "center" },
 });
