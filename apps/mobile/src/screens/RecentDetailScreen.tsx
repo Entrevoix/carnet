@@ -61,6 +61,7 @@ import {
   type Sel,
 } from "../lib/markdownEdit";
 import { pickAttachment } from "../lib/attachments";
+import { MAX_EDITOR_IMAGE_BASE64, toDataUri } from "../lib/editorImages";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
 import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
 import { TagInput } from "../components/TagInput";
@@ -384,6 +385,40 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       insertingImageRef.current = false;
     }
   }, [draft, selection]);
+
+  /** Rich-editor image button: pick → write to the vault → insert the embed at
+   * the cursor inside the WYSIWYG editor. The picked bytes are reused to build
+   * the in-editor data-URI preview (no disk re-read); an image over the inline
+   * cap still inserts + saves, just without an in-editor preview. Cancelling
+   * writes nothing; discarding the edit after inserting leaves the file orphaned
+   * in Photos/ (recoverable in the vault, same as a stub photo). */
+  const insertWysiwygImage = useCallback(async () => {
+    if (insertingImageRef.current || savingEditRef.current) return;
+    insertingImageRef.current = true;
+    setEditError(null);
+    try {
+      const picked = await pickAttachment({ imagesOnly: true });
+      if (!picked) return;
+      const ext = extFromMime(picked.mime);
+      const base = slugify(picked.filename.replace(/\.[^.]+$/, "")) || "image";
+      const { finalName } = await writeBinary(
+        "Photos",
+        `${base}.${ext}`,
+        picked.base64,
+        picked.mime,
+      );
+      const rel = `../Photos/${finalName}`;
+      const dataUri =
+        picked.base64.length <= MAX_EDITOR_IMAGE_BASE64
+          ? toDataUri(picked.mime, picked.base64)
+          : null;
+      wysiwygRef.current?.insertImage(rel, dataUri);
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : String(e));
+    } finally {
+      insertingImageRef.current = false;
+    }
+  }, []);
 
   const cancelEdit = useCallback(() => {
     if (isDirty) {
@@ -712,6 +747,13 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
         >
           <Text variant="titleMedium">Editing · Rich text</Text>
           <View style={styles.richBarActions}>
+            <IconButton
+              icon="image-plus"
+              size={22}
+              onPress={insertWysiwygImage}
+              disabled={saving}
+              accessibilityLabel="Insert image"
+            />
             <Button onPress={cancelEdit} disabled={saving}>
               Cancel
             </Button>

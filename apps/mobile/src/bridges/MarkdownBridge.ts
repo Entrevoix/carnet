@@ -19,6 +19,7 @@ import { resolveMarkdownResponse } from './markdownResponse';
 
 type MarkdownMessage =
   | { type: 'set-markdown'; payload: string }
+  | { type: 'insert-markdown'; payload: string }
   | { type: 'request-markdown'; payload?: undefined }
   | { type: 'markdown-response'; payload: string };
 
@@ -27,6 +28,9 @@ interface WebMarkdownEditor {
   getMarkdown: () => string;
   commands: {
     setContent: (content: string, options: { contentType: 'markdown' }) => boolean;
+    // insertContent at the cursor — the same markdown-aware path MarkdownPaste
+    // already uses, reused here to drop an image embed in at the caret.
+    insertContent: (content: string, options: { contentType: 'markdown' }) => boolean;
   };
 }
 
@@ -38,6 +42,7 @@ export { awaitMarkdownResponse } from './markdownResponse';
 
 export interface MarkdownBridgeInstance {
   setMarkdown: (markdown: string) => void;
+  insertMarkdown: (markdown: string) => void;
   requestMarkdown: () => void;
 }
 
@@ -62,6 +67,13 @@ export const MarkdownBridge = new BridgeExtension<
       web.commands.setContent(message.payload, { contentType: 'markdown' });
       return true;
     }
+    if (message.type === 'insert-markdown') {
+      // Parse the payload as markdown and drop it in at the cursor (used to
+      // insert an image embed). Same contentType:'markdown' requirement as
+      // set-markdown — without it the string is inserted as literal HTML.
+      web.commands.insertContent(message.payload, { contentType: 'markdown' });
+      return true;
+    }
     if (message.type === 'request-markdown') {
       sendMessageBack({ type: 'markdown-response', payload: web.getMarkdown() });
       return true;
@@ -82,6 +94,8 @@ export const MarkdownBridge = new BridgeExtension<
   extendEditorInstance: (sendBridgeMessage) => ({
     setMarkdown: (markdown: string) =>
       sendBridgeMessage({ type: 'set-markdown', payload: markdown }),
+    insertMarkdown: (markdown: string) =>
+      sendBridgeMessage({ type: 'insert-markdown', payload: markdown }),
     requestMarkdown: () => sendBridgeMessage({ type: 'request-markdown' }),
   }),
 });
