@@ -1,9 +1,25 @@
 # Handoff: WYSIWYG large-image preview (inject-then-swap) + save hardening — issue #43
 
-> Status as of 2026-06-12. Branch `feat/wysiwyg-large-image-preview` → PR (off `main` @ `3022f26`).
-> **tsc clean, vitest 488/488, editor bundle rebuilt, independent opus review passed (one MAJOR
-> found + fixed).** ⛔ **On-device smoke NOT yet done — it is the gating acceptance criterion and is
-> device-only.** This doc bridges a `/clear` and hands off to an overnight loop.
+> Status as of 2026-06-13. MERGED to `main` (PR #45, squash `8a1c7aa`). **tsc clean, vitest 488/488,
+> editor bundle rebuilt, independent opus review passed (one MAJOR found + fixed).** ✅ **On-device
+> smoke PASSED 2026-06-13** (Pixel 9 Pro Fold `4A111FDKD0000C`, #43 release APK) — see below.
+
+## ✅ On-device smoke — PASSED (2026-06-13, Pixel 9 Pro Fold)
+Run against the disposable "Jack's Baseball Team" Idea note, which carries TWO images incl. the large
+baseball photo that did NOT preview under #42's 8 MB cap (the exact case the cap-raise broke).
+- **Large image previews in-editor** — the baseball photo (over the old 8 MB cap) now renders inline
+  in the WYSIWYG editor via inject-then-swap under GrapheneOS/Vanadium. THE make-or-break unknown. ✓
+- **Multiple images both preview** — baseball + yard photo both render; the compound-payload case
+  that opened the old single-`setMarkdown` editor BLANK now works (each swapped via its own message). ✓
+- **Editor never blank** — canonical body injected first, images swapped in after. ✓
+- **Save → canonical links, no blob** — after Save, both images still resolve in the read-only
+  Attachments card (which only renders `../Photos/…`), body prose intact → the data URIs were restored
+  to canonical links on disk, no base64 blob, no blanking/corruption. ✓
+- **Caveat (unchanged from #42):** vault is the private sandbox, unreadable via `run-as` on a release
+  build, so canonical-on-disk was verified via the in-app Attachments render, not raw bytes.
+- **Not separately forced:** the "silently-empty editor can't blank on Save" path (Item 2) — structurally
+  guarded by the ack-gating + `isSuspiciousBlanking`; the editor loaded reliably every time so it wasn't
+  triggerable. A fresh >8 MB *insert* previewing (vs the load path proven here) also not separately run.
 
 ## What shipped (code-complete, behind on-device verification)
 Closes both items of issue #43. Follows directly from #42 (picture insert, merged `67a254d`).
