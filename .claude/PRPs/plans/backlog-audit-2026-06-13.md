@@ -24,7 +24,7 @@ These should be moved to `.claude/PRPs/plans/completed/` (deferred here to avoid
 ## What GENUINELY remains — none is safe for an unattended headless loop
 
 ### Device-gated (need the Pixel + the user's PIN — a headless loop cannot do these)
-- **#43 on-device smoke** — data-URI render under GrapheneOS/Vanadium, >8 MB preview, save round-trip. See `wysiwyg-large-image-inject-then-swap-handoff.md`.
+- ~~**#43 on-device smoke**~~ — ✅ **PASSED 2026-06-13** (Pixel 9 Pro Fold): large baseball photo (over the old 8 MB cap) previews in-editor via inject-then-swap under Vanadium, both images render (no blank), Save round-trips to canonical `../Photos/` links (Attachments card resolves them, no blob). See `wysiwyg-large-image-inject-then-swap-handoff.md`.
 - **Share types** — confirm carnet appears in the Android share sheet for `audio/*` and `*/*`, and the binary lands in `Audio/` / `Files/`. Needs `expo prebuild` + a native rebuild + on-device share.
 - **Package rename** — `rm -rf android && expo prebuild` + `npm run android:release` installs `com.ventoux.carnet` as a NEW app alongside the old `us.beary.carnet` (different package = no in-place update, no shared data). Verify native modules (STT, capture notification, widget, app shortcuts) under the new id, then uninstall the old app. **Risk: a native rebuild may need uncached Google-Maven deps the build env can't fetch ([[build-env-no-google-maven-fetch]]).**
 - STT device-side: download the on-device speech model + speak-test ([[pixel-stt-device-recognizer-health]]).
