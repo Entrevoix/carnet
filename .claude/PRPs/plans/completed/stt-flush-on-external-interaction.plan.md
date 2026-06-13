@@ -1,5 +1,7 @@
 # Plan: Gracefully stop + flush STT when tapping attach controls mid-dictation
 
+> ✅ SHIPPED (#32 3bc4959). Only remaining is device-side (download the on-device speech model + speak-test) — no code left; tracked in project memory. Archived.
+
 ## Summary
 While voice dictation (STT) is recording in the Idea/Journal capture flow, tapping the **Image**/**File** attach buttons (or a pending-attachment chip's ✕) interrupts the recognizer and the in-progress transcript is **lost** — never committed to the text field. This adds an imperative `stopAndFlush()` to `VoiceButton` that commits whatever has been transcribed so far (treats the live partial as final), and calls it from CaptureScreen's attach handlers *before* the picker opens, so the partial is saved instead of stranded.
 

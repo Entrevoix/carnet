@@ -1,5 +1,7 @@
 # Handoff: WYSIWYG picture insert — BUILT, CI-green, on-device smoke PASSED
 
+> ✅ Handoff for picture insert — SHIPPED (#42 67a254d, on-device smoke passed). Follow-up #43 (large images + save hardening) also shipped (#45). Archived snapshot.
+
 > Status as of 2026-06-12. Branch `feat/wysiwyg-picture-insert` → PR #42 (off `main` @ `0fb7d1c`,
 > commit `a7adae4`). tsc clean, 482/482 vitest, editor bundle rebuilt. **On-device smoke PASSED
 > 2026-06-12 (Pixel 9 Pro Fold `4A111FDKD0000C`, the #42 release APK).** This doc bridges a `/clear`.

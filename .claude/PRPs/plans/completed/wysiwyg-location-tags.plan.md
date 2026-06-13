@@ -1,5 +1,7 @@
 # Plan: Capture Metadata Suite — WYSIWYG editing, Location picker, Tag system
 
+> ✅ SHIPPED — capture-metadata suite complete: Task 0 frontmatter (#36 c4bee19), F3 Tags (#38 cf45a24 + #39 fixes), F2 Location (#40 787688b). Archived.
+
 ## Summary
 Three related capture/editing features for the **React Native + Expo** carnet app
 (NOT the Kotlin/Compose stack the original spec assumed): (1) WYSIWYG note editing,

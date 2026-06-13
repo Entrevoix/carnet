@@ -1,5 +1,7 @@
 # Plan: STT first-tap-does-nothing bug
 
+> ✅ SHIPPED (#25 95d6138). Archived.
+
 ## Summary
 Investigate why the first mic tap on a cold-launched app appears to do nothing — the voice button doesn't start recording until the user taps it a second time. Likely cause: the no-saved-pkg branch triggers detection on the first tap, which shows a brief "Scanning N speech services…" toast but doesn't visibly engage the mic. Captured logs will confirm. This plan is investigation-first (Phase A) then fix-with-regression-test (Phase B).
 
