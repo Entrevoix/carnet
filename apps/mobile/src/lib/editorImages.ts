@@ -29,16 +29,18 @@
  */
 
 /** Hard cap on the base64 length we'll inline as a `data:` URI. A larger image
- * still writes to disk and embeds correctly — it just won't preview in-editor
- * (rather than bloating the DOM + the bridge message with megabytes of base64).
+ * still writes to disk and embeds correctly — it just won't preview in-editor.
  *
- * Sized to cover full-resolution phone photos (a Pixel JPEG is ~2–12 MB) while
- * staying well under the 200 MB share/OOM cap (MAX_SAFE_SHARE_BYTES) — that
- * ceiling is fine on disk but would be ruinous inlined into the WebView. The
- * resolve pass inlines every Photos embed of a note into one setMarkdown call,
- * so this is a per-image bound; a note with a handful of images stays within a
- * sane total bridge payload. */
-export const MAX_EDITOR_IMAGE_BASE64 = 24 * 1024 * 1024; // ~17 MB of binary
+ * DO NOT raise this casually. The resolve pass folds every Photos embed of a note
+ * into the SINGLE `setMarkdown` string sent across the RN↔WebView bridge, and an
+ * oversized message silently fails to apply — the editor then opens BLANK (and a
+ * Save on a blank editor would write back an empty body). On-device (2026-06-12,
+ * Pixel 9 Pro Fold) an ~8–24 MB-base64 image bumped the payload past that limit
+ * and broke injection; 8 MB is the value the passing smoke test ran at. Previewing
+ * larger images needs an architectural change (inject canonical links first, then
+ * swap each image in via its own smaller message — or a file:// access path), not
+ * a bigger number here. */
+export const MAX_EDITOR_IMAGE_BASE64 = 8 * 1024 * 1024; // ~6 MB of binary
 
 /** Canonical `../Photos/<file>` embed as carnet writes it, with an optional
  * pre-existing markdown title we must not clobber. */
