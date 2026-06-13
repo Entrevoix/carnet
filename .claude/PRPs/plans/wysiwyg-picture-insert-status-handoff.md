@@ -1,9 +1,30 @@
-# Handoff: WYSIWYG picture insert — BUILT, CI-green, on-device smoke PENDING
+# Handoff: WYSIWYG picture insert — BUILT, CI-green, on-device smoke PASSED
 
-> Status as of 2026-06-11. Branch `feat/wysiwyg-picture-insert` (off `main` @ `0fb7d1c`).
-> NOT committed yet. tsc clean, 482/482 vitest, editor bundle rebuilt. The
-> make-or-break on-device checks can only run on the Pixel (locked, needs PIN) —
-> see the smoke checklist below. This doc bridges a `/clear`.
+> Status as of 2026-06-12. Branch `feat/wysiwyg-picture-insert` → PR #42 (off `main` @ `0fb7d1c`,
+> commit `a7adae4`). tsc clean, 482/482 vitest, editor bundle rebuilt. **On-device smoke PASSED
+> 2026-06-12 (Pixel 9 Pro Fold `4A111FDKD0000C`, the #42 release APK).** This doc bridges a `/clear`.
+
+## ✅ On-device smoke — PASSED (2026-06-12)
+Run on the disposable "Jack's Baseball Team" Idea note (already carried one image embed).
+- **Data-URI display works under GrapheneOS/Vanadium** — the make-or-break unknown. A freshly
+  picked image inserted via the toolbar button rendered inline in the editor. ✓
+- **Insert flow** — image button → DocumentsUI `image/*` picker → pick → image appears in-editor. ✓
+- **Save → canonical links, NO blob** — after Save, reopening the note showed BOTH images in the
+  read-only Attachments card (which only resolves `../Photos/...` links), and the body was clean
+  prose with no base64. So the saved `.md` carries `![](../Photos/x)`, not a `data:` URI. ✓
+- **Existing image preserved** — the pre-existing baseball photo survived the round-trip (still in
+  Attachments after save). ✓
+- **Re-edit preview** — on re-entering edit, the now-saved (under-cap) image previewed inline. ✓
+- **Discard guard** — Cancel on a dirty rich edit shows the discard dialog. ✓
+- ⚠️ **One caveat (not a blocker):** the pre-existing baseball photo did NOT preview *in-editor*
+  (the fresh insert and the smaller saved image both did). Most likely it's over the
+  `MAX_EDITOR_IMAGE_BASE64` = 8 MB inline cap (`resolvePhotoDataUri` returns null → left canonical →
+  no preview), or its on-disk embed didn't match `PHOTO_EMBED`. Either way it is **safely preserved
+  on save** — no data loss, no corruption. Consider raising the cap (perf/DOM tradeoff) if large
+  existing images should preview. Couldn't confirm the exact cause: the vault is the private app
+  sandbox (`/data/user/0/com.ventoux.carnet/...`), unreadable on a release build (run-as denied).
+- **QA note:** the test added a second image to "Jack's Baseball Team" (disposable note, syncs via
+  Syncthing). Safe to delete the note or remove that image.
 
 ## TL;DR — what shipped (code-complete, behind on-device verification)
 Image insert for the **default WYSIWYG editor** (the markdown-`TextInput` path already
