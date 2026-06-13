@@ -21,9 +21,11 @@ import {
   DEFAULT_TRANSCRIPTION_MODEL,
   dismissMigrationBanner,
   getSettings,
+  hasKarakeepApiKey,
   hasOmniRouteApiKey,
   type PromptOverrides,
   saveSettings,
+  setKarakeepApiKey,
   setOmniRouteApiKey,
   shouldShowMigrationBanner,
   type Settings,
@@ -75,6 +77,7 @@ interface FormState {
   richEditorEnabled: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
+  karakeepUrl: string;
 }
 
 /**
@@ -95,6 +98,12 @@ export default function SettingsScreen() {
   const [keyConfigured, setKeyConfigured] = useState<boolean>(false);
   /** Holds a NEW API key the user is entering. Empty string means "no change". */
   const [pendingKey, setPendingKey] = useState<string>("");
+  /** Karakeep key state — mirrors the OmniRoute key pattern. The key is never
+   * read into render state; we only track whether one is configured and any
+   * newly-typed replacement. */
+  const [karakeepKeyConfigured, setKarakeepKeyConfigured] =
+    useState<boolean>(false);
+  const [pendingKarakeepKey, setPendingKarakeepKey] = useState<string>("");
   const [saved, setSaved] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
   /** Surfaced via Snackbar when the SAF folder picker fails. Previous
@@ -131,9 +140,10 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     void (async () => {
-      const [s, hasKey, banner] = await Promise.all([
+      const [s, hasKey, hasKkKey, banner] = await Promise.all([
         getSettings(),
         hasOmniRouteApiKey(),
+        hasKarakeepApiKey(),
         shouldShowMigrationBanner(),
       ]);
       // Source-of-truth for the notification toggle is native
@@ -170,8 +180,10 @@ export default function SettingsScreen() {
         richEditorEnabled: s.richEditorEnabled,
         captureFolderPath: s.captureFolderPath,
         promptOverrides: s.promptOverrides,
+        karakeepUrl: s.karakeepUrl,
       });
       setKeyConfigured(hasKey);
+      setKarakeepKeyConfigured(hasKkKey);
       setShowBanner(banner);
     })();
   }, []);
@@ -204,15 +216,25 @@ export default function SettingsScreen() {
       omniRouteApiKey: "",
       captureFolderPath: form.captureFolderPath,
       promptOverrides: form.promptOverrides,
+      karakeepUrl: form.karakeepUrl,
+      // Same as omniRouteApiKey — the Karakeep key write is handled separately
+      // below so saveSettings doesn't wipe it when only the URL changed.
+      karakeepApiKey: "",
     };
-    // Save URL / model / folder via saveSettings, but skip the key write
-    // by re-reading the key state inside this scope (we don't have the key
-    // in form state). Use setOmniRouteApiKey only when the user typed one.
-    await saveSettings({ ...next, omniRouteApiKey: await currentKeyOrEmpty() });
+    // Save URL / model / folder via saveSettings, but skip the key writes
+    // by re-reading the key state inside this scope (we don't have the keys
+    // in form state). Use the setters only when the user typed a new one.
+    const { omniRouteApiKey, karakeepApiKey } = await currentKeysOrEmpty();
+    await saveSettings({ ...next, omniRouteApiKey, karakeepApiKey });
     if (pendingKey.length > 0) {
       await setOmniRouteApiKey(pendingKey);
       setPendingKey("");
       setKeyConfigured(true);
+    }
+    if (pendingKarakeepKey.length > 0) {
+      await setKarakeepApiKey(pendingKarakeepKey);
+      setPendingKarakeepKey("");
+      setKarakeepKeyConfigured(true);
     }
     setSaved(true);
   };
@@ -221,6 +243,12 @@ export default function SettingsScreen() {
     await setOmniRouteApiKey("");
     setKeyConfigured(false);
     setPendingKey("");
+  };
+
+  const clearKarakeepKey = async () => {
+    await setKarakeepApiKey("");
+    setKarakeepKeyConfigured(false);
+    setPendingKarakeepKey("");
   };
 
   /**
@@ -472,6 +500,61 @@ export default function SettingsScreen() {
             style={styles.folderBtn}
           >
             Reset to default
+          </Button>
+        )}
+      </View>
+
+      <View style={styles.notificationSection}>
+        <Text variant="titleMedium" style={styles.promptSectionTitle}>
+          Karakeep
+        </Text>
+        <HelperText type="info" visible>
+          Export notes to a self-hosted Karakeep instance. Leave the URL blank
+          to hide the "Send to Karakeep" action.
+        </HelperText>
+        <TextInput
+          label="Karakeep URL"
+          mode="outlined"
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          value={form.karakeepUrl}
+          onChangeText={(v) => update({ karakeepUrl: v })}
+        />
+        <HelperText type="info" visible>
+          Karakeep base URL — must start with https:// (e.g.
+          https://karakeep.example.com). The /api/v1 path is added automatically.
+        </HelperText>
+
+        <TextInput
+          label={
+            karakeepKeyConfigured && pendingKarakeepKey.length === 0
+              ? "Karakeep API key (configured)"
+              : "Karakeep API key"
+          }
+          mode="outlined"
+          autoCapitalize="none"
+          autoCorrect={false}
+          secureTextEntry
+          placeholder={
+            karakeepKeyConfigured
+              ? "•••• configured — tap to replace"
+              : "Generate in Karakeep → User Settings → API Keys"
+          }
+          value={pendingKarakeepKey}
+          onChangeText={setPendingKarakeepKey}
+        />
+        <HelperText type="info" visible>
+          Stored in the secure keychain. The existing key is never shown again.
+        </HelperText>
+        {karakeepKeyConfigured && (
+          <Button
+            mode="text"
+            compact
+            onPress={clearKarakeepKey}
+            style={styles.clearKey}
+          >
+            Clear key
           </Button>
         )}
       </View>
@@ -734,11 +817,17 @@ export default function SettingsScreen() {
   );
 }
 
-/** Helper that returns the currently-stored API key if present (so
- * saveSettings doesn't wipe it when the user only changed URL/model). */
-async function currentKeyOrEmpty(): Promise<string> {
+/** Helper that returns the currently-stored API keys if present (so
+ * saveSettings doesn't wipe either when the user only changed URL/model). */
+async function currentKeysOrEmpty(): Promise<{
+  omniRouteApiKey: string;
+  karakeepApiKey: string;
+}> {
   const s = await getSettings();
-  return s.omniRouteApiKey ?? "";
+  return {
+    omniRouteApiKey: s.omniRouteApiKey ?? "",
+    karakeepApiKey: s.karakeepApiKey ?? "",
+  };
 }
 
 const styles = StyleSheet.create({

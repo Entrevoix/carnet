@@ -17,6 +17,8 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     richEditorEnabled: false,
     captureFolderPath: "",
     promptOverrides: {},
+    karakeepUrl: "",
+    karakeepApiKey: "",
   },
 }));
 
@@ -412,6 +414,8 @@ describe("HTTPS enforcement", () => {
       richEditorEnabled: false,
       captureFolderPath: "",
       promptOverrides: {},
+      karakeepUrl: "",
+      karakeepApiKey: "",
     });
     await expect(enrichIdea("x")).rejects.toThrow(/https:\/\//);
     // Ensure no fetch was attempted
@@ -430,6 +434,8 @@ describe("HTTPS enforcement", () => {
       richEditorEnabled: false,
       captureFolderPath: "",
       promptOverrides: {},
+      karakeepUrl: "",
+      karakeepApiKey: "",
     });
     fetchMock.mockResolvedValueOnce(
       makeOkResponse("---\n---\n# x\n"),

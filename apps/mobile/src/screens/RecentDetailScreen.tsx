@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Image, Linking, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, Image, Linking, ScrollView, StyleSheet, View } from "react-native";
 import * as Sharing from "expo-sharing";
 import {
   ActivityIndicator,
@@ -25,6 +25,7 @@ import {
   type MD3Theme,
   Portal,
   ProgressBar,
+  Snackbar,
   Text,
   TextInput,
   useTheme,
@@ -60,6 +61,12 @@ import {
   type FormatKind,
   type Sel,
 } from "../lib/markdownEdit";
+import {
+  getFrontmatterTags,
+  parseFrontmatter,
+  upsertFrontmatterField,
+} from "../lib/frontmatter";
+import { attachTags, createTextBookmark, KarakeepError } from "../lib/karakeep";
 import { pickAttachment } from "../lib/attachments";
 import { MAX_EDITOR_IMAGE_BASE64, toDataUri } from "../lib/editorImages";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
@@ -90,6 +97,13 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [reEnrichError, setReEnrichError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
+  // Karakeep export. The action is gated on a non-blank `karakeepUrl`, read
+  // once on mount like richEditorEnabled. `karakeepError` surfaces a failure as
+  // a banner; `karakeepDone` flips a success snackbar.
+  const [karakeepConfigured, setKarakeepConfigured] = useState(false);
+  const [exportingKarakeep, setExportingKarakeep] = useState(false);
+  const [karakeepError, setKarakeepError] = useState<string | null>(null);
+  const [karakeepDone, setKarakeepDone] = useState(false);
   // Edit-mode state. `draft` holds the in-progress textarea content;
   // `editError` surfaces a save failure as a banner; `discardVisible`
   // gates the unsaved-changes dialog.
@@ -132,6 +146,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // would write the .md twice, with whichever finishes second winning.
   const reEnrichingRef = useRef(false);
   const transcribingRef = useRef(false);
+  const exportingKarakeepRef = useRef(false);
   const savingEditRef = useRef(false);
   // Holds the navigation action that triggered beforeRemove so the
   // discard-confirm dialog can replay it after the user confirms.
@@ -155,7 +170,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     let active = true;
     getSettings()
       .then((s) => {
-        if (active) setRichEditorEnabled(s.richEditorEnabled);
+        if (!active) return;
+        setRichEditorEnabled(s.richEditorEnabled);
+        // Gate the "Send to Karakeep" action on a configured instance URL.
+        setKarakeepConfigured(s.karakeepUrl.trim().length > 0);
       })
       .catch(() => undefined);
     return () => {
@@ -303,6 +321,83 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       setTranscribing(false);
     }
   }, [body, entry.filepath]);
+
+  // Export the note to Karakeep as a text bookmark. Mirrors the other async
+  // actions' guards (in-flight ref, mounted ref, error banner). The note's
+  // full markdown is split: the frontmatter header drives the tags + createdAt,
+  // the body becomes the bookmark text. Tags = frontmatter tags + a `kind` tag.
+  // On success the new bookmark id is written into the note frontmatter
+  // (`karakeepId`) for idempotency.
+  const runKarakeepExport = useCallback(async () => {
+    if (exportingKarakeepRef.current) return;
+    exportingKarakeepRef.current = true;
+    setKarakeepError(null);
+    setExportingKarakeep(true);
+    try {
+      const { header, body: noteBody } = splitFrontmatter(body);
+      // Title: note H1 → filename stem fallback. deriveTitle falls back to the
+      // first line / "Untitled", so guard against an empty/whitespace H1 too.
+      const stem =
+        entry.filepath
+          .split("/")
+          .pop()
+          ?.replace(/\.md$/i, "") ?? entry.title;
+      const title = deriveTitle(noteBody).trim() || stem;
+      // Tags: frontmatter tags + a `kind` tag (idea/journal/person/...), deduped.
+      const fmTags = getFrontmatterTags(body);
+      const kindField = parseFrontmatter(body).fields.find(
+        ([k]) => k === "kind",
+      );
+      const kindTag = kindField?.[1]?.trim() ?? "";
+      const tags = [...new Set([...fmTags, ...(kindTag ? [kindTag] : [])])];
+      const createdAt = extractFrontmatterField(body, "created") ?? undefined;
+
+      const { id } = await createTextBookmark({
+        text: noteBody,
+        title,
+        createdAt,
+      });
+      await attachTags(id, tags);
+
+      // Idempotency: stamp the bookmark id into the note frontmatter.
+      const next = upsertFrontmatterField(header + noteBody, "karakeepId", id);
+      await updateNote(entry.filepath, next);
+      if (!mountedRef.current) return;
+      setBody(next);
+      setKarakeepDone(true);
+    } catch (e: unknown) {
+      const reason =
+        e instanceof KarakeepError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : String(e);
+      console.warn("[RecentDetail] Karakeep export failed:", reason);
+      if (mountedRef.current) setKarakeepError(reason);
+    } finally {
+      exportingKarakeepRef.current = false;
+      if (mountedRef.current) setExportingKarakeep(false);
+    }
+  }, [body, entry.filepath, entry.title]);
+
+  // Entry point for the button. If the note was already exported (frontmatter
+  // carries a karakeepId), confirm before re-sending; otherwise export directly.
+  const handleSendToKarakeep = useCallback(() => {
+    if (exportingKarakeepRef.current) return;
+    const alreadyExported = extractFrontmatterField(body, "karakeepId");
+    if (alreadyExported) {
+      Alert.alert(
+        "Already exported",
+        "Already exported to Karakeep — send again?",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Send again", onPress: () => void runKarakeepExport() },
+        ],
+      );
+      return;
+    }
+    void runKarakeepExport();
+  }, [body, runKarakeepExport]);
 
   // True iff the user is in edit mode AND has typed something different
   // from the on-disk body. Drives the beforeRemove guard + Cancel button's
@@ -823,6 +918,12 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           </Banner>
         ) : null}
 
+        {karakeepError ? (
+          <Banner visible icon="alert" actions={[]}>
+            {`Karakeep export failed: ${karakeepError}`}
+          </Banner>
+        ) : null}
+
         {editError ? (
           <Banner visible icon="alert" actions={[]}>
             {`Save failed: ${editError}`}
@@ -843,6 +944,15 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
             <ActivityIndicator />
             <Text variant="bodySmall" style={styles.dim}>
               Transcribing audio…
+            </Text>
+          </View>
+        ) : null}
+
+        {exportingKarakeep ? (
+          <View style={styles.inlineLoading}>
+            <ActivityIndicator />
+            <Text variant="bodySmall" style={styles.dim}>
+              Sending to Karakeep…
             </Text>
           </View>
         ) : null}
@@ -1038,6 +1148,21 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
                     Transcribe
                   </Button>
                 ) : null}
+                {karakeepConfigured ? (
+                  <Button
+                    mode="text"
+                    icon="bookmark-plus-outline"
+                    onPress={handleSendToKarakeep}
+                    disabled={
+                      missing ||
+                      reEnriching ||
+                      transcribing ||
+                      exportingKarakeep
+                    }
+                  >
+                    Send to Karakeep
+                  </Button>
+                ) : null}
                 <Button
                   mode="text"
                   icon="delete"
@@ -1052,6 +1177,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           </>
         )}
       </ScrollView>
+
+      <Snackbar
+        visible={karakeepDone}
+        onDismiss={() => setKarakeepDone(false)}
+        duration={2500}
+      >
+        Exported to Karakeep
+      </Snackbar>
 
       <Portal>
         <Dialog

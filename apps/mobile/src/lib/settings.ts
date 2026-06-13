@@ -8,6 +8,7 @@ const SETTINGS_KEY_V1 = "carnet:settings:v1";
  * v0.2 settings load — see purgeLegacySecretsOnce(). */
 const LEGACY_NAVETTED_TOKEN_KEY = "carnet_navetted_token";
 const OMNIROUTE_API_KEY = "carnet_omniroute_api_key";
+const KARAKEEP_API_KEY = "carnet_karakeep_api_key";
 /** Flag: user dismissed the navetted→OmniRoute migration banner. */
 const MIGRATION_BANNER_KEY = "carnet:migration_banner_dismissed:v1";
 /** Flag: legacy SecureStore secrets purged. Set to "1" after the one-time
@@ -60,6 +61,12 @@ export interface Settings {
    */
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
+  /** Self-hosted Karakeep instance URL (e.g. https://karakeep.example.com).
+   * The `/api/v1` suffix is appended by the client. Blank = export disabled. */
+  karakeepUrl: string;
+  /** Karakeep API key (Bearer). Held in SecureStore, never persisted to the
+   * AsyncStorage settings blob — mirrors omniRouteApiKey. */
+  karakeepApiKey: string;
 }
 
 interface PersistedSettings {
@@ -71,6 +78,7 @@ interface PersistedSettings {
   richEditorEnabled: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
+  karakeepUrl: string;
 }
 
 /** Shape of a v1 settings blob — used for one-time migration read. */
@@ -89,6 +97,7 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   richEditorEnabled: true,
   captureFolderPath: "",
   promptOverrides: {},
+  karakeepUrl: "",
 };
 
 /** Strip whitespace-only entries so a `{idea: "   "}` save doesn't strand
@@ -132,6 +141,7 @@ async function readPersisted(): Promise<PersistedSettings> {
         richEditorEnabled: true,
         captureFolderPath: legacy.captureFolderPath ?? "",
         promptOverrides: {},
+        karakeepUrl: "",
       };
     } catch {
       return { ...DEFAULT_PERSISTED };
@@ -151,6 +161,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     richEditorEnabled: settings.richEditorEnabled,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: sanitisePromptOverrides(settings.promptOverrides),
+    karakeepUrl: settings.karakeepUrl,
   };
   await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitised));
 }
@@ -177,6 +188,8 @@ export async function getSettings(): Promise<Settings> {
   const persisted = await readPersisted();
   const omniRouteApiKey =
     (await SecureStore.getItemAsync(OMNIROUTE_API_KEY)) ?? "";
+  const karakeepApiKey =
+    (await SecureStore.getItemAsync(KARAKEEP_API_KEY)) ?? "";
 
   return {
     omniRouteUrl: persisted.omniRouteUrl,
@@ -188,6 +201,8 @@ export async function getSettings(): Promise<Settings> {
     richEditorEnabled: persisted.richEditorEnabled,
     captureFolderPath: persisted.captureFolderPath,
     promptOverrides: persisted.promptOverrides,
+    karakeepUrl: persisted.karakeepUrl,
+    karakeepApiKey,
   };
 }
 
@@ -201,11 +216,17 @@ export async function saveSettings(settings: Settings): Promise<void> {
     richEditorEnabled: settings.richEditorEnabled,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: settings.promptOverrides,
+    karakeepUrl: settings.karakeepUrl,
   });
   if (settings.omniRouteApiKey) {
     await SecureStore.setItemAsync(OMNIROUTE_API_KEY, settings.omniRouteApiKey);
   } else {
     await SecureStore.deleteItemAsync(OMNIROUTE_API_KEY);
+  }
+  if (settings.karakeepApiKey) {
+    await SecureStore.setItemAsync(KARAKEEP_API_KEY, settings.karakeepApiKey);
+  } else {
+    await SecureStore.deleteItemAsync(KARAKEEP_API_KEY);
   }
 }
 
@@ -233,6 +254,25 @@ export async function setOmniRouteApiKey(value: string): Promise<void> {
     await SecureStore.setItemAsync(OMNIROUTE_API_KEY, value.trim());
   } else {
     await SecureStore.deleteItemAsync(OMNIROUTE_API_KEY);
+  }
+}
+
+/**
+ * True if there is a Karakeep API key stored in SecureStore. Used by the
+ * settings UI to render a "•••• configured" placeholder rather than reading
+ * the key into React state for display.
+ */
+export async function hasKarakeepApiKey(): Promise<boolean> {
+  const key = await SecureStore.getItemAsync(KARAKEEP_API_KEY);
+  return Boolean(key && key.trim().length > 0);
+}
+
+/** Write-only setter for the Karakeep API key. Used by the settings UI. */
+export async function setKarakeepApiKey(value: string): Promise<void> {
+  if (value && value.trim().length > 0) {
+    await SecureStore.setItemAsync(KARAKEEP_API_KEY, value.trim());
+  } else {
+    await SecureStore.deleteItemAsync(KARAKEEP_API_KEY);
   }
 }
 
