@@ -1,6 +1,7 @@
 import { BridgeExtension } from '@10play/tentap-editor';
 import type { Editor } from '@tiptap/core';
 import { resolveMarkdownResponse } from './markdownResponse';
+import { resolveContentAck } from './markdownAck';
 
 /**
  * Custom TenTap bridge that exchanges MARKDOWN (not HTML) across the WebView
@@ -20,8 +21,10 @@ import { resolveMarkdownResponse } from './markdownResponse';
 type MarkdownMessage =
   | { type: 'set-markdown'; payload: string }
   | { type: 'insert-markdown'; payload: string }
+  | { type: 'set-image-src'; payload: { rel: string; dataUri: string } }
   | { type: 'request-markdown'; payload?: undefined }
-  | { type: 'markdown-response'; payload: string };
+  | { type: 'markdown-response'; payload: string }
+  | { type: 'content-ack'; payload: number };
 
 /** The markdown-only surface @tiptap/markdown adds to the editor on the web side. */
 interface WebMarkdownEditor {
@@ -34,15 +37,43 @@ interface WebMarkdownEditor {
   };
 }
 
-// The in-flight requestMarkdown() reply is owned by markdownResponse.ts (a
-// dependency-free module, so its timeout/cleanup logic is unit-testable without
-// loading this TenTap bridge headless). Re-exported so callers keep importing
-// awaitMarkdownResponse from here.
+/** Swap the display src of every image node whose canonical path matches `rel`
+ * (the freshly-injected canonical src, or — for an idempotent re-swap — the title
+ * we stashed it in) to `dataUri`, keeping the canonical path in the title so
+ * getMarkdown still serializes `![alt](dataUri "rel")` and restoreImagesFromEditor
+ * rebuilds the clean `![alt](rel)` on save. A leaf image node carries no content,
+ * so setNodeMarkup only rewrites its attrs. Returns true if anything changed. */
+function swapImageSrc(editor: Editor, rel: string, dataUri: string): boolean {
+  return editor.commands.command(({ tr, state, dispatch }) => {
+    let changed = false;
+    state.doc.descendants((node, pos) => {
+      if (
+        node.type.name === 'image' &&
+        (node.attrs.src === rel || node.attrs.title === rel)
+      ) {
+        tr.setNodeMarkup(pos, undefined, { ...node.attrs, src: dataUri, title: rel });
+        changed = true;
+      }
+    });
+    if (changed && dispatch) dispatch(tr);
+    return changed;
+  });
+}
+
+// The in-flight requestMarkdown() reply is owned by markdownResponse.ts, and the
+// body-applied content-ack by markdownAck.ts (both dependency-free so their
+// timeout/cleanup logic is unit-testable without loading this TenTap bridge
+// headless). Re-exported so callers keep importing them from here.
 export { awaitMarkdownResponse } from './markdownResponse';
+export { onceContentAck } from './markdownAck';
 
 export interface MarkdownBridgeInstance {
   setMarkdown: (markdown: string) => void;
   insertMarkdown: (markdown: string) => void;
+  /** Swap one already-injected `../Photos/<file>` embed to its `data:` URI for
+   * in-editor preview — one bounded message per image, so a note's images never
+   * compound into one oversized payload (issue #43). */
+  setImageSrc: (rel: string, dataUri: string) => void;
   requestMarkdown: () => void;
 }
 
@@ -65,6 +96,10 @@ export const MarkdownBridge = new BridgeExtension<
       // HTML and silently corrupts the note. tiptap v3 signature is
       // setContent(content, options) — NOT the v2 (content, emitUpdate, options).
       web.commands.setContent(message.payload, { contentType: 'markdown' });
+      // Echo back the applied body length. The RN side gates "the body really
+      // landed" on receiving this — proof the injection wasn't silently dropped
+      // (issue #43) — before it swaps images in or reads the body back on save.
+      sendMessageBack({ type: 'content-ack', payload: web.getMarkdown().length });
       return true;
     }
     if (message.type === 'insert-markdown') {
@@ -72,6 +107,10 @@ export const MarkdownBridge = new BridgeExtension<
       // insert an image embed). Same contentType:'markdown' requirement as
       // set-markdown — without it the string is inserted as literal HTML.
       web.commands.insertContent(message.payload, { contentType: 'markdown' });
+      return true;
+    }
+    if (message.type === 'set-image-src') {
+      swapImageSrc(editor, message.payload.rel, message.payload.dataUri);
       return true;
     }
     if (message.type === 'request-markdown') {
@@ -87,6 +126,10 @@ export const MarkdownBridge = new BridgeExtension<
       resolveMarkdownResponse(message.payload);
       return true;
     }
+    if (message.type === 'content-ack') {
+      resolveContentAck(message.payload);
+      return true;
+    }
     return false;
   },
 
@@ -96,6 +139,8 @@ export const MarkdownBridge = new BridgeExtension<
       sendBridgeMessage({ type: 'set-markdown', payload: markdown }),
     insertMarkdown: (markdown: string) =>
       sendBridgeMessage({ type: 'insert-markdown', payload: markdown }),
+    setImageSrc: (rel: string, dataUri: string) =>
+      sendBridgeMessage({ type: 'set-image-src', payload: { rel, dataUri } }),
     requestMarkdown: () => sendBridgeMessage({ type: 'request-markdown' }),
   }),
 });
