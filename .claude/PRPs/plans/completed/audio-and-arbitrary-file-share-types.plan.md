@@ -1,5 +1,7 @@
 # Plan: Audio + arbitrary file share types
 
+> ✅ SHIPPED 2026-06 (commit 8d3a6fe — ShareReceiveScreen audio + other-file branches; app.json intent filters text/image/audio/*). Archived for history.
+
 ## Summary
 Extend the v0.2.1 share-target to accept audio (`audio/*`) and arbitrary file (`*/*`) MIME types in addition to the existing text/image handlers. The receiver screen already has all the writer machinery; this is mostly a manifest change + two new branches in `ShareReceiveScreen.save()` for audio and "other file" payloads.
 

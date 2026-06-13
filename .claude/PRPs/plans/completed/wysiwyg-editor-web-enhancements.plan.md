@@ -1,5 +1,7 @@
 # WYSIWYG editor-web enhancements — paste-markdown (done) + picture insert (next)
 
+> ✅ SHIPPED — paste-markdown + picture insert (#42 67a254d); large-image inject-then-swap + save hardening (#43 → #45 8a1c7aa). Archived.
+
 Status as of 2026-06-10. Branch `feat/wysiwyg-native-editor`. Both items touch the
 `editor-web/*` bundle, so they share the build+verify cycle:
 `npm run editor:build` (vite → bakes the COMMITTED `editor-web/generated/editorHtml.js`)

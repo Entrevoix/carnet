@@ -1,5 +1,7 @@
 # Session handoff — 2026-06-13
 
+> ⤴ SUPERSEDED by backlog-audit-2026-06-13.md (same day, later — after #43→#45 merged and the backlog audit). Archived snapshot.
+
 > Self-contained state to bridge a `/clear`. No work is in-flight — `main` is clean and
 > everything attempted this session is merged or tracked. This is a "where we are" doc.
 

@@ -1,5 +1,7 @@
 # Handoff: WYSIWYG native editor — SHIPPED to main (loose ends deferred)
 
+> ✅ Handoff for the WYSIWYG native editor — SHIPPED (#35 bec5ea6), now the default editor. Deferred loose ends since resolved: picture insert → #42/#43; MEDIUM-4 editor-ready ack → subsumed by #43's content-ack; LOW-4 CSP <meta> → still deferred (device-gated, low priority). Archived snapshot.
+
 > Self-contained status as of 2026-06-11. The TenTap WYSIWYG note editor is built,
 > reviewed, **merged to `main`, and is now the DEFAULT note editor** (the experimental
 > flag was removed). A handful of low-risk loose ends were deliberately deferred — to be

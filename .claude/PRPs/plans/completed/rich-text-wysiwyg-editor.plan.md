@@ -1,5 +1,7 @@
 # Plan: Rich-Text Editing — Markdown Toolbar now, WYSIWYG later
 
+> ✅ SHIPPED — Phase 1 markdown toolbar (#31 75b19c3); Phase 2 TenTap WYSIWYG editor (#33 b4206f5, #34 346697f, #35 bec5ea6, now the default editor). Archived.
+
 ## Summary
 Upgrade carnet's note editing from a plain markdown `TextInput` to a richer experience, in two phases that protect the markdown-on-disk model. **Phase 1**: a selection-aware **markdown formatting toolbar** over the *existing* edit-mode `TextInput` (bold/italic/headings/lists/checkbox/link/code/insert-image) — zero round-trip risk, no new native surface. **Phase 2 (the deferred "WYSIWYG" ask)**: a true visual editor (TenTap = TipTap-in-a-WebView) with `@tiptap/markdown` doing all md↔editor conversion *inside* the WebView, YAML frontmatter split off and reattached verbatim, gated behind parse→serialize identity tests on real notes and an experimental settings toggle.
 

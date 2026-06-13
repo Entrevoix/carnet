@@ -1,5 +1,7 @@
 # Handoff: capture-metadata suite COMPLETE — F2 merged, repo glow-up shipped
 
+> ✅ Handoff for F2 Location — SHIPPED (#40 787688b, on-device smoke passed). Archived snapshot.
+
 > Self-contained status as of **2026-06-11** (session end). Supersedes the earlier
 > "F2 BUILT / PR #40 OPEN / smoke BLOCKED" version — all of that is now DONE.
 > Bridges a `/clear`. Working tree is on `main`, clean except the untracked plan docs

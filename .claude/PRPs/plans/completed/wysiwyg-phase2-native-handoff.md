@@ -1,5 +1,7 @@
 # Handoff: WYSIWYG Phase 2 — Native TenTap Editor (Tasks 6, 7, 9, 11)
 
+> ✅ Handoff for WYSIWYG Phase 2 native build-out — SHIPPED (#33–#35). Archived snapshot.
+
 > Self-contained brief so a fresh session can execute the native WYSIWYG editor cold.
 > Source plan: `.claude/PRPs/plans/rich-text-wysiwyg-editor.plan.md` (Tasks 6–11).
 > Written 2026-06-09 after the foundation + fidelity gate landed.
