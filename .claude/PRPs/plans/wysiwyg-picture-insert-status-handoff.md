@@ -26,6 +26,21 @@ Run on the disposable "Jack's Baseball Team" Idea note (already carried one imag
 - **QA note:** the test added a second image to "Jack's Baseball Team" (disposable note, syncs via
   Syncthing). Safe to delete the note or remove that image.
 
+## ❌ Cap-raise attempt (2026-06-12) — REVERTED, do not retry naively
+Tried raising `MAX_EDITOR_IMAGE_BASE64` 8 MB → 24 MB so the large baseball photo would preview.
+**On-device it broke the editor:** with the photo now under the cap it resolved to a ~10 MB+ data
+URI, and folding that into the single `setMarkdown` bridge string **silently failed to apply** — the
+editor opened BLANK ("Write something …"). That's worse than no-preview: a Save on the blank editor
+would write back an empty body (the `bodyInjectedRef` guard only catches save-*before*-injection,
+not a silent injection failure). Reverted to 8 MB (commit after `dfa374d` → `eeed1cf`). The 8 MB cap
+isn't just DOM cost — it bounds the bridge payload so injection stays reliable.
+- **To actually preview large images** needs an architectural change, not a bigger constant: inject
+  the body with canonical `../Photos/` links first (small, fast `setMarkdown`), THEN swap each image
+  to its data URI via its own bounded message; or a `file://` access path (`allowingReadAccessToURL`).
+- **Related robustness gap to consider:** harden the save path against a silently-empty editor
+  (confirm the editor actually holds content — e.g. a length ack — before `updateNote`), so a failed
+  injection can never blank a note. Worth a follow-up independent of the cap.
+
 ## TL;DR — what shipped (code-complete, behind on-device verification)
 Image insert for the **default WYSIWYG editor** (the markdown-`TextInput` path already
 had it; the rich editor had none). The crux was display + round-trip safety, not the
