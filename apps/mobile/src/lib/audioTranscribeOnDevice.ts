@@ -181,6 +181,22 @@ function runRecognizer(fileUri: string): Promise<string> {
             finish(bestText);
             return;
           }
+          // No-model / no-service class: on a fresh device the on-device speech
+          // model isn't downloaded, so the recognizer dead-ends here (code 12 /
+          // "no service found"). The raw error is cryptic — remap ONLY this
+          // class to an actionable message that points at the Journal voice
+          // dictation download flow (or Whisper). Other errors pass through.
+          const noModel = /no service|language|not.?support|unavailable/i.test(
+            `${event.error} ${event.message ?? ""}`,
+          );
+          if (noModel) {
+            fail(
+              new Error(
+                "On-device voice model isn't installed. Open Journal voice dictation to download it, or enable Whisper transcription in Settings.",
+              ),
+            );
+            return;
+          }
           fail(
             new Error(
               `On-device STT error: ${event.error}${event.message ? ` — ${event.message}` : ""}`,

@@ -23,6 +23,7 @@ import {
   pinnedFailoverChain,
   composeFlush,
 } from './recognizerSelect';
+import { triggerVoiceModelDownload } from './sttReadiness';
 
 // Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
 const MAX_RECORDING_MS = 3 * 60 * 1000;
@@ -274,6 +275,9 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   const [errAction, setErrAction] = useState<ErrAction>('none');
   const errPersistRef = useRef(false);
   const [detecting, setDetecting] = useState(false);
+  // True while an in-app on-device voice-model download is in flight, so the
+  // "Download voice model" button can disable + show progress.
+  const [downloadingModel, setDownloadingModel] = useState(false);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pickerOptions, setPickerOptions] = useState<RecognizerOption[]>([]);
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -433,6 +437,27 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     await AsyncStorage.setItem(STT_ENGINE_KEY, 'whisper');
     dismissErr();
     showErrRef.current('Switched to Whisper. Add API key in Settings → Voice Input.', 4000);
+  }, [dismissErr]);
+
+  // Pull the on-device English voice model from inside the app (Android 13+),
+  // the in-app fix for the code-12 / "no service found" dead-end. On success
+  // we dismiss the sheet and retry dictation with the saved recognizer; for a
+  // queued/dialog download we leave a hint; on failure we point at Whisper.
+  const handleDownloadModel = useCallback(async () => {
+    setDownloadingModel(true);
+    try {
+      const result = await triggerVoiceModelDownload('en-US');
+      if (result === 'installed') {
+        dismissErr();
+        await startRecognizerRef.current(await AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY));
+      } else if (result === 'dialog' || result === 'scheduled') {
+        showErrRef.current('Downloading the English voice model… try dictation again in a moment.', 6000);
+      } else {
+        showErrRef.current('Could not start the model download. Use Whisper or open Speech Services.', 5000);
+      }
+    } finally {
+      setDownloadingModel(false);
+    }
   }, [dismissErr]);
 
   const copyDiagnostics = useCallback(async () => {
@@ -1329,6 +1354,14 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
             )}
             {errAction === 'lang-unavailable' && (
               <View style={styles.errActions}>
+                <Pressable
+                  style={[styles.errActionBtn, { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary, opacity: downloadingModel ? 0.6 : 1 }]}
+                  onPress={handleDownloadModel}
+                  disabled={downloadingModel}
+                >
+                  <Text style={[styles.errActionBtnText, { color: theme.colors.onPrimary }]}>{downloadingModel ? 'Downloading…' : 'Download voice model'}</Text>
+                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onPrimary }]}>Pull the English model on-device — no Play Store trip</Text>
+                </Pressable>
                 <Pressable
                   style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]}
                   onPress={() => openPlayStore('com.google.android.tts')}
