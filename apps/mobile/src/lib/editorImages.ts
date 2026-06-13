@@ -30,8 +30,15 @@
 
 /** Hard cap on the base64 length we'll inline as a `data:` URI. A larger image
  * still writes to disk and embeds correctly — it just won't preview in-editor
- * (rather than bloating the DOM + the bridge message with megabytes of base64). */
-export const MAX_EDITOR_IMAGE_BASE64 = 8 * 1024 * 1024; // ~6 MB of binary
+ * (rather than bloating the DOM + the bridge message with megabytes of base64).
+ *
+ * Sized to cover full-resolution phone photos (a Pixel JPEG is ~2–12 MB) while
+ * staying well under the 200 MB share/OOM cap (MAX_SAFE_SHARE_BYTES) — that
+ * ceiling is fine on disk but would be ruinous inlined into the WebView. The
+ * resolve pass inlines every Photos embed of a note into one setMarkdown call,
+ * so this is a per-image bound; a note with a handful of images stays within a
+ * sane total bridge payload. */
+export const MAX_EDITOR_IMAGE_BASE64 = 24 * 1024 * 1024; // ~17 MB of binary
 
 /** Canonical `../Photos/<file>` embed as carnet writes it, with an optional
  * pre-existing markdown title we must not clobber. */
