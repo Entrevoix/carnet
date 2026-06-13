@@ -1,17 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   buildCanonicalImage,
   buildEditorImage,
-  resolveImagesForEditor,
+  isSuspiciousBlanking,
+  photoEmbedRels,
   restoreImagesFromEditor,
   toDataUri,
 } from "./editorImages";
 
 const DATA = "data:image/jpeg;base64,QUJD"; // "ABC"
-
-/** A resolver that returns a fixed data URI for any path. */
-const always = (uri: string) => async () => uri;
 
 describe("toDataUri / builders", () => {
   it("formats a data URI", () => {
@@ -28,57 +26,25 @@ describe("toDataUri / builders", () => {
   });
 });
 
-describe("resolveImagesForEditor", () => {
-  it("swaps a canonical photo embed for a data URI, stashing the path in the title", async () => {
-    const out = await resolveImagesForEditor(
-      "intro\n\n![](../Photos/a.jpg)\n\noutro",
-      always(DATA),
-    );
-    expect(out).toBe(`intro\n\n![](${DATA} "../Photos/a.jpg")\n\noutro`);
+describe("photoEmbedRels", () => {
+  it("lists each unique Photos embed once, in document order", () => {
+    const md = "![](../Photos/a.jpg)\n![alt](../Photos/b.png)\n![](../Photos/a.jpg)";
+    expect(photoEmbedRels(md)).toEqual(["../Photos/a.jpg", "../Photos/b.png"]);
   });
 
-  it("preserves alt text", async () => {
-    const out = await resolveImagesForEditor("![a photo](../Photos/a.jpg)", always(DATA));
-    expect(out).toBe(`![a photo](${DATA} "../Photos/a.jpg")`);
+  it("skips an embed that already carries a markdown title (a user caption)", () => {
+    const md = '![](../Photos/a.jpg "user title")\n![](../Photos/b.png)';
+    expect(photoEmbedRels(md)).toEqual(["../Photos/b.png"]);
   });
 
-  it("resolves each unique path once even when embedded multiple times", async () => {
-    const resolve = vi.fn(async () => DATA);
-    const md = "![](../Photos/a.jpg)\n![](../Photos/a.jpg)\n![](../Photos/b.jpg)";
-    await resolveImagesForEditor(md, resolve);
-    expect(resolve).toHaveBeenCalledTimes(2);
-  });
-
-  it("leaves an embed untouched when the resolver returns null (missing / too big)", async () => {
-    const md = "![](../Photos/missing.jpg)";
-    expect(await resolveImagesForEditor(md, async () => null)).toBe(md);
-  });
-
-  it("leaves an embed untouched when the resolver throws", async () => {
-    const md = "![](../Photos/boom.jpg)";
-    expect(
-      await resolveImagesForEditor(md, async () => {
-        throw new Error("read failed");
-      }),
-    ).toBe(md);
-  });
-
-  it("does not clobber an embed that already has a markdown title", async () => {
-    const md = '![](../Photos/a.jpg "user title")';
-    expect(await resolveImagesForEditor(md, always(DATA))).toBe(md);
-  });
-
-  it("ignores external and non-Photos links", async () => {
+  it("ignores external and non-Photos links", () => {
     const md =
       "![](https://example.com/x.png)\n[doc](../Files/spec.pdf)\n[audio](../Audio/clip.m4a)";
-    expect(await resolveImagesForEditor(md, always(DATA))).toBe(md);
+    expect(photoEmbedRels(md)).toEqual([]);
   });
 
-  it("returns the input unchanged when there are no photo embeds", async () => {
-    const resolve = vi.fn();
-    const md = "# Title\n\njust prose";
-    expect(await resolveImagesForEditor(md, resolve)).toBe(md);
-    expect(resolve).not.toHaveBeenCalled();
+  it("returns [] when there are no photo embeds", () => {
+    expect(photoEmbedRels("# Title\n\njust prose")).toEqual([]);
   });
 });
 
@@ -152,17 +118,50 @@ describe("restoreImagesFromEditor", () => {
   });
 });
 
-describe("round-trip", () => {
-  it("resolve → restore returns the original for canonical photo embeds", async () => {
-    const original =
-      "# Note\n\n![](../Photos/a.jpg)\n\nsome prose\n\n![caption](../Photos/b.png)\n";
-    const resolved = await resolveImagesForEditor(original, always(DATA));
-    // The editor passes content through unchanged in the happy path.
-    expect(restoreImagesFromEditor(resolved)).toBe(original);
+describe("isSuspiciousBlanking", () => {
+  it("flags an empty result on a non-empty note when the load was never confirmed", () => {
+    expect(
+      isSuspiciousBlanking({ original: "# Note\n\nbody", result: "", acked: false }),
+    ).toBe(true);
   });
 
-  it("a freshly inserted image round-trips to its canonical link", async () => {
-    // Insert path: editor receives buildEditorImage(...) directly (no resolve pass).
+  it("treats a whitespace-only result as empty", () => {
+    expect(isSuspiciousBlanking({ original: "body", result: "  \n ", acked: false })).toBe(true);
+  });
+
+  it("allows an empty result once the body was confirmed loaded (a genuine clear)", () => {
+    expect(
+      isSuspiciousBlanking({ original: "# Note\n\nbody", result: "", acked: true }),
+    ).toBe(false);
+  });
+
+  it("does not flag a non-empty result", () => {
+    expect(isSuspiciousBlanking({ original: "body", result: "edited", acked: false })).toBe(false);
+  });
+
+  it("does not flag when the note was already empty", () => {
+    expect(isSuspiciousBlanking({ original: "   ", result: "", acked: false })).toBe(false);
+  });
+});
+
+describe("round-trip (inject-then-swap)", () => {
+  it("lists the images to swap, then restoring their swapped form returns the original", () => {
+    const original =
+      "# Note\n\n![](../Photos/a.jpg)\n\nsome prose\n\n![caption](../Photos/b.png)\n";
+    expect(photoEmbedRels(original)).toEqual(["../Photos/a.jpg", "../Photos/b.png"]);
+    // Simulate the editor after each image was swapped to a data URI (canonical
+    // path kept in the title) and re-serialized on save.
+    const swapped = original
+      .replace("![](../Photos/a.jpg)", buildEditorImage("", DATA, "../Photos/a.jpg"))
+      .replace(
+        "![caption](../Photos/b.png)",
+        buildEditorImage("caption", DATA, "../Photos/b.png"),
+      );
+    expect(restoreImagesFromEditor(swapped)).toBe(original);
+  });
+
+  it("a freshly inserted image round-trips to its canonical link", () => {
+    // Insert path: editor receives buildEditorImage(...) directly (no swap pass).
     const inserted = buildEditorImage("", DATA, "../Photos/new.jpg");
     const body = `existing prose\n\n${inserted}`;
     expect(restoreImagesFromEditor(body)).toBe(

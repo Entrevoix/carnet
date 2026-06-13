@@ -2,11 +2,12 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 
 import { View, StyleSheet } from 'react-native';
 import { RichText, Toolbar, useEditorBridge, TenTapStartKit } from '@10play/tentap-editor';
 import { editorHtml } from '../../editor-web/generated/editorHtml';
-import { MarkdownBridge, awaitMarkdownResponse } from '../bridges/MarkdownBridge';
+import { MarkdownBridge, awaitMarkdownResponse, onceContentAck } from '../bridges/MarkdownBridge';
 import {
   buildCanonicalImage,
   buildEditorImage,
-  resolveImagesForEditor,
+  isSuspiciousBlanking,
+  photoEmbedRels,
   restoreImagesFromEditor,
 } from '../lib/editorImages';
 import { resolvePhotoDataUri } from '../lib/photoDataUri';
@@ -23,10 +24,21 @@ const EDITOR_THEME = {
   },
 };
 
+// Re-send schedule for the idempotent body injection (ms). A setMarkdown sent
+// before the WebView bridge is listening is silently dropped, and the ~800 KB
+// bundle's cold start can outlast a single timer, so re-send across a staircase
+// until the content-ack lands. See tryInject.
+const INJECT_STAIRCASE_MS = [100, 400, 900];
+// If no content-ack ever arrives, unstick the editor anyway (best-effort). Longer
+// than the staircase so a normal ack always wins; the save-time blanking guard
+// stays strict while unconfirmed, so this fallback can never blank a note.
+const INJECT_ACK_FALLBACK_MS = 4000;
+
 export interface WysiwygEditorRef {
   /** Resolve the current editor content as a markdown string (read on save).
    * Editor-side `data:` image embeds are restored to canonical `../Photos/...`
-   * links so the saved `.md` never carries a base64 blob. */
+   * links so the saved `.md` never carries a base64 blob. Rejects rather than
+   * return a suspiciously-empty body when the injection was never confirmed. */
   getMarkdown: () => Promise<string>;
   /** Insert an image embed at the cursor. `dataUri` renders it in-editor while
    * `rel` (`../Photos/<file>`) is what serializes to disk; pass `dataUri: null`
@@ -46,9 +58,12 @@ interface WysiwygEditorProps {
  * demand through the imperative getMarkdown() handle.
  *
  * Images need special handling: the WebView loads at https://localhost/, so a
- * note's relative `![](../Photos/x.jpg)` embed can't resolve. On the way in we
- * swap each one for an inline `data:` URI (canonical path stashed in the title);
- * on the way out we restore the canonical link. See ../lib/editorImages.
+ * note's relative `![](../Photos/x.jpg)` embed can't resolve. We inject the body
+ * with canonical links first (a small, reliable setMarkdown), wait for the
+ * editor's content-ack, then swap each image to an inline `data:` URI via its own
+ * bounded message — so a note's images never compound into one oversized payload
+ * that opens the editor blank (issue #43). On the way out the canonical links are
+ * restored. See ../lib/editorImages and ../bridges/MarkdownBridge.
  */
 export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
   function WysiwygEditor({ value }, ref) {
@@ -70,69 +85,118 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
     });
 
     // Session map of `data:` URI → canonical `../Photos/...` path, populated as
-    // images are resolved on entry and inserted during the edit. It's the
+    // images are swapped in on entry and inserted during the edit. It's the
     // fallback restore path if the editor ever drops our title marker (see
     // restoreImagesFromEditor); the title-carry path handles the common case.
     const imageMapRef = useRef<Map<string, string>>(new Map());
+    // Set false on unmount so an in-flight swap loop stops touching a torn-down
+    // editor.
+    const aliveRef = useRef(true);
+
+    // The images to swap to data URIs once the canonical body has landed. Derived
+    // once from the mount-only `value` seed.
+    const relsRef = useRef<string[]>([]);
 
     // Resolve a relative Photos embed to a data URI for in-editor display, and
-    // remember the reverse mapping. Stable identity so the resolve effect below
-    // doesn't re-run.
+    // remember the reverse mapping. Stable identity so the effects below don't re-run.
     const resolver = useCallback(async (rel: string): Promise<string | null> => {
       const dataUri = await resolvePhotoDataUri(rel);
       if (dataUri) imageMapRef.current.set(dataUri, rel);
       return dataUri;
     }, []);
 
-    // Injection is gated on TWO async events with no guaranteed order: the
-    // WebView finishing load (onLoad) and the image-resolved body being ready.
-    // tryInject fires the one-shot staircase only once both have landed.
-    const resolvedRef = useRef<string | null>(null);
     const loadedRef = useRef(false);
     const initializedRef = useRef(false);
-    // Flips true only once the body has actually been pushed into the editor.
-    // getMarkdown() refuses to read before this so a Save tapped during cold
-    // start can't pull back the empty initial content and blank the note.
+    const injectTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+    // Disposer for the pending content-ack registration, so unmount/fallback can
+    // release the module-level slot instead of leaking a stale handler.
+    const disposeAckRef = useRef<(() => void) | null>(null);
+    // Flips true once the editor has CONFIRMED the body applied (content-ack) — or
+    // the fallback fired. getMarkdown() refuses to read before this so a Save
+    // tapped during cold start can't pull back the empty seed and blank the note.
     const bodyInjectedRef = useRef(false);
+    // True only when the editor CONFIRMED a NON-EMPTY body applied (content-ack with
+    // length > 0). The save-time blanking guard trusts an empty result only when the
+    // body was confirmed loaded; a zero-length ack (body silently reduced to empty,
+    // not just the transport surviving) is treated as unconfirmed so the guard bites.
+    const ackedRef = useRef(false);
+    // Guards the ack-or-fallback completion so it runs exactly once.
+    const postInjectRef = useRef(false);
+
+    const clearInjectTimers = useCallback(() => {
+      injectTimersRef.current.forEach(clearTimeout);
+      injectTimersRef.current = [];
+    }, []);
+
+    // Swap each pre-existing image to its data URI, one bounded message at a time
+    // (sequential, so only one image's base64 is ever in flight). A failed/oversized
+    // swap leaves the image canonical — broken in-editor, but saved + rendered fine.
+    const runSwaps = useCallback(async () => {
+      for (const rel of relsRef.current) {
+        if (!aliveRef.current) return;
+        try {
+          const dataUri = await resolver(rel);
+          if (dataUri && aliveRef.current) editor.setImageSrc(rel, dataUri);
+        } catch {
+          // leave canonical
+        }
+      }
+    }, [editor, resolver]);
+
+    // Runs once, on a CONFIRMING content-ack (confirmed=true, applied length > 0)
+    // or the no-ack / zero-length fallback (false): mark the body safe to read,
+    // stop re-sending setMarkdown so it can't clobber the swaps, then swap images in.
+    const finishInjection = useCallback(
+      (confirmed: boolean) => {
+        if (postInjectRef.current) return;
+        postInjectRef.current = true;
+        ackedRef.current = confirmed;
+        bodyInjectedRef.current = true;
+        clearInjectTimers();
+        void runSwaps();
+      },
+      [clearInjectTimers, runSwaps],
+    );
 
     const tryInject = useCallback(() => {
-      if (initializedRef.current) return;
-      if (!loadedRef.current || resolvedRef.current == null) return;
+      if (initializedRef.current || !loadedRef.current) return;
       initializedRef.current = true;
-      const md = resolvedRef.current;
-      // A setMarkdown sent before the WebView bridge is listening is silently
-      // dropped, and the ~800 KB bundle's cold start can outlast a single timer,
-      // so re-send across a short staircase. setMarkdown is idempotent. Mark the
-      // body injected once the first push fires (content is in by then).
-      [100, 400, 900].forEach((delay) =>
+      const body = value;
+      // Confirm the body really landed before reading it back or swapping images:
+      // gate on the WebView's content-ack AND its applied length — a length-0 ack
+      // means setContent reduced the body to empty (not merely that the transport
+      // survived), which must NOT count as confirmed or the save guard goes blind.
+      disposeAckRef.current = onceContentAck((len) => finishInjection(len > 0));
+      injectTimersRef.current = INJECT_STAIRCASE_MS.map((delay) =>
         setTimeout(() => {
-          editor.setMarkdown(md);
-          bodyInjectedRef.current = true;
+          // Once injection is finalized, swaps may have run — re-sending setMarkdown
+          // would clobber a swapped node back to its canonical (broken) src.
+          if (postInjectRef.current) return;
+          editor.setMarkdown(body);
         }, delay),
       );
-    }, [editor]);
+      // Fallback: no ack (e.g. a wedged bridge) shouldn't leave the editor stuck.
+      const fallback = setTimeout(() => {
+        disposeAckRef.current?.();
+        finishInjection(false);
+      }, INJECT_ACK_FALLBACK_MS);
+      injectTimersRef.current.push(fallback);
+    }, [editor, value, finishInjection]);
 
-    // Resolve image embeds once on mount. `value` is a MOUNT-ONLY seed (the
-    // caller remounts per edit session), so a later prop change is ignored. On
-    // any resolve error fall back to the raw body — at worst images show broken;
-    // restoreImagesFromEditor treats canonical links as no-ops, so saving stays safe.
+    // Capture the images to swap once on mount. `value` is a MOUNT-ONLY seed (the
+    // caller remounts per edit session), so a later prop change is ignored.
     useEffect(() => {
-      let active = true;
-      resolveImagesForEditor(value, resolver)
-        .then((resolved) => {
-          if (!active) return;
-          resolvedRef.current = resolved;
-          tryInject();
-        })
-        .catch(() => {
-          if (!active) return;
-          resolvedRef.current = value;
-          tryInject();
-        });
+      relsRef.current = photoEmbedRels(value);
+    }, [value]);
+
+    useEffect(() => {
+      aliveRef.current = true;
       return () => {
-        active = false;
+        aliveRef.current = false;
+        clearInjectTimers();
+        disposeAckRef.current?.();
       };
-    }, [value, resolver, tryInject]);
+    }, [clearInjectTimers]);
 
     const handleLoad = useCallback(() => {
       loadedRef.current = true;
@@ -152,8 +216,8 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
       ref,
       () => ({
         getMarkdown: async () => {
-          // Reading before the body is injected would return the editor's empty
-          // `<p></p>` seed; the caller's `next === body` short-circuit wouldn't
+          // Reading before the body is confirmed injected would return the editor's
+          // empty `<p></p>` seed; the caller's `next === body` short-circuit wouldn't
           // catch that, so it would overwrite the note with a blank body. Refuse
           // instead — surfaces as a Save error, mirroring "Editor not mounted".
           if (!bodyInjectedRef.current) {
@@ -164,7 +228,17 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
           const raw = await response;
           // Strip the editor-side data URIs back to canonical `../Photos/...`
           // links before the body ever touches disk.
-          return restoreImagesFromEditor(raw, imageMapRef.current);
+          const restored = restoreImagesFromEditor(raw, imageMapRef.current);
+          // Last-line guard: if the body injection was never confirmed (the issue-#43
+          // silent-drop) and the editor came back empty on a non-empty note, refuse
+          // to write — never blank the note. An ack-confirmed empty body is a genuine
+          // user clear and is allowed through.
+          if (isSuspiciousBlanking({ original: value, result: restored, acked: ackedRef.current })) {
+            throw new Error(
+              'Could not confirm the note loaded into the editor — not saving, to avoid blanking it. Reopen and try again.',
+            );
+          }
+          return restored;
         },
         insertImage: (rel, dataUri) => {
           if (dataUri) {
@@ -177,7 +251,7 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
           }
         },
       }),
-      [editor],
+      [editor, value],
     );
 
     return (

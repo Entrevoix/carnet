@@ -8,17 +8,23 @@
  * in the node would be written straight back into the `.md`, replacing the tidy
  * relative link with a multi-megabyte base64 blob and corrupting the note.
  *
- * Strategy (all on the RN side, so the corruption-prone part is pure + unit-
- * testable):
- *   - On the way IN (before setMarkdown), swap each `../Photos/...` embed for a
- *     `data:` URI — which renders origin-independently inside the WebView — and
- *     stash the canonical relative path in the image *title* slot:
+ * Strategy (the corruption-prone string surgery is pure + unit-testable here):
+ *   - On the way IN we inject the body with its CANONICAL `../Photos/...` links
+ *     untouched (a small, reliable setMarkdown), then swap each image to a `data:`
+ *     URI one bridge message at a time (see set-image-src in MarkdownBridge). The
+ *     swap sets the node's display src to the data URI AND stashes the canonical
+ *     relative path in the image *title* slot:
  *       ![](../Photos/x.jpg)  →  ![](data:image/jpeg;base64,… "../Photos/x.jpg")
+ *     Injecting canonical-first means no single message ever carries the whole
+ *     note's worth of base64 — the failure mode that opened the editor BLANK when
+ *     every image was folded into one setMarkdown string (issue #43).
  *   - On the way OUT (after getMarkdown), rebuild the canonical `![alt](rel)`
  *     embed from the title and DISCARD the returned src entirely. Because we
  *     never trust the (huge) data URI that comes back, it doesn't matter whether
  *     the editor's markdown serializer preserved it byte-for-byte — only the
- *     short alt + title need to survive the round-trip.
+ *     short alt + title need to survive the round-trip. An image whose swap never
+ *     landed (resolver returned null, message dropped) stays canonical: it shows
+ *     broken in-editor but saves + renders fine — never corrupt.
  *
  * A new insert reuses the same shape: the picker hands us the bytes, we build
  * `![](data:… "../Photos/new.jpg")`, and the OUT pass restores the relative link.
@@ -28,19 +34,20 @@
  * not image embeds and never match.
  */
 
-/** Hard cap on the base64 length we'll inline as a `data:` URI. A larger image
- * still writes to disk and embeds correctly — it just won't preview in-editor.
+/** Hard cap on the base64 length we'll hand the editor as a `data:` URI for a
+ * SINGLE image. A larger image still writes to disk and embeds correctly — it
+ * just won't preview in-editor.
  *
- * DO NOT raise this casually. The resolve pass folds every Photos embed of a note
- * into the SINGLE `setMarkdown` string sent across the RN↔WebView bridge, and an
- * oversized message silently fails to apply — the editor then opens BLANK (and a
- * Save on a blank editor would write back an empty body). On-device (2026-06-12,
- * Pixel 9 Pro Fold) an ~8–24 MB-base64 image bumped the payload past that limit
- * and broke injection; 8 MB is the value the passing smoke test ran at. Previewing
- * larger images needs an architectural change (inject canonical links first, then
- * swap each image in via its own smaller message — or a file:// access path), not
- * a bigger number here. */
-export const MAX_EDITOR_IMAGE_BASE64 = 8 * 1024 * 1024; // ~6 MB of binary
+ * This now bounds ONE per-image bridge message (a set-image-src swap, or a fresh
+ * insertMarkdown), NOT the whole-note injection: the body is injected with
+ * canonical links first, then each image is swapped in via its own message, so a
+ * note with many images no longer compounds into one oversized payload. That
+ * compounding is what silently failed to apply on-device (2026-06-12, Pixel 9 Pro
+ * Fold) and opened the editor BLANK when the cap was raised to 24 MB under the old
+ * single-setMarkdown scheme (issue #43). With inject-then-swap a too-large swap
+ * degrades gracefully (image stays canonical, editor is never blank, save is
+ * safe), so the cap can sit well above the old 8 MB. Tune on-device if needed. */
+export const MAX_EDITOR_IMAGE_BASE64 = 16 * 1024 * 1024; // ~12 MB of binary
 
 /** Canonical `../Photos/<file>` embed as carnet writes it, with an optional
  * pre-existing markdown title we must not clobber. */
@@ -81,53 +88,28 @@ export function buildCanonicalImage(alt: string, rel: string): string {
   return `![${alt}](${rel})`;
 }
 
-async function safeResolve(
-  resolve: (rel: string) => Promise<string | null>,
-  rel: string,
-): Promise<string | null> {
-  try {
-    return await resolve(rel);
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Rewrite every `../Photos/...` embed to an editor-displayable form. `resolve`
- * maps a relative path to a `data:` URI (or null when the file is missing or too
- * large to inline); each unique path is resolved once. Embeds that already carry
- * a markdown title, that resolve to null, or that aren't `../Photos/` links are
- * left untouched (they stay canonical — at worst a missing image shows broken,
- * never corrupt).
+ * The unique `../Photos/...` embed paths to swap to data URIs after the canonical
+ * body is injected, in document order, deduped. Embeds that already carry a
+ * markdown title (a user caption) are skipped — left canonical, as before, since
+ * the title slot is how we round-trip the canonical path and we won't clobber a
+ * real caption. Non-`../Photos/` links never match.
  */
-export async function resolveImagesForEditor(
-  markdown: string,
-  resolve: (rel: string) => Promise<string | null>,
-): Promise<string> {
-  const rels = new Set<string>();
+export function photoEmbedRels(markdown: string): string[] {
+  const rels: string[] = [];
+  const seen = new Set<string>();
   for (const m of markdown.matchAll(PHOTO_EMBED)) {
-    if (m[3]) continue; // pre-existing title — don't touch
-    rels.add(m[2]);
+    if (m[3]) continue; // pre-existing title — leave canonical (no preview)
+    const rel = m[2];
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    rels.push(rel);
   }
-  if (rels.size === 0) return markdown;
-
-  const resolved = new Map<string, string | null>();
-  await Promise.all(
-    [...rels].map(async (rel) => {
-      resolved.set(rel, await safeResolve(resolve, rel));
-    }),
-  );
-
-  return markdown.replace(PHOTO_EMBED, (whole, alt: string, rel: string, title?: string) => {
-    if (title) return whole;
-    const dataUri = resolved.get(rel);
-    if (!dataUri) return whole;
-    return buildEditorImage(alt, dataUri, rel);
-  });
+  return rels;
 }
 
 /**
- * Inverse of resolveImagesForEditor: turn editor-side embeds back into canonical
+ * Inverse of the in-editor swap: turn editor-side embeds back into canonical
  * `![alt](../Photos/...)` links so the saved `.md` never contains a data URI.
  *
  *   1. Title-carried embeds → rebuilt from the title, src discarded. This is the
@@ -163,4 +145,25 @@ export function restoreImagesFromEditor(
   );
   // Postcondition guard: nothing below this line may contain a data URI.
   return remapped.replace(RESIDUAL_DATA_EMBED, "");
+}
+
+/**
+ * Guard against a silently-failed injection blanking a note on Save.
+ *
+ * If the body injection's bridge message is dropped (the issue-#43 failure: an
+ * oversized payload never reaches the WebView), the editor sits empty, getMarkdown
+ * reads back nothing, and the caller's `next === body` short-circuit doesn't fire
+ * — so a Save would overwrite the note with an empty body. Returns true for that
+ * shape: the note HAD content, the editor returned none, and we never got a
+ * content-ack confirming the body actually loaded.
+ *
+ * An ack-confirmed empty result is a genuine user clear (they saw the content and
+ * deleted it) and returns false — only the unconfirmed case is treated as unsafe.
+ */
+export function isSuspiciousBlanking(opts: {
+  original: string;
+  result: string;
+  acked: boolean;
+}): boolean {
+  return !opts.acked && opts.original.trim() !== "" && opts.result.trim() === "";
 }
