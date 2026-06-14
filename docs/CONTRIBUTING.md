@@ -36,12 +36,14 @@ npm run build:shared   # build shared first — mobile & desktop import @carnet/
 | `npm -w @carnet/mobile run typecheck` | `tsc --noEmit` |
 | `npm -w @carnet/mobile test` | Vitest suite |
 | `npm -w @carnet/mobile run editor:build` | Build the TenTap WYSIWYG editor-web bundle (Vite) |
+| `npm -w @carnet/mobile run editor:post-build` | Inline the editor-web bundle into one HTML (invoked by `editor:build`) |
 
 **apps/desktop**
 | Command | Description |
 |---|---|
 | `npm -w @carnet/desktop run dev` | Vite dev server (web) |
 | `npm -w @carnet/desktop run build` | Type-check then Vite production build |
+| `npm -w @carnet/desktop run preview` | Preview the production Vite build |
 | `npm -w @carnet/desktop run tauri` | Tauri CLI passthrough |
 | `npm -w @carnet/desktop test` | Vitest (`--passWithNoTests`) |
 
@@ -52,6 +54,7 @@ npm run build:shared   # build shared first — mobile & desktop import @carnet/
 | `npm -w @carnet/shared run typecheck` | `tsc --noEmit` |
 | `npm -w @carnet/shared run dev` | `tsc --watch` |
 | `npm -w @carnet/shared test` | Vitest |
+| `npm -w @carnet/shared run test:watch` | Vitest in watch mode |
 <!-- /AUTO-GENERATED:scripts -->
 
 ## Running locally
@@ -60,9 +63,10 @@ npm run build:shared   # build shared first — mobile & desktop import @carnet/
 - **Desktop:** `npm run desktop` (web) or `npm run desktop:tauri` (native shell)
 
 ## Configuration
-There are **no `.env` files**. Runtime credentials (the OmniRoute / navetted LLM gateway)
-are entered **in-app** on the device via the Settings screen — see
-[RUNBOOK.md](RUNBOOK.md).
+There are **no `.env` files**. All runtime config is entered **in-app** on the device via the
+Settings screen (API keys in SecureStore, the rest in AsyncStorage) — see [RUNBOOK.md](RUNBOOK.md):
+- **OmniRoute / navetted** (LLM gateway) — base URL + API key. Required to enrich captures.
+- **Karakeep** (optional) — instance URL + API key, for the opt-in per-note "Send to Karakeep" export.
 
 ## Testing
 - All workspaces use **Vitest** (`npm -w <workspace> test`).

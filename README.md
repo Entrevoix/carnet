@@ -56,7 +56,9 @@ Four capture modes:
 | `person`  | OCR'd business card + text  | `People/{Firstname-Lastname}.md` |
 | `photo`   | in-app camera (+ voice/text context) | `Photos/{slug}.jpg` + paired `Ideas/{slug}.md` (via OmniRoute vision) |
 
-All four modes go through OmniRoute for LLM enrichment, then write directly to the local capture folder. Offline captures are queued in SQLite and drained on reconnect. Photo capture shares the same vision pipeline used by the Android share-target (Share → carnet on an image).
+All four modes go through OmniRoute for LLM enrichment, then write directly to the local capture folder. Offline captures are queued on-device (AsyncStorage) and drained on reconnect. Photo capture shares the same vision pipeline used by the Android share-target (Share → carnet on an image).
+
+Any note can optionally be pushed to a self-hosted **Karakeep** instance from its detail screen ("Send to Karakeep" → text bookmark + tags + image/file attachments). Export is opt-in and configured per device.
 
 ## Layout
 
@@ -107,6 +109,8 @@ Open the **Settings** screen in the app and set:
 | OmniRoute URL | Base URL of your OmniRoute instance (e.g. `https://llm.grepon.cc`) |
 | OmniRoute API key | Your API key — stored in the OS secure keystore via `expo-secure-store` |
 | Capture folder | Path to your Syncthing-watched folder on Android (e.g. `/storage/emulated/0/carnet`). Leave blank to use the app sandbox. |
+| Karakeep URL | *(Optional)* Base URL of a self-hosted Karakeep, for per-note export (e.g. `https://keep.example.com`) |
+| Karakeep API key | *(Optional)* Karakeep API key (Karakeep UI → User Settings → API Keys) — stored via `expo-secure-store` |
 
 ### Syncthing sync
 

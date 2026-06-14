@@ -1,152 +1,148 @@
 # Carnet — Real-device smoke test
 
-End-to-end verification you can run with a phone, a workstation running
-`navetted`, and (optionally) a desktop with the Tauri stub. Use this list
-before tagging a release or after any change touching the WS, capture
-handlers, or storage layer.
+End-to-end verification you can run with an Android phone running carnet, a
+workstation hosting the OmniRoute / navetted **LLM gateway** (reachable over
+HTTPS), and Syncthing pairing the capture folder with your vault. Run this
+before tagging a release or after any change touching capture handlers, the
+writer/frontmatter layer, the offline queue, sync, or Karakeep export.
 
-Tick boxes inline as you go. Most steps take under a minute.
+There is **no daemon, no QR pairing, no token handshake** — all configuration is
+entered in-app on the **Settings** screen. Tick boxes inline as you go; most
+steps take under a minute.
 
 ---
 
 ## Prerequisites
 
-- [ ] Workstation has `navetted` built and `claude` CLI on PATH
-- [ ] `~/.config/navetted/config.toml` has `[carnet] sync_folder = "/path/to/Obsidian/Carnet"` set
-- [ ] Phone and workstation are on the same Tailscale net or LAN
-- [ ] Phone has Expo Go installed (or a dev build of carnet)
-- [ ] (Optional) Workstation has the Tauri prerequisites for desktop testing
+- [ ] Phone has carnet installed (Expo Go or a dev/release build)
+- [ ] Workstation runs the OmniRoute / navetted LLM gateway, reachable from the
+      phone over HTTPS (same Tailscale net or LAN)
+- [ ] Syncthing pairs the device folder `/Documents/carnet/` with the workstation
+      vault `~/Obsidian/Carnet/` — see [sync-setup.md](sync-setup.md)
+- [ ] *(Optional)* A reachable Karakeep instance + API key, for the export tests
+- [ ] *(Optional)* Workstation has the Tauri prerequisites for desktop testing
 
-## Daemon liveness
+## First launch & configuration
 
-- [ ] Start `navetted` on the workstation. Log shows
-      `WebSocket listening on ws(s)://0.0.0.0:7878` (or your chosen port)
-- [ ] In another terminal: `navetted --pair`. QR code prints to terminal.
-- [ ] Token from `~/.config/navetted/config.toml` is the same one in the QR.
+- [ ] Fresh install (or wipe AsyncStorage): launch carnet. App boots straight to
+      **Home** — there is no pairing/QR screen.
+- [ ] **Settings** → set the **OmniRoute URL** + **API key**.
+- [ ] *(Optional)* set the **Karakeep URL** + **API key**.
+- [ ] Keys live in `expo-secure-store`, not AsyncStorage: on a dev build, inspect
+      AsyncStorage — `carnet:settings:v1` holds the URLs + non-secret prefs but
+      **no API-key/token field**.
 
-## Mobile — pairing flow
+## Capture — Idea (golden path)
 
-- [ ] Fresh install (or wipe AsyncStorage): launch carnet on the phone.
-- [ ] App boots into **PairScreen** (token is empty).
-- [ ] Tap **Scanner le QR** → camera modal opens (grant permission if asked).
-- [ ] Point at the navetted QR. App parses the payload, lands on **HomeScreen**.
-- [ ] Top-right shows a **green `connecté`** pill within ~5s.
-- [ ] Verify the token landed in `expo-secure-store`, not AsyncStorage:
-  - On dev: open the React Native debugger and inspect AsyncStorage —
-    you should see `carnet:settings:v1` (URL + OmniRoute only) and
-    `carnet:client_id:v1`, but NO field named `navettedToken`.
+- [ ] Home → **Idea** → type a sentence ("test idea — verifying smoke flow").
+- [ ] Tap **Send**. A loading state shows while the gateway enriches.
+- [ ] After a few seconds a preview card renders with the markdown + filepath.
+- [ ] Status chips are visible (e.g. `seedling` selected / `developing` / `mature`).
+- [ ] Tap **Save** → returns Home; the capture appears at the top of **Recents**.
+- [ ] On the workstation, `Ideas/<slug>.md` has valid Obsidian frontmatter
+      (`created`, `status`, `tags`).
 
-## Mobile — capture/idea (golden path)
+## Promote idea status
 
-- [ ] Tap **💡 Idée** → CaptureScreen.
-- [ ] Type a sentence ("test idea — verifying smoke flow").
-- [ ] Tap **Envoyer**. Loading state shows "Claude rédige la note…".
-- [ ] After a few seconds, preview Card renders with markdown + filepath.
-- [ ] Three status chips visible: `seedling` (selected) / `developing` / `mature`.
-- [ ] Tap **Enregistrer** → returns to Home, capture appears at the top
-      of "Récents".
-- [ ] On the workstation, `cat <sync_folder>/Ideas/<slug>.md` shows valid
-      Obsidian frontmatter (`created`, `status`, `tags`).
-
-## Mobile — promote idea status
-
-- [ ] Repeat the idea capture, this time tap **developing** in the preview
-      Card before tapping Enregistrer. Markdown re-renders.
-- [ ] Reload the file: frontmatter now reads `status: developing`.
-- [ ] Body content is byte-identical to the seedling version (only the
-      status line changed).
+- [ ] Repeat the idea capture; this time tap **developing** in the preview card
+      before Save. The markdown re-renders.
+- [ ] Reload the file: frontmatter now reads `status: developing`, and the body
+      is byte-identical to the seedling version (only the status line changed).
 - [ ] Tap **mature** → reload → frontmatter `status: mature`.
 
-## Mobile — capture/journal (voice + append)
+## Capture — Journal (voice + same-day append)
 
-- [ ] Tap **🎙 Journal** → CaptureScreen.
-- [ ] Press and hold the VoiceButton, dictate a sentence, release.
-      Transcript field populates.
-- [ ] Optionally type extra notes in the bottom field.
-- [ ] Envoyer → preview → Enregistrer.
-- [ ] `<sync_folder>/Journal/YYYY-MM-DD.md` exists with frontmatter and
-      a `# <summary>` heading.
-- [ ] Capture a SECOND journal entry the same day.
-- [ ] Reload the file: it now contains both entries, separated by a
-      `## HH:MM` heading. The first entry is intact.
+- [ ] Home → **Journal** → press and hold the voice button, dictate a sentence,
+      release. The transcript field populates.
+- [ ] *(Optional)* type extra notes in the bottom field.
+- [ ] **Send** → preview → **Save**.
+- [ ] `Journal/YYYY-MM-DD.md` exists with frontmatter and a `# <summary>` heading.
+- [ ] Capture a **second** journal entry the same day → reload the file: it now
+      holds **both** entries separated by a `## HH:MM` heading; the first is intact
+      and its per-entry metadata (tags / location) merged into the day file.
 
-## Mobile — capture/person (with OmniRoute)
+## Capture — Person (with the LLM gateway)
 
-- [ ] Settings → set OmniRoute URL to your reachable instance.
-- [ ] Home → 👤 Contact → CaptureScreen.
-- [ ] Tap **Scanner la carte** → camera modal opens.
-- [ ] Point at a real business card, tap **Capturer**.
-- [ ] Modal shows "OCR en cours…", then closes; OCR text field on the
-      capture screen is populated.
-- [ ] Type a context note ("met at conference X").
-- [ ] Envoyer → preview → Enregistrer.
-- [ ] `<sync_folder>/People/<Firstname-Lastname>.md` exists with
-      frontmatter (`name`, `company`, `email`, …).
+- [ ] Settings → OmniRoute URL set and reachable.
+- [ ] Home → **Contact** → **Scan card** → camera opens → **Capture** on a real
+      business card. OCR runs; the OCR text field populates.
+- [ ] Add a context note ("met at conference X") → **Send** → preview → **Save**.
+- [ ] `People/<Firstname-Lastname>.md` exists with frontmatter (`name`, `company`,
+      `email`, …).
 
-## Mobile — capture/person (without OmniRoute)
+## Capture — Person (without the gateway)
 
-- [ ] Settings → clear OmniRoute URL → Save.
-- [ ] Home → 👤 Contact.
-- [ ] Tap **Scanner la carte** → friendly info banner appears
-      ("OmniRoute non configuré. Saisis le texte de la carte ci-dessous…").
-- [ ] Type the OCR text + context manually.
-- [ ] Envoyer → preview → Enregistrer.
-- [ ] File still lands on disk.
+- [ ] Settings → clear the OmniRoute URL → Save.
+- [ ] Home → **Contact** → scanning surfaces the friendly banner: *"OmniRoute not
+      configured. Type the card text below, then tap Send."*
+- [ ] Type the OCR text + context manually → **Send** → **Save** → the file still
+      lands on disk.
 
-## Mobile — settings test connection
+## Offline queue (capture while unreachable)
 
-- [ ] Settings → change `navetted token` to garbage.
-- [ ] Tap **Tester la connexion**.
-- [ ] Within ~1s, red HelperText: `rejected: bad hmac` (or similar
-      auth-failure message).
-- [ ] Restore the correct token → Tester la connexion → green
-      `Connecté en NNNms`.
+- [ ] Put the phone in airplane mode (or stop the gateway). Capture an idea →
+      **Send**. The capture is buffered on-device (AsyncStorage, `lib/queue.ts`),
+      surfaced as queued — **not** a wedged UI or a lost note.
+- [ ] Re-enable the network → the queue **drains automatically** and the note
+      lands in the vault.
+- [ ] Force-quit the app while a capture is queued → relaunch → the queue persists
+      and drains on reconnect. No orphaned/partial file in the vault (atomic
+      tmp+rename write).
 
-## Mobile — connection resilience
+## Rich edit (WYSIWYG / RecentDetail)
 
-- [ ] With the app on Home (green pill), kill `navetted` on the workstation.
-- [ ] Within ~30s, pill turns amber/red.
-- [ ] Restart `navetted`. Pill returns to green within the next reconnect
-      window (exponential backoff up to 30s).
+- [ ] Open a note from Recents → **RecentDetail**. The TenTap WYSIWYG editor loads
+      the body; tags chip, geo chip, and attachments render.
+- [ ] Make an edit → **Save** → reload the file: the change persisted and the
+      frontmatter header is byte-intact (no block collapse — the #1 WYSIWYG
+      corruption mode).
 
-## Mobile — Unicode + collision edge cases
+## Karakeep export (optional)
+
+- [ ] Settings → Karakeep URL + API key set.
+- [ ] Open a note → **Send to Karakeep** → snackbar *"Exported to Karakeep"*. On
+      the Karakeep instance: a text bookmark with the note body + the note's tags,
+      and any image/file attachments uploaded as assets.
+- [ ] **Re-export** the same note → confirm dialog *"This note is already in
+      Karakeep. Update the existing bookmark…"* → **Update** → snackbar *"Updated
+      in Karakeep"*. The **same** bookmark updates — no duplicate is created.
+- [ ] Add a new image/file attachment to the note → re-export → **only the new
+      attachment** is pushed; previously-synced assets are not duplicated
+      (incremental asset sync).
+- [ ] With the Karakeep URL blank, **Send to Karakeep** surfaces a "not configured"
+      error instead of failing silently.
+
+## Voice setup (STT onboarding)
+
+- [ ] **Settings → Voice input → Check voice setup** reports the recognizer/model
+      state: "ready", or an offer to **Download voice model** when the on-device
+      English model is missing (the code-12 dictation dead-end).
+- [ ] On a device that lacks the English model, the Home screen also shows a
+      one-shot readiness banner once. (Both attached Pixels currently have the
+      model, so this path needs a model-less device to exercise.)
+
+## Unicode + collision edge cases
 
 - [ ] Capture an idea titled `Mémoire & flux` → file lands at
       `Ideas/memoire-flux.md` (transliterated, not "untitled").
-- [ ] Capture another idea that resolves to the same slug → file lands at
-      `Ideas/memoire-flux-2.md` (collision suffix). Original file untouched.
+- [ ] Capture another idea that resolves to the same slug → `Ideas/memoire-flux-2.md`
+      (collision suffix). The original file is untouched.
 
 ## Desktop (optional)
 
-- [ ] `npm run desktop:tauri` opens the Carnet window.
-- [ ] Click **🎙 Journal** (no voice — text only).
-- [ ] Type a journal entry → Envoyer → preview → Enregistrer.
-- [ ] File lands in the same sync folder as the mobile captures.
-- [ ] Settings → change token to garbage → **Tester la connexion** → red.
-      Restore → green.
-- [ ] Note: desktop currently stores the token in plaintext localStorage
-      (see TODO.md). Do NOT use this build on a shared machine.
+`apps/desktop` is a **Tauri v2 placeholder stub** (see README / TODO.md) — its
+capture path is not part of the mobile smoke flow.
 
-## Edge cases worth checking
-
-- [ ] Submit an idea while the app reconnects (kill + restore navetted
-      between Submit and the response): expect either a clean error or a
-      successful retry, not a wedged UI.
-- [ ] Force-quit the mobile app mid-capture → relaunch → no orphaned
-      file in the sync folder (atomic write means tmp+rename, no partials).
-- [ ] Rapid double-tap Submit on idea: second tap should disable the
-      button or report "Not connected" cleanly. (Known limitation: WS
-      read loop blocks during `claude -p` — see TODO.md.)
-- [ ] Two simultaneous clients (mobile + desktop) connected to the same
-      navetted: each can capture without interfering.
+- [ ] `npm run desktop:tauri` opens the Carnet window without error.
+- [ ] The LLM-gateway token is held in the OS keychain via the Tauri commands
+      (`get/set/delete_navetted_token`), not plaintext.
 
 ## When something fails
 
-1. Note which step failed and capture the navetted log + the WS message
-   contents (use `websocat` to replay the failing capture envelope).
-2. File an issue with: step number, observed behavior, expected behavior,
-   logs, and the relevant section of `<sync_folder>` if a file landed
-   wrongly.
-3. If the daemon is stuck, `kill` it and check `~/.config/navetted/`
-   for a stale lock or a corrupt config (the migration paths in
-   `config.rs` are tested, but new fields might trip parsing).
+1. Note the step, the observed vs. expected behavior, and the relevant vault file
+   if one landed wrongly.
+2. **Enrichment** failures → check the OmniRoute URL + key in Settings and that the
+   gateway is reachable from the phone (Tailscale/LAN).
+3. **Export** failures → check the Karakeep URL + key, that the URL is `https://`
+   (loopback/`10.x` HTTP excepted), and that the instance is reachable.
+4. File an issue with the step number, logs, and the offending vault file/frontmatter.
