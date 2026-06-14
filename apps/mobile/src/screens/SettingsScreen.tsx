@@ -32,6 +32,7 @@ import {
 } from "../lib/settings";
 import { listModels } from "../lib/omniroute";
 import * as captureNotification from "../lib/captureNotification";
+import { VoiceSetupCheck } from "../voice/VoiceSetupCheck";
 import {
   buildIdeaPrompt,
   buildJournalPrompt,
@@ -585,6 +586,17 @@ export default function SettingsScreen() {
           Doubles the OmniRoute API spend per audio capture. Skip if you only
           transcribe occasionally.
         </HelperText>
+      </View>
+
+      <View style={styles.notificationSection}>
+        <Text variant="titleMedium" style={styles.promptSectionTitle}>
+          Voice input
+        </Text>
+        <HelperText type="info" visible>
+          On-device dictation needs Google's English voice model. Check whether
+          it's installed and pull it from inside the app — no Play Store trip.
+        </HelperText>
+        <VoiceSetupCheck />
       </View>
 
       <View style={styles.notificationSection}>

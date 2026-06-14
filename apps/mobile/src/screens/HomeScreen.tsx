@@ -21,6 +21,7 @@ import {
   type CaptureEntry,
 } from "../lib/storage";
 import { moveToArchive } from "../lib/writer";
+import { VoiceReadinessBanner } from "../voice/VoiceReadinessBanner";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
 
@@ -140,6 +141,7 @@ export default function HomeScreen({ navigation }: Props) {
       style={[styles.root, { backgroundColor: theme.colors.background }]}
       contentContainerStyle={styles.content}
     >
+      <VoiceReadinessBanner />
       <Button
         mode="contained"
         icon="lightbulb-on"
