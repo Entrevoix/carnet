@@ -27,7 +27,13 @@ vi.mock("expo-file-system/legacy", () => {
     documentDirectory: "file:///data/",
     EncodingType: { UTF8: "utf8", Base64: "base64" },
     getInfoAsync: vi.fn(async (uri: string) => {
-      return { exists: _files.has(uri), uri, isDirectory: false };
+      if (_files.has(uri)) return { exists: true, uri, isDirectory: false };
+      // Model directories implicitly: a path is a directory iff some tracked
+      // file lives under it. Lets the read-only findSubdir resolve real subdirs
+      // without us having to track dir entries separately.
+      const dirPrefix = uri.replace(/\/$/, "") + "/";
+      const isDir = [..._files.keys()].some((u) => u.startsWith(dirPrefix));
+      return { exists: isDir, uri, isDirectory: isDir };
     }),
     makeDirectoryAsync: vi.fn(async (_uri: string, _opts?: unknown) => {
       // no-op for directories — we track files only
@@ -1003,6 +1009,17 @@ describe("resolvePairedUri", () => {
 
   it("returns null for a link whose target is not on disk", async () => {
     expect(await resolvePairedUri("Photos", "ghost.jpg")).toBeNull();
+  });
+
+  it("does not create the subdirectory when resolving a broken link", async () => {
+    // A read-only resolve of a link into a non-existent subdir must NOT make
+    // the directory (a pure lookup shouldn't litter the vault with empty dirs).
+    const mkdir = vi.mocked(FileSystem.makeDirectoryAsync);
+    mkdir.mockClear();
+
+    expect(await resolvePairedUri("Photos", "ghost.jpg")).toBeNull();
+
+    expect(mkdir).not.toHaveBeenCalled();
   });
 });
 
