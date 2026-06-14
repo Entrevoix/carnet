@@ -45,6 +45,7 @@ globalThis.fetch = fetchMock as unknown as typeof fetch;
 
 import {
   createTextBookmark,
+  updateTextBookmark,
   attachTags,
   KarakeepError,
   isNotConfiguredError,
@@ -52,6 +53,13 @@ import {
 
 interface CreateBody {
   type: string;
+  text: string;
+  title?: string;
+  createdAt?: string;
+}
+
+interface UpdateBody {
+  type?: string;
   text: string;
   title?: string;
   createdAt?: string;
@@ -275,5 +283,127 @@ describe("attachTags", () => {
     }
     expect(caught).toBeInstanceOf(KarakeepError);
     expect((caught as KarakeepError).status).toBe(404);
+  });
+});
+
+// ── updateTextBookmark ──────────────────────────────────────────────────────────
+
+describe("updateTextBookmark", () => {
+  it("PATCHes /api/v1/bookmarks/{id} with text + title (no type field), returns the server id", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: "bk_123" }, 200));
+
+    const result = await updateTextBookmark("bk_123", {
+      text: "# Updated\n\nnew body",
+      title: "Updated",
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://karakeep.example.com/api/v1/bookmarks/bk_123");
+    expect(init.method).toBe("PATCH");
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe(
+      "Bearer kk-secret-token-xyz123",
+    );
+
+    const body = JSON.parse(init.body as string) as UpdateBody;
+    // An update must NOT re-send `type` — it's a partial patch of an existing
+    // text bookmark.
+    expect("type" in body).toBe(false);
+    expect(body.text).toBe("# Updated\n\nnew body");
+    expect(body.title).toBe("Updated");
+
+    expect(result).toEqual({ id: "bk_123" });
+  });
+
+  it("omits title and createdAt when not provided, includes createdAt when provided", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: "bk_1" }, 200));
+    await updateTextBookmark("bk_1", { text: "x" });
+    let body = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string,
+    ) as UpdateBody;
+    expect("title" in body).toBe(false);
+    expect("createdAt" in body).toBe(false);
+
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: "bk_1" }, 200));
+    await updateTextBookmark("bk_1", {
+      text: "x",
+      createdAt: "2026-06-12T10:00:00.000Z",
+    });
+    body = JSON.parse(
+      (fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string,
+    ) as UpdateBody;
+    expect(body.createdAt).toBe("2026-06-12T10:00:00.000Z");
+  });
+
+  it("prefers the server-returned id over the passed id when present", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: "bk_server" }, 200));
+    const result = await updateTextBookmark("bk_passed", { text: "x" });
+    expect(result.id).toBe("bk_server");
+  });
+
+  it("tolerates a 204/empty body — returns the passed id on a successful update", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const result = await updateTextBookmark("bk_known", { text: "x" });
+    expect(result).toEqual({ id: "bk_known" });
+  });
+
+  it("tolerates a 200 with no id — returns the passed id", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ ok: true }, 200));
+    const result = await updateTextBookmark("bk_known", { text: "x" });
+    expect(result).toEqual({ id: "bk_known" });
+  });
+
+  it("throws a KarakeepError with status 404 when the bookmark is gone (caller can fall back to create)", async () => {
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(404, "Bookmark not found"));
+    let caught: unknown;
+    try {
+      await updateTextBookmark("bk_deleted", { text: "x" });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(KarakeepError);
+    expect((caught as KarakeepError).status).toBe(404);
+  });
+
+  it("throws a not-configured KarakeepError on a blank URL without calling fetch", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      karakeepUrl: "",
+    });
+    let caught: unknown;
+    try {
+      await updateTextBookmark("bk_1", { text: "x" });
+    } catch (e) {
+      caught = e;
+    }
+    expect(isNotConfiguredError(caught)).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never leaks the api key in a thrown network error message", async () => {
+    fetchMock.mockRejectedValueOnce(
+      new TypeError("fetch failed Bearer kk-secret-token-xyz123 unreachable"),
+    );
+    let caught: unknown;
+    try {
+      await updateTextBookmark("bk_1", { text: "x" });
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as Error).message).not.toContain("kk-secret-token-xyz123");
+    expect((caught as Error).message).toContain("Bearer [redacted]");
+  });
+
+  it("rejects non-https URLs (non-localhost) without calling fetch", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      karakeepUrl: "http://evil.example.com",
+    });
+    await expect(updateTextBookmark("bk_1", { text: "x" })).rejects.toThrow(
+      /https:\/\//,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
