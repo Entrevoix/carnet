@@ -72,6 +72,7 @@ import {
   updateTextBookmark,
   KarakeepError,
 } from "../lib/karakeep";
+import { pushNoteAttachments } from "../lib/karakeepExport";
 import { pickAttachment } from "../lib/attachments";
 import { MAX_EDITOR_IMAGE_BASE64, toDataUri } from "../lib/editorImages";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
@@ -396,14 +397,33 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       // detaching would need a GET-diff + DELETE pass (a later increment).
       await attachTags(id, tags);
 
+      // Attachments are pushed once, when the bookmark is CREATED (didUpdate is
+      // false). A re-export updates text + tags in place but does NOT re-push
+      // assets, so Karakeep never accumulates duplicates on re-send and we avoid
+      // fragile per-asset tracking. ACCEPTED LIMITATION: an attachment added to
+      // an already-exported note isn't pushed on re-export, and one that fails
+      // here isn't auto-retried later — an incremental-asset-sync slice covers both.
+      let assetError: string | null = null;
+      if (!didUpdate) {
+        assetError = await pushNoteAttachments(id, noteBody);
+      }
+
       // Idempotency: stamp the bookmark id into the note frontmatter (a no-op
-      // rewrite on update, since the id is unchanged).
+      // rewrite on update, since the id is unchanged). Stamped even when an
+      // attachment failed — the bookmark exists, so a re-export should update it
+      // rather than create a second one.
       const next = upsertFrontmatterField(header + noteBody, "karakeepId", id);
       await updateNote(entry.filepath, next);
       if (!mountedRef.current) return;
       setBody(next);
-      setKarakeepUpdated(didUpdate);
-      setKarakeepDone(true);
+      if (assetError) {
+        setKarakeepError(
+          `Exported to Karakeep, but an attachment failed: ${assetError}`,
+        );
+      } else {
+        setKarakeepUpdated(didUpdate);
+        setKarakeepDone(true);
+      }
     } catch (e: unknown) {
       const reason =
         e instanceof KarakeepError

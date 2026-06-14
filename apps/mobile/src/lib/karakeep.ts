@@ -50,9 +50,20 @@ export function isNotConfiguredError(err: unknown): boolean {
   return err instanceof KarakeepError && err.notConfigured;
 }
 
-// Hard ceiling on any single Karakeep request. Kept short so an unreachable
+// Hard ceiling on a single Karakeep JSON request. Kept short so an unreachable
 // host fails fast instead of spinning.
 const FETCH_TIMEOUT_MS = 20_000;
+
+// Asset uploads ship file bytes over a (often LAN/tailnet) link, so they get a
+// more generous ceiling than the small JSON calls.
+const ASSET_FETCH_TIMEOUT_MS = 60_000;
+
+// assetType used when attaching an uploaded asset to a bookmark. "userUploaded"
+// is the generic "the user attached this file" slot in Karakeep's asset enum —
+// it accepts images and non-images alike. (Display nuance — e.g. promoting the
+// first image to "bannerImage" so it becomes the bookmark's cover — is a
+// live-instance tuning follow-up, deliberately not assumed here.)
+const ATTACH_ASSET_TYPE = "userUploaded";
 
 /** Strip any "Bearer ..." substring from an error message so the API key
  * never lands in stored error logs or on-screen toasts. Also strip the
@@ -158,35 +169,36 @@ function authHeader(apiKey: string): Record<string, string> {
 }
 
 /**
- * Shared JSON request for the Karakeep endpoints. Reads config (throwing
- * not-configured on a blank URL), enforces HTTPS, trims trailing slashes, and
- * runs the fetch under the hard whole-operation timeout. Network failures
- * become a status-0 KarakeepError (sanitized); non-2xx becomes a KarakeepError
- * carrying the HTTP status. Returns the raw ok `Response` so each caller parses
- * its own body shape.
+ * Core Karakeep request. Reads config (throwing not-configured on a blank URL),
+ * enforces HTTPS, trims trailing slashes, injects the Bearer header, and runs
+ * the fetch under a hard whole-operation timeout. Network failures become a
+ * status-0 KarakeepError (sanitized); non-2xx becomes a KarakeepError carrying
+ * the HTTP status. Returns the raw ok `Response` so each caller parses its own
+ * body. Body + extra headers are caller-supplied, so this serves both the JSON
+ * endpoints and the multipart asset upload.
  */
-async function karakeepSendJson(
+async function karakeepFetch(
   path: string,
-  method: "POST" | "PATCH",
-  jsonBody: unknown,
+  init: {
+    method: "POST" | "PATCH";
+    body: BodyInit;
+    headers?: Record<string, string>;
+    timeoutMs?: number;
+  },
 ): Promise<Response> {
   const { url, apiKey } = await getKarakeepConfig();
   const trimmed = url.replace(/\/+$/, "");
   assertHttpsOrLocal(trimmed);
 
   const endpoint = `${trimmed}${path}`;
-  const body = JSON.stringify(jsonBody);
 
-  return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
+  return await withTimeout(init.timeoutMs ?? FETCH_TIMEOUT_MS, async (signal) => {
     let response: Response;
     try {
       response = await fetch(endpoint, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeader(apiKey),
-        },
-        body,
+        method: init.method,
+        headers: { ...authHeader(apiKey), ...(init.headers ?? {}) },
+        body: init.body,
         signal,
       });
     } catch (e: unknown) {
@@ -207,6 +219,23 @@ async function karakeepSendJson(
     }
 
     return response;
+  });
+}
+
+/**
+ * JSON-request convenience over {@link karakeepFetch}: sets the JSON
+ * Content-Type and serializes the body. Returns the raw ok `Response` so each
+ * caller parses its own body shape.
+ */
+async function karakeepSendJson(
+  path: string,
+  method: "POST" | "PATCH",
+  jsonBody: unknown,
+): Promise<Response> {
+  return await karakeepFetch(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(jsonBody),
   });
 }
 
@@ -286,5 +315,76 @@ export async function attachTags(
     `/api/v1/bookmarks/${encodeURIComponent(bookmarkId)}/tags`,
     "POST",
     { tags: tagNames.map((tagName) => ({ tagName, attachedBy: "human" })) },
+  );
+}
+
+/**
+ * Upload a file to Karakeep as an asset. POSTs multipart/form-data to
+ * `/api/v1/assets` with the file under the `file` field (the field name Karakeep
+ * expects). Returns the new `assetId`, which {@link attachAssetToBookmark} then
+ * links to a bookmark.
+ *
+ * The file part uses the React Native `{ uri, name, type }` form (mirrors the
+ * Whisper upload in VoiceButton): `fetch` streams the uri (a `file://` sandbox
+ * path or a SAF `content://` URI) and sets the multipart boundary itself, so NO
+ * Content-Type header is set here. Gets the longer asset timeout since it ships
+ * bytes over the network.
+ */
+export async function uploadAsset(input: {
+  uri: string;
+  mime: string;
+  filename: string;
+}): Promise<{ assetId: string }> {
+  const form = new FormData();
+  form.append("file", {
+    uri: input.uri,
+    name: input.filename,
+    type: input.mime,
+  } as unknown as Blob);
+
+  const response = await karakeepFetch("/api/v1/assets", {
+    method: "POST",
+    body: form,
+    timeoutMs: ASSET_FETCH_TIMEOUT_MS,
+  });
+
+  // Spec response is { assetId, contentType, size, fileName }; some versions/
+  // forks key the new asset's id as `id` instead, so accept either. The parse
+  // is guarded so a non-JSON 200 yields the friendly malformed-asset error
+  // rather than a raw SyntaxError.
+  const json = (await response.json().catch(() => ({}))) as {
+    assetId?: unknown;
+    id?: unknown;
+  };
+  const assetId =
+    typeof json.assetId === "string" && json.assetId.length > 0
+      ? json.assetId
+      : typeof json.id === "string" && json.id.length > 0
+        ? json.id
+        : "";
+  if (!assetId) {
+    throw new KarakeepError(
+      "Karakeep returned a malformed asset (no assetId)",
+      response.status,
+    );
+  }
+  return { assetId };
+}
+
+/**
+ * Attach an already-uploaded asset to an EXISTING bookmark. POSTs to
+ * `/api/v1/bookmarks/{id}/assets` with `{ id: assetId, assetType }` — note the
+ * body field is `id` (the ASSET id), not `assetId`. Defaults assetType to
+ * `userUploaded` (see ATTACH_ASSET_TYPE).
+ */
+export async function attachAssetToBookmark(
+  bookmarkId: string,
+  assetId: string,
+  assetType: string = ATTACH_ASSET_TYPE,
+): Promise<void> {
+  await karakeepSendJson(
+    `/api/v1/bookmarks/${encodeURIComponent(bookmarkId)}/assets`,
+    "POST",
+    { id: assetId, assetType },
   );
 }
