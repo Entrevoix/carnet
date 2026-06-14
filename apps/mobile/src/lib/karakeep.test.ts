@@ -47,6 +47,8 @@ import {
   createTextBookmark,
   updateTextBookmark,
   attachTags,
+  uploadAsset,
+  attachAssetToBookmark,
   KarakeepError,
   isNotConfiguredError,
 } from "./karakeep";
@@ -405,5 +407,134 @@ describe("updateTextBookmark", () => {
       /https:\/\//,
     );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── uploadAsset ─────────────────────────────────────────────────────────────────
+
+describe("uploadAsset", () => {
+  const input = { uri: "file:///vault/Photos/a.jpg", mime: "image/jpeg", filename: "a.jpg" };
+
+  it("POSTs multipart to /api/v1/assets with a `file` field and Bearer auth, returns assetId", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ assetId: "as_abc" }, 200));
+
+    const result = await uploadAsset(input);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://karakeep.example.com/api/v1/assets");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe(
+      "Bearer kk-secret-token-xyz123",
+    );
+    // The boundary is set by fetch from the FormData body — we must NOT set
+    // Content-Type ourselves, or the multipart boundary is lost.
+    expect("Content-Type" in (init.headers as Record<string, string>)).toBe(false);
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).has("file")).toBe(true);
+
+    expect(result).toEqual({ assetId: "as_abc" });
+  });
+
+  it("accepts an `id` field as the asset id when `assetId` is absent (version variance)", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: "as_via_id" }, 200));
+    await expect(uploadAsset(input)).resolves.toEqual({ assetId: "as_via_id" });
+  });
+
+  it("throws a malformed-asset error when the response has neither assetId nor id", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ notAssetId: true }, 200));
+    await expect(uploadAsset(input)).rejects.toThrow(/malformed asset/i);
+  });
+
+  it("throws a KarakeepError carrying the HTTP status on a non-ok response (e.g. 413)", async () => {
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(413, "Payload too large"));
+    let caught: unknown;
+    try {
+      await uploadAsset(input);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(KarakeepError);
+    expect((caught as KarakeepError).status).toBe(413);
+  });
+
+  it("throws a not-configured KarakeepError on a blank URL without calling fetch", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({ ...BASE_SETTINGS, karakeepUrl: "" });
+    await expect(uploadAsset(input)).rejects.toThrow(/not configured/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-https URLs (non-localhost) without calling fetch", async () => {
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      karakeepUrl: "http://evil.example.com",
+    });
+    await expect(uploadAsset(input)).rejects.toThrow(/https:\/\//);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never leaks the api key in a thrown network error message", async () => {
+    fetchMock.mockRejectedValueOnce(
+      new TypeError("upload failed Bearer kk-secret-token-xyz123 unreachable"),
+    );
+    let caught: unknown;
+    try {
+      await uploadAsset(input);
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as Error).message).not.toContain("kk-secret-token-xyz123");
+    expect((caught as Error).message).toContain("Bearer [redacted]");
+  });
+});
+
+// ── attachAssetToBookmark ───────────────────────────────────────────────────────
+
+interface AttachAssetBody {
+  id: string;
+  assetType: string;
+}
+
+describe("attachAssetToBookmark", () => {
+  it("POSTs to /api/v1/bookmarks/{id}/assets with {id, assetType:'userUploaded'} by default", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: "att_1" }, 201));
+
+    await attachAssetToBookmark("bk_123", "as_abc");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://karakeep.example.com/api/v1/bookmarks/bk_123/assets");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe(
+      "Bearer kk-secret-token-xyz123",
+    );
+
+    const body = JSON.parse(init.body as string) as AttachAssetBody;
+    // The asset id goes in the `id` field (NOT `assetId`) per the Karakeep API.
+    expect(body.id).toBe("as_abc");
+    expect(body.assetType).toBe("userUploaded");
+  });
+
+  it("uses a caller-provided assetType when passed", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: "att_2" }, 201));
+    await attachAssetToBookmark("bk_1", "as_1", "bannerImage");
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string,
+    ) as AttachAssetBody;
+    expect(body.assetType).toBe("bannerImage");
+  });
+
+  it("throws a KarakeepError carrying the status on a non-ok response", async () => {
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(404, "Bookmark not found"));
+    let caught: unknown;
+    try {
+      await attachAssetToBookmark("bk_missing", "as_1");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(KarakeepError);
+    expect((caught as KarakeepError).status).toBe(404);
   });
 });
