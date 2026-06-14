@@ -73,6 +73,7 @@ import {
   KarakeepError,
 } from "../lib/karakeep";
 import { pushNoteAttachments } from "../lib/karakeepExport";
+import { clearPushedAssetKeys } from "../lib/karakeepAssetSync";
 import { pickAttachment } from "../lib/attachments";
 import { MAX_EDITOR_IMAGE_BASE64, toDataUri } from "../lib/editorImages";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
@@ -384,6 +385,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           // disambiguating would need a confirming GET — out of scope for v2.
           if (e instanceof KarakeepError && e.status === 404) {
             ({ id } = await createTextBookmark({ text: noteBody, title, createdAt }));
+            // The old bookmark is gone; its asset-sync record is dead. Drop it so
+            // AsyncStorage doesn't accumulate orphans, and so the fresh bookmark's
+            // (empty) record drives a full re-push of attachments below.
+            void clearPushedAssetKeys(existingId);
           } else {
             throw e;
           }
@@ -397,16 +402,13 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       // detaching would need a GET-diff + DELETE pass (a later increment).
       await attachTags(id, tags);
 
-      // Attachments are pushed once, when the bookmark is CREATED (didUpdate is
-      // false). A re-export updates text + tags in place but does NOT re-push
-      // assets, so Karakeep never accumulates duplicates on re-send and we avoid
-      // fragile per-asset tracking. ACCEPTED LIMITATION: an attachment added to
-      // an already-exported note isn't pushed on re-export, and one that fails
-      // here isn't auto-retried later — an incremental-asset-sync slice covers both.
-      let assetError: string | null = null;
-      if (!didUpdate) {
-        assetError = await pushNoteAttachments(id, noteBody);
-      }
+      // Incrementally sync attachments on BOTH create and re-export. A
+      // per-bookmark sync record (keyed by bookmark id, in AsyncStorage) means
+      // already-attached files are skipped — so Karakeep never accumulates
+      // duplicates on re-send — while an attachment added after the first export,
+      // or one that failed earlier, is (re)pushed here. Returns the first error
+      // (or null); a partial failure still leaves the bookmark stamped below.
+      const assetError = await pushNoteAttachments(id, noteBody);
 
       // Idempotency: stamp the bookmark id into the note frontmatter (a no-op
       // rewrite on update, since the id is unchanged). Stamped even when an

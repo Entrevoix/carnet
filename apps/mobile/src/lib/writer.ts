@@ -181,6 +181,20 @@ async function findFileInDir(
   return info.exists ? fileUri : null;
 }
 
+/** Find an existing named subdirectory, returning its URI, or null when it does
+ * not exist. The read-only counterpart of findOrCreateSubdir — used by
+ * resolvePairedUri so resolving a (possibly broken) link never creates an empty
+ * Photos/Files directory as a side effect of a pure lookup. */
+async function findSubdir(root: Root, name: string): Promise<string | null> {
+  if (root.isSaf) {
+    const children = await StorageAccessFramework.readDirectoryAsync(root.uri);
+    return children.find((u) => safLastSegment(u) === name) ?? null;
+  }
+  const dir = `${root.uri.replace(/\/$/, "")}/${name}`;
+  const info = await FileSystem.getInfoAsync(dir);
+  return info.exists ? dir : null;
+}
+
 /** Get or create a named subdirectory, returning its URI. */
 async function findOrCreateSubdir(root: Root, name: string): Promise<string> {
   if (root.isSaf) {
@@ -472,7 +486,8 @@ export async function resolvePairedUri(
   filename: string,
 ): Promise<{ uri: string; mime: string } | null> {
   const root = await resolveRoot();
-  const subdirUri = await findOrCreateSubdir(root, subdir);
+  const subdirUri = await findSubdir(root, subdir);
+  if (!subdirUri) return null; // subdir absent — broken link, don't create it
   const binaryUri = await findFileInDir(subdirUri, filename, root.isSaf);
   if (!binaryUri) return null;
   return { uri: binaryUri, mime: mimeFromFilename(filename) };
