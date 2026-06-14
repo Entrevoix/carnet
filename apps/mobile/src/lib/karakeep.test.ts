@@ -43,6 +43,46 @@ function makeErrorResponse(status: number, message: string): Response {
 const fetchMock = vi.fn();
 globalThis.fetch = fetchMock as unknown as typeof fetch;
 
+// ── Mock XMLHttpRequest ───────────────────────────────────────────────────────
+// uploadAsset POSTs multipart via XMLHttpRequest (not fetch) — see karakeep.ts.
+// Each test sets MockXHR.onSend to drive the request to load/error/timeout.
+class MockXHR {
+  static instances: MockXHR[] = [];
+  static onSend: (xhr: MockXHR) => void = () => {};
+  status = 0;
+  responseText = "";
+  timeout = 0;
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  ontimeout: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  method = "";
+  url = "";
+  headers: Record<string, string> = {};
+  body: unknown;
+  open(method: string, url: string): void {
+    this.method = method;
+    this.url = url;
+  }
+  setRequestHeader(key: string, value: string): void {
+    this.headers[key] = value;
+  }
+  send(body: unknown): void {
+    this.body = body;
+    MockXHR.instances.push(this);
+    MockXHR.onSend(this); // may set status/responseText then call onload, or throw
+  }
+}
+globalThis.XMLHttpRequest = MockXHR as unknown as typeof XMLHttpRequest;
+/** Drive the next XHR send to a successful load with the given status + JSON. */
+function xhrRespond(json: unknown, status = 200): void {
+  MockXHR.onSend = (xhr) => {
+    xhr.status = status;
+    xhr.responseText = JSON.stringify(json);
+    xhr.onload?.();
+  };
+}
+
 import {
   createTextBookmark,
   updateTextBookmark,
@@ -73,6 +113,8 @@ interface TagsBody {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  MockXHR.instances = [];
+  MockXHR.onSend = () => {};
 });
 
 // ── createTextBookmark ────────────────────────────────────────────────────────
@@ -415,39 +457,52 @@ describe("updateTextBookmark", () => {
 describe("uploadAsset", () => {
   const input = { uri: "file:///vault/Photos/a.jpg", mime: "image/jpeg", filename: "a.jpg" };
 
-  it("POSTs multipart to /api/v1/assets with a `file` field and Bearer auth, returns assetId", async () => {
-    fetchMock.mockResolvedValueOnce(makeOkResponse({ assetId: "as_abc" }, 200));
+  it("POSTs multipart via XHR to /api/v1/assets with a `file` field and Bearer auth, returns assetId", async () => {
+    xhrRespond({ assetId: "as_abc" }, 200);
 
     const result = await uploadAsset(input);
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://karakeep.example.com/api/v1/assets");
-    expect(init.method).toBe("POST");
-    expect((init.headers as Record<string, string>)["Authorization"]).toBe(
-      "Bearer kk-secret-token-xyz123",
-    );
-    // The boundary is set by fetch from the FormData body — we must NOT set
-    // Content-Type ourselves, or the multipart boundary is lost.
-    expect("Content-Type" in (init.headers as Record<string, string>)).toBe(false);
-    expect(init.body).toBeInstanceOf(FormData);
-    expect((init.body as FormData).has("file")).toBe(true);
+    expect(MockXHR.instances).toHaveLength(1);
+    const xhr = MockXHR.instances[0];
+    expect(xhr.url).toBe("https://karakeep.example.com/api/v1/assets");
+    expect(xhr.method).toBe("POST");
+    expect(xhr.headers["Authorization"]).toBe("Bearer kk-secret-token-xyz123");
+    // No Content-Type — XHR derives the multipart boundary from the FormData.
+    expect("Content-Type" in xhr.headers).toBe(false);
+    expect(xhr.body).toBeInstanceOf(FormData);
+    expect((xhr.body as FormData).has("file")).toBe(true);
+    // The upload must go via XHR, never fetch (the fetch+FormData path crashes
+    // on Hermes — see karakeep.ts).
+    expect(fetchMock).not.toHaveBeenCalled();
 
     expect(result).toEqual({ assetId: "as_abc" });
   });
 
   it("accepts an `id` field as the asset id when `assetId` is absent (version variance)", async () => {
-    fetchMock.mockResolvedValueOnce(makeOkResponse({ id: "as_via_id" }, 200));
+    xhrRespond({ id: "as_via_id" }, 200);
     await expect(uploadAsset(input)).resolves.toEqual({ assetId: "as_via_id" });
   });
 
   it("throws a malformed-asset error when the response has neither assetId nor id", async () => {
-    fetchMock.mockResolvedValueOnce(makeOkResponse({ notAssetId: true }, 200));
+    xhrRespond({ notAssetId: true }, 200);
+    await expect(uploadAsset(input)).rejects.toThrow(/malformed asset/i);
+  });
+
+  it("throws a malformed-asset error on a non-JSON 2xx body", async () => {
+    MockXHR.onSend = (xhr) => {
+      xhr.status = 200;
+      xhr.responseText = "not json";
+      xhr.onload?.();
+    };
     await expect(uploadAsset(input)).rejects.toThrow(/malformed asset/i);
   });
 
   it("throws a KarakeepError carrying the HTTP status on a non-ok response (e.g. 413)", async () => {
-    fetchMock.mockResolvedValueOnce(makeErrorResponse(413, "Payload too large"));
+    MockXHR.onSend = (xhr) => {
+      xhr.status = 413;
+      xhr.responseText = JSON.stringify({ error: "Payload too large" });
+      xhr.onload?.();
+    };
     let caught: unknown;
     try {
       await uploadAsset(input);
@@ -458,27 +513,64 @@ describe("uploadAsset", () => {
     expect((caught as KarakeepError).status).toBe(413);
   });
 
-  it("throws a not-configured KarakeepError on a blank URL without calling fetch", async () => {
+  it("throws a status-0 KarakeepError on a network error", async () => {
+    MockXHR.onSend = (xhr) => xhr.onerror?.();
+    let caught: unknown;
+    try {
+      await uploadAsset(input);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(KarakeepError);
+    expect((caught as KarakeepError).status).toBe(0);
+  });
+
+  it("throws a status-0 KarakeepError mentioning the timeout on ontimeout", async () => {
+    MockXHR.onSend = (xhr) => xhr.ontimeout?.();
+    let caught: unknown;
+    try {
+      await uploadAsset(input);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(KarakeepError);
+    expect((caught as KarakeepError).status).toBe(0);
+    expect((caught as Error).message).toMatch(/timed out/i);
+  });
+
+  it("settles (does not hang) with a status-0 KarakeepError on abort", async () => {
+    MockXHR.onSend = (xhr) => xhr.onabort?.();
+    let caught: unknown;
+    try {
+      await uploadAsset(input);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(KarakeepError);
+    expect((caught as KarakeepError).status).toBe(0);
+  });
+
+  it("throws a not-configured KarakeepError on a blank URL without sending", async () => {
     const { getSettings } = await import("./settings");
     vi.mocked(getSettings).mockResolvedValueOnce({ ...BASE_SETTINGS, karakeepUrl: "" });
     await expect(uploadAsset(input)).rejects.toThrow(/not configured/i);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(MockXHR.instances).toHaveLength(0);
   });
 
-  it("rejects non-https URLs (non-localhost) without calling fetch", async () => {
+  it("rejects non-https URLs (non-localhost) without sending", async () => {
     const { getSettings } = await import("./settings");
     vi.mocked(getSettings).mockResolvedValueOnce({
       ...BASE_SETTINGS,
       karakeepUrl: "http://evil.example.com",
     });
     await expect(uploadAsset(input)).rejects.toThrow(/https:\/\//);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(MockXHR.instances).toHaveLength(0);
   });
 
   it("never leaks the api key in a thrown network error message", async () => {
-    fetchMock.mockRejectedValueOnce(
-      new TypeError("upload failed Bearer kk-secret-token-xyz123 unreachable"),
-    );
+    MockXHR.onSend = () => {
+      throw new TypeError("upload failed Bearer kk-secret-token-xyz123 unreachable");
+    };
     let caught: unknown;
     try {
       await uploadAsset(input);
