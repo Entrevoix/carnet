@@ -60,10 +60,15 @@ const ASSET_FETCH_TIMEOUT_MS = 60_000;
 
 // assetType used when attaching an uploaded asset to a bookmark. "userUploaded"
 // is the generic "the user attached this file" slot in Karakeep's asset enum —
-// it accepts images and non-images alike. (Display nuance — e.g. promoting the
-// first image to "bannerImage" so it becomes the bookmark's cover — is a
-// live-instance tuning follow-up, deliberately not assumed here.)
+// it accepts images and non-images alike, but Karakeep does NOT render a
+// userUploaded asset on a TEXT bookmark (stored, but hidden in the UI).
 const ATTACH_ASSET_TYPE = "userUploaded";
+
+// The note's FIRST image is attached as "bannerImage" instead — Karakeep DOES
+// render that as the bookmark's cover on a text bookmark (verified against a
+// live instance 2026-06-14). Only one banner shows, so remaining images + all
+// non-image files stay userUploaded (attached but not displayed).
+export const BANNER_ASSET_TYPE = "bannerImage";
 
 /** Strip any "Bearer ..." substring from an error message so the API key
  * never lands in stored error logs or on-screen toasts. Also strip the

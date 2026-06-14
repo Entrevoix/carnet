@@ -13,6 +13,7 @@ vi.mock("./writer", () => ({
 vi.mock("./karakeep", () => ({
   uploadAsset: vi.fn(),
   attachAssetToBookmark: vi.fn(),
+  BANNER_ASSET_TYPE: "bannerImage",
 }));
 // Mock the sync-record store so the orchestration logic — which links get
 // uploaded, in what order, what gets recorded, how failures short-circuit — is
@@ -67,8 +68,26 @@ describe("pushNoteAttachments", () => {
       mime: "image/jpeg",
       filename: "a.jpg",
     });
-    expect(mockAttach).toHaveBeenNthCalledWith(1, "bk_1", "as_1");
+    // First image → bannerImage (the Karakeep cover); the Files attachment →
+    // default userUploaded (2-arg call).
+    expect(mockAttach).toHaveBeenNthCalledWith(1, "bk_1", "as_1", "bannerImage");
     expect(mockAttach).toHaveBeenNthCalledWith(2, "bk_1", "as_2");
+  });
+
+  it("attaches only the FIRST image as bannerImage; later images stay userUploaded", async () => {
+    mockList.mockReturnValue([
+      link("Files", "doc.pdf"),
+      link("Photos", "a.jpg"),
+      link("Photos", "b.jpg"),
+    ]);
+
+    await pushNoteAttachments("bk_1", "body");
+
+    // doc.pdf (not an image) → default; a.jpg (first image) → bannerImage;
+    // b.jpg (second image) → default.
+    expect(mockAttach).toHaveBeenNthCalledWith(1, "bk_1", "as_1");
+    expect(mockAttach).toHaveBeenNthCalledWith(2, "bk_1", "as_2", "bannerImage");
+    expect(mockAttach).toHaveBeenNthCalledWith(3, "bk_1", "as_3");
   });
 
   it("skips Audio links entirely (never resolves or uploads them)", async () => {
