@@ -66,7 +66,12 @@ import {
   parseFrontmatter,
   upsertFrontmatterField,
 } from "../lib/frontmatter";
-import { attachTags, createTextBookmark, KarakeepError } from "../lib/karakeep";
+import {
+  attachTags,
+  createTextBookmark,
+  updateTextBookmark,
+  KarakeepError,
+} from "../lib/karakeep";
 import { pickAttachment } from "../lib/attachments";
 import { MAX_EDITOR_IMAGE_BASE64, toDataUri } from "../lib/editorImages";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
@@ -104,6 +109,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [exportingKarakeep, setExportingKarakeep] = useState(false);
   const [karakeepError, setKarakeepError] = useState<string | null>(null);
   const [karakeepDone, setKarakeepDone] = useState(false);
+  // True when the last successful export UPDATED an existing bookmark (vs
+  // created a new one) — drives the success-snackbar copy.
+  const [karakeepUpdated, setKarakeepUpdated] = useState(false);
   // Edit-mode state. `draft` holds the in-progress textarea content;
   // `editError` surfaces a save failure as a banner; `discardVisible`
   // gates the unsaved-changes dialog.
@@ -326,8 +334,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // actions' guards (in-flight ref, mounted ref, error banner). The note's
   // full markdown is split: the frontmatter header drives the tags + createdAt,
   // the body becomes the bookmark text. Tags = frontmatter tags + a `kind` tag.
-  // On success the new bookmark id is written into the note frontmatter
-  // (`karakeepId`) for idempotency.
+  // When the note already carries a `karakeepId`, the existing bookmark is
+  // UPDATED in place (PATCH) rather than duplicated; if that id was deleted
+  // server-side (404) we fall back to creating a fresh one. The resulting
+  // bookmark id is (re)written into the note frontmatter for idempotency.
   const runKarakeepExport = useCallback(async () => {
     if (exportingKarakeepRef.current) return;
     exportingKarakeepRef.current = true;
@@ -352,18 +362,47 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       const tags = [...new Set([...fmTags, ...(kindTag ? [kindTag] : [])])];
       const createdAt = extractFrontmatterField(body, "created") ?? undefined;
 
-      const { id } = await createTextBookmark({
-        text: noteBody,
-        title,
-        createdAt,
-      });
+      const existingId = extractFrontmatterField(body, "karakeepId");
+      let id: string;
+      let didUpdate = false;
+      if (existingId) {
+        try {
+          ({ id } = await updateTextBookmark(existingId, {
+            text: noteBody,
+            title,
+            createdAt,
+          }));
+          didUpdate = true;
+        } catch (e: unknown) {
+          // The stored id points at a bookmark that no longer exists on the
+          // server — recover by creating a fresh one and re-stamping the id.
+          // ACCEPTED LIMITATION: a 404 from a *misconfigured* base URL (e.g. the
+          // user repointed karakeepUrl at a host without /api/v1) is
+          // indistinguishable here from a deleted bookmark, so it would create a
+          // duplicate. Bounded (one recoverable bookmark, requires misconfig);
+          // disambiguating would need a confirming GET — out of scope for v2.
+          if (e instanceof KarakeepError && e.status === 404) {
+            ({ id } = await createTextBookmark({ text: noteBody, title, createdAt }));
+          } else {
+            throw e;
+          }
+        }
+      } else {
+        ({ id } = await createTextBookmark({ text: noteBody, title, createdAt }));
+      }
+      // attachTags is additive — on an update it re-attaches the note's current
+      // tags but does NOT detach tags removed from the note since the first
+      // export. ACCEPTED LIMITATION: the bookmark's tag set can drift superset;
+      // detaching would need a GET-diff + DELETE pass (a later increment).
       await attachTags(id, tags);
 
-      // Idempotency: stamp the bookmark id into the note frontmatter.
+      // Idempotency: stamp the bookmark id into the note frontmatter (a no-op
+      // rewrite on update, since the id is unchanged).
       const next = upsertFrontmatterField(header + noteBody, "karakeepId", id);
       await updateNote(entry.filepath, next);
       if (!mountedRef.current) return;
       setBody(next);
+      setKarakeepUpdated(didUpdate);
       setKarakeepDone(true);
     } catch (e: unknown) {
       const reason =
@@ -388,10 +427,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     if (alreadyExported) {
       Alert.alert(
         "Already exported",
-        "Already exported to Karakeep — send again?",
+        "This note is already in Karakeep. Update the existing bookmark with the current text and tags?",
         [
           { text: "Cancel", style: "cancel" },
-          { text: "Send again", onPress: () => void runKarakeepExport() },
+          { text: "Update", onPress: () => void runKarakeepExport() },
         ],
       );
       return;
@@ -1183,7 +1222,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
         onDismiss={() => setKarakeepDone(false)}
         duration={2500}
       >
-        Exported to Karakeep
+        {karakeepUpdated ? "Updated in Karakeep" : "Exported to Karakeep"}
       </Snackbar>
 
       <Portal>

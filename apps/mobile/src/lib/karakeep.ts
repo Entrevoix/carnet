@@ -158,34 +158,30 @@ function authHeader(apiKey: string): Record<string, string> {
 }
 
 /**
- * Create a text bookmark in Karakeep. POSTs to `/api/v1/bookmarks` with a
- * `{type:"text", text, title?, createdAt?}` body. Returns the new bookmark's
- * id, which the caller writes back into the note frontmatter for idempotency.
- *
- * Tags are NOT settable here — attach them via `attachTags` after this returns.
+ * Shared JSON request for the Karakeep endpoints. Reads config (throwing
+ * not-configured on a blank URL), enforces HTTPS, trims trailing slashes, and
+ * runs the fetch under the hard whole-operation timeout. Network failures
+ * become a status-0 KarakeepError (sanitized); non-2xx becomes a KarakeepError
+ * carrying the HTTP status. Returns the raw ok `Response` so each caller parses
+ * its own body shape.
  */
-export async function createTextBookmark(input: {
-  text: string;
-  title?: string;
-  createdAt?: string;
-}): Promise<{ id: string }> {
+async function karakeepSendJson(
+  path: string,
+  method: "POST" | "PATCH",
+  jsonBody: unknown,
+): Promise<Response> {
   const { url, apiKey } = await getKarakeepConfig();
   const trimmed = url.replace(/\/+$/, "");
   assertHttpsOrLocal(trimmed);
 
-  const endpoint = `${trimmed}/api/v1/bookmarks`;
-  const body = JSON.stringify({
-    type: "text",
-    text: input.text,
-    ...(input.title ? { title: input.title } : {}),
-    ...(input.createdAt ? { createdAt: input.createdAt } : {}),
-  });
+  const endpoint = `${trimmed}${path}`;
+  const body = JSON.stringify(jsonBody);
 
   return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
     let response: Response;
     try {
       response = await fetch(endpoint, {
-        method: "POST",
+        method,
         headers: {
           "Content-Type": "application/json",
           ...authHeader(apiKey),
@@ -210,15 +206,70 @@ export async function createTextBookmark(input: {
       );
     }
 
-    const json = (await response.json()) as { id?: unknown };
-    if (typeof json.id !== "string" || json.id.length === 0) {
-      throw new KarakeepError(
-        "Karakeep returned a malformed bookmark (no id)",
-        response.status,
-      );
-    }
-    return { id: json.id };
+    return response;
   });
+}
+
+/**
+ * Create a text bookmark in Karakeep. POSTs to `/api/v1/bookmarks` with a
+ * `{type:"text", text, title?, createdAt?}` body. Returns the new bookmark's
+ * id, which the caller writes back into the note frontmatter for idempotency.
+ *
+ * Tags are NOT settable here — attach them via `attachTags` after this returns.
+ */
+export async function createTextBookmark(input: {
+  text: string;
+  title?: string;
+  createdAt?: string;
+}): Promise<{ id: string }> {
+  const response = await karakeepSendJson("/api/v1/bookmarks", "POST", {
+    type: "text",
+    text: input.text,
+    ...(input.title ? { title: input.title } : {}),
+    ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+  });
+
+  const json = (await response.json()) as { id?: unknown };
+  if (typeof json.id !== "string" || json.id.length === 0) {
+    throw new KarakeepError(
+      "Karakeep returned a malformed bookmark (no id)",
+      response.status,
+    );
+  }
+  return { id: json.id };
+}
+
+/**
+ * Update an EXISTING text bookmark in place. PATCHes `/api/v1/bookmarks/{id}`
+ * with the changed fields (`text`, `title?`, `createdAt?`) so a re-export
+ * refreshes the same bookmark instead of creating a duplicate. A `404` surfaces
+ * as a status-404 KarakeepError so the caller can fall back to creating a fresh
+ * bookmark when the stored id was deleted server-side.
+ *
+ * The PATCH returns the updated bookmark (which carries `id`), but a `204`/empty
+ * or otherwise idless body is tolerated — we already know the id, so a
+ * successful update isn't failed on response shape.
+ */
+export async function updateTextBookmark(
+  bookmarkId: string,
+  input: { text: string; title?: string; createdAt?: string },
+): Promise<{ id: string }> {
+  const response = await karakeepSendJson(
+    `/api/v1/bookmarks/${encodeURIComponent(bookmarkId)}`,
+    "PATCH",
+    {
+      text: input.text,
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+    },
+  );
+
+  const json = (await response.json().catch(() => null)) as {
+    id?: unknown;
+  } | null;
+  return {
+    id: typeof json?.id === "string" && json.id.length > 0 ? json.id : bookmarkId,
+  };
 }
 
 /**
@@ -231,41 +282,9 @@ export async function attachTags(
   tagNames: readonly string[],
 ): Promise<void> {
   if (tagNames.length === 0) return;
-  const { url, apiKey } = await getKarakeepConfig();
-  const trimmed = url.replace(/\/+$/, "");
-  assertHttpsOrLocal(trimmed);
-
-  const endpoint = `${trimmed}/api/v1/bookmarks/${bookmarkId}/tags`;
-  const body = JSON.stringify({
-    tags: tagNames.map((tagName) => ({ tagName, attachedBy: "human" })),
-  });
-
-  await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
-    let response: Response;
-    try {
-      response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeader(apiKey),
-        },
-        body,
-        signal,
-      });
-    } catch (e: unknown) {
-      if (e instanceof KarakeepError) throw e;
-      const raw = e instanceof Error ? e.message : String(e);
-      throw new KarakeepError(
-        `Karakeep network error — ${sanitizeErrorMessage(raw)}`,
-        0,
-      );
-    }
-
-    if (!response.ok) {
-      throw new KarakeepError(
-        `Karakeep error — ${await parseErrorBody(response)}`,
-        response.status,
-      );
-    }
-  });
+  await karakeepSendJson(
+    `/api/v1/bookmarks/${encodeURIComponent(bookmarkId)}/tags`,
+    "POST",
+    { tags: tagNames.map((tagName) => ({ tagName, attachedBy: "human" })) },
+  );
 }
