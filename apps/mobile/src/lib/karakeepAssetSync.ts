@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Per-bookmark record of which local attachments have already been uploaded +
-// attached to a Karakeep bookmark, so a re-export pushes ONLY the not-yet-synced
-// ones (an attachment added after the first export, or one that failed earlier)
-// without ever duplicating an asset already on the server.
+// attached to a Karakeep bookmark, AND the Karakeep assetId each one got. The
+// assetId is what lets a re-export rebuild the `/api/assets/{id}` URL for an
+// already-synced image so the bookmark body keeps its inline embeds — without
+// re-uploading. So a re-export pushes ONLY the not-yet-synced attachments (one
+// added after the first export, or one that failed earlier) and never
+// duplicates an asset already on the server.
 //
 // Backed by AsyncStorage rather than note frontmatter: frontmatter scalar values
 // can't hold newlines and split on commas, which is unsafe for the file paths we
-// track here (see frontmatter.ts). Mirrors queue.ts's JSON-array-under-one-key
-// persistence — one key per bookmark, value = the set of pushed asset keys.
+// track here (see frontmatter.ts). Mirrors queue.ts's JSON-under-one-key
+// persistence — one key per bookmark, value = `{ assetKey: assetId }`.
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -34,35 +37,60 @@ export function assetKey(subdir: string, filename: string): string {
 }
 
 /**
- * Load the set of attachment keys already uploaded + attached to `bookmarkId`.
- * Returns an empty set on a miss, a corrupt (non-JSON) value, or a non-array
- * payload. De-duplication against the server depends ENTIRELY on this local
- * record: if it is lost (corrupt / cleared / reinstall), the next export
- * re-uploads and re-attaches the same bytes as a fresh Karakeep asset — a
- * duplicate on that one bookmark (wasteful, not corrupting). Failing open to
- * "nothing synced yet" keeps the export working; it is not a server-side
- * idempotency guarantee.
+ * Load the map of attachment key → Karakeep assetId already synced to
+ * `bookmarkId`. Returns an empty map on a miss, a corrupt (non-JSON) value, or
+ * an unrecognized payload shape.
+ *
+ * Tolerates the LEGACY shape (a JSON array of keys, written before assetIds were
+ * tracked): each legacy key maps to `""` — a known-but-assetId-unknown marker.
+ * The export treats an empty assetId as "not synced yet" and re-uploads it once
+ * to capture the assetId, after which it persists in the new object shape. That
+ * one-time re-upload (a duplicate asset on that bookmark — wasteful, never
+ * corrupting) is the documented cost of the upgrade.
+ *
+ * De-duplication against the server depends ENTIRELY on this local record: if it
+ * is lost (corrupt / cleared / reinstall), the next export re-uploads the same
+ * bytes as fresh assets. Failing open to "nothing synced yet" keeps the export
+ * working; it is not a server-side idempotency guarantee.
  */
-export async function loadPushedAssetKeys(
+export async function loadPushedAssets(
   bookmarkId: string,
-): Promise<Set<string>> {
+): Promise<Map<string, string>> {
   const raw = await AsyncStorage.getItem(storageKey(bookmarkId));
-  if (!raw) return new Set();
+  if (!raw) return new Map();
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((k): k is string => typeof k === "string"));
+    // Legacy v1: a JSON array of keys, no assetIds → map each to "".
+    if (Array.isArray(parsed)) {
+      return new Map(
+        parsed
+          .filter((k): k is string => typeof k === "string")
+          .map((k) => [k, ""] as const),
+      );
+    }
+    // Current: `{ key: assetId }`. Keep only string→string entries.
+    if (parsed && typeof parsed === "object") {
+      const out = new Map<string, string>();
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v === "string") out.set(k, v);
+      }
+      return out;
+    }
+    return new Map();
   } catch {
-    return new Set();
+    return new Map();
   }
 }
 
-/** Persist the full set of pushed attachment keys for `bookmarkId`. */
-export async function savePushedAssetKeys(
+/** Persist the full key → assetId map for `bookmarkId`. */
+export async function savePushedAssets(
   bookmarkId: string,
-  keys: Iterable<string>,
+  assets: ReadonlyMap<string, string>,
 ): Promise<void> {
-  await AsyncStorage.setItem(storageKey(bookmarkId), JSON.stringify([...keys]));
+  await AsyncStorage.setItem(
+    storageKey(bookmarkId),
+    JSON.stringify(Object.fromEntries(assets)),
+  );
 }
 
 /**
@@ -71,6 +99,6 @@ export async function savePushedAssetKeys(
  * read again) — clearing it stops AsyncStorage accumulating orphaned records
  * across the app's lifetime. Best-effort: callers fire-and-forget.
  */
-export async function clearPushedAssetKeys(bookmarkId: string): Promise<void> {
+export async function clearPushedAssets(bookmarkId: string): Promise<void> {
   await AsyncStorage.removeItem(storageKey(bookmarkId));
 }

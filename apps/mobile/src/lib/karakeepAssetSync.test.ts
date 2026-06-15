@@ -20,11 +20,13 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
 
 import {
   assetKey,
-  clearPushedAssetKeys,
-  loadPushedAssetKeys,
-  savePushedAssetKeys,
+  clearPushedAssets,
+  loadPushedAssets,
+  savePushedAssets,
 } from "./karakeepAssetSync";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+
+const KEY = (bm: string) => `carnet:karakeep-assets:v1:${bm}`;
 
 beforeEach(() => {
   _store.clear();
@@ -38,65 +40,101 @@ describe("assetKey", () => {
   });
 });
 
-describe("loadPushedAssetKeys / savePushedAssetKeys", () => {
-  it("returns an empty set when nothing was saved", async () => {
-    expect(await loadPushedAssetKeys("bk_1")).toEqual(new Set());
+describe("loadPushedAssets / savePushedAssets", () => {
+  it("returns an empty map when nothing was saved", async () => {
+    expect(await loadPushedAssets("bk_1")).toEqual(new Map());
   });
 
-  it("round-trips a saved set", async () => {
-    await savePushedAssetKeys("bk_1", ["Photos/a.jpg", "Files/b.pdf"]);
-    expect(await loadPushedAssetKeys("bk_1")).toEqual(
-      new Set(["Photos/a.jpg", "Files/b.pdf"]),
+  it("round-trips a saved key→assetId map", async () => {
+    await savePushedAssets(
+      "bk_1",
+      new Map([
+        ["Photos/a.jpg", "as_1"],
+        ["Files/b.pdf", "as_2"],
+      ]),
+    );
+    expect(await loadPushedAssets("bk_1")).toEqual(
+      new Map([
+        ["Photos/a.jpg", "as_1"],
+        ["Files/b.pdf", "as_2"],
+      ]),
     );
   });
 
-  it("accepts a Set as input and persists it as a JSON array", async () => {
-    await savePushedAssetKeys("bk_1", new Set(["Photos/a.jpg"]));
-    expect(_store.get("carnet:karakeep-assets:v1:bk_1")).toBe('["Photos/a.jpg"]');
+  it("persists the map as a JSON object of key→assetId", async () => {
+    await savePushedAssets("bk_1", new Map([["Photos/a.jpg", "as_1"]]));
+    expect(_store.get(KEY("bk_1"))).toBe('{"Photos/a.jpg":"as_1"}');
   });
 
-  it("scopes keys per bookmark id", async () => {
-    await savePushedAssetKeys("bk_1", ["Photos/a.jpg"]);
-    await savePushedAssetKeys("bk_2", ["Files/b.pdf"]);
-    expect(await loadPushedAssetKeys("bk_1")).toEqual(new Set(["Photos/a.jpg"]));
-    expect(await loadPushedAssetKeys("bk_2")).toEqual(new Set(["Files/b.pdf"]));
-  });
-
-  it("returns an empty set on a corrupt (non-JSON) value", async () => {
-    await AsyncStorage.setItem("carnet:karakeep-assets:v1:bk_x", "{not json");
-    expect(await loadPushedAssetKeys("bk_x")).toEqual(new Set());
-  });
-
-  it("returns an empty set when the stored value is not an array", async () => {
-    await AsyncStorage.setItem(
-      "carnet:karakeep-assets:v1:bk_y",
-      JSON.stringify({ a: 1 }),
+  it("scopes records per bookmark id", async () => {
+    await savePushedAssets("bk_1", new Map([["Photos/a.jpg", "as_1"]]));
+    await savePushedAssets("bk_2", new Map([["Files/b.pdf", "as_2"]]));
+    expect(await loadPushedAssets("bk_1")).toEqual(
+      new Map([["Photos/a.jpg", "as_1"]]),
     );
-    expect(await loadPushedAssetKeys("bk_y")).toEqual(new Set());
+    expect(await loadPushedAssets("bk_2")).toEqual(
+      new Map([["Files/b.pdf", "as_2"]]),
+    );
   });
 
-  it("ignores non-string entries in a stored array", async () => {
+  it("returns an empty map on a corrupt (non-JSON) value", async () => {
+    await AsyncStorage.setItem(KEY("bk_x"), "{not json");
+    expect(await loadPushedAssets("bk_x")).toEqual(new Map());
+  });
+
+  it("drops non-string assetId values from a stored object", async () => {
     await AsyncStorage.setItem(
-      "carnet:karakeep-assets:v1:bk_z",
+      KEY("bk_y"),
+      JSON.stringify({ "Photos/a.jpg": "as_1", "Files/b.pdf": 42 }),
+    );
+    expect(await loadPushedAssets("bk_y")).toEqual(
+      new Map([["Photos/a.jpg", "as_1"]]),
+    );
+  });
+
+  // Legacy v1 records were a JSON ARRAY of keys (no assetIds). Tolerate them by
+  // mapping each to "" — the export treats an empty assetId as not-yet-synced
+  // and re-uploads once to capture the real id.
+  it("migrates a legacy array of keys to a key→'' map", async () => {
+    await AsyncStorage.setItem(
+      KEY("bk_legacy"),
+      JSON.stringify(["Photos/a.jpg", "Files/b.pdf"]),
+    );
+    expect(await loadPushedAssets("bk_legacy")).toEqual(
+      new Map([
+        ["Photos/a.jpg", ""],
+        ["Files/b.pdf", ""],
+      ]),
+    );
+  });
+
+  it("ignores non-string entries in a legacy array", async () => {
+    await AsyncStorage.setItem(
+      KEY("bk_z"),
       JSON.stringify(["Photos/a.jpg", 42, null, "Files/b.pdf"]),
     );
-    expect(await loadPushedAssetKeys("bk_z")).toEqual(
-      new Set(["Photos/a.jpg", "Files/b.pdf"]),
+    expect(await loadPushedAssets("bk_z")).toEqual(
+      new Map([
+        ["Photos/a.jpg", ""],
+        ["Files/b.pdf", ""],
+      ]),
     );
   });
 });
 
-describe("clearPushedAssetKeys", () => {
+describe("clearPushedAssets", () => {
   it("forgets a bookmark's record, so a later load is empty", async () => {
-    await savePushedAssetKeys("bk_1", ["Photos/a.jpg"]);
-    await clearPushedAssetKeys("bk_1");
-    expect(await loadPushedAssetKeys("bk_1")).toEqual(new Set());
+    await savePushedAssets("bk_1", new Map([["Photos/a.jpg", "as_1"]]));
+    await clearPushedAssets("bk_1");
+    expect(await loadPushedAssets("bk_1")).toEqual(new Map());
   });
 
   it("leaves other bookmarks' records intact", async () => {
-    await savePushedAssetKeys("bk_1", ["Photos/a.jpg"]);
-    await savePushedAssetKeys("bk_2", ["Files/b.pdf"]);
-    await clearPushedAssetKeys("bk_1");
-    expect(await loadPushedAssetKeys("bk_2")).toEqual(new Set(["Files/b.pdf"]));
+    await savePushedAssets("bk_1", new Map([["Photos/a.jpg", "as_1"]]));
+    await savePushedAssets("bk_2", new Map([["Files/b.pdf", "as_2"]]));
+    await clearPushedAssets("bk_1");
+    expect(await loadPushedAssets("bk_2")).toEqual(
+      new Map([["Files/b.pdf", "as_2"]]),
+    );
   });
 });

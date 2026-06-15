@@ -11,8 +11,8 @@
  * see .claude/PRPs/plans/recents-screen-preview-delete.plan.md "NOT Building".
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Image, Linking, ScrollView, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Linking, ScrollView, StyleSheet, View } from "react-native";
 import * as Sharing from "expo-sharing";
 import {
   ActivityIndicator,
@@ -73,10 +73,12 @@ import {
   KarakeepError,
 } from "../lib/karakeep";
 import { pushNoteAttachments } from "../lib/karakeepExport";
-import { clearPushedAssetKeys } from "../lib/karakeepAssetSync";
+import { rewriteImageEmbedsToAssetUrls } from "../lib/karakeepInlineImages";
+import { clearPushedAssets } from "../lib/karakeepAssetSync";
 import { pickAttachment } from "../lib/attachments";
 import { MAX_EDITOR_IMAGE_BASE64, toDataUri } from "../lib/editorImages";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
+import { makeImageRule } from "../components/markdownImageRule";
 import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
 import { TagInput } from "../components/TagInput";
 import { applyTagsToHeader } from "../lib/tags";
@@ -388,7 +390,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
             // The old bookmark is gone; its asset-sync record is dead. Drop it so
             // AsyncStorage doesn't accumulate orphans, and so the fresh bookmark's
             // (empty) record drives a full re-push of attachments below.
-            void clearPushedAssetKeys(existingId);
+            void clearPushedAssets(existingId);
           } else {
             throw e;
           }
@@ -408,7 +410,30 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       // duplicates on re-send — while an attachment added after the first export,
       // or one that failed earlier, is (re)pushed here. Returns the first error
       // (or null); a partial failure still leaves the bookmark stamped below.
-      const assetError = await pushNoteAttachments(id, noteBody);
+      const { error: assetError, imageUrlByRel } = await pushNoteAttachments(
+        id,
+        noteBody,
+      );
+
+      // Inline the note's images into the Karakeep bookmark BODY: rewrite each
+      // ../Photos embed to its uploaded asset URL so the images render in-content
+      // (Karakeep's MarkdownReadonly renders `![](…)` unrestricted — verified
+      // against a live instance). The VAULT note keeps its relative links — only
+      // this Karakeep copy is inlined. Best-effort: the bookmark already holds the
+      // original text + attached assets (incl. the cover), so a failed inline
+      // PATCH never loses the export.
+      const inlinedBody = rewriteImageEmbedsToAssetUrls(noteBody, imageUrlByRel);
+      if (inlinedBody !== noteBody) {
+        try {
+          await updateTextBookmark(id, { text: inlinedBody, title, createdAt });
+        } catch (e: unknown) {
+          const reason = e instanceof Error ? e.message : String(e);
+          console.warn(
+            "[RecentDetail] Karakeep inline-image body update failed:",
+            reason,
+          );
+        }
+      }
 
       // Idempotency: stamp the bookmark id into the note frontmatter (a no-op
       // rewrite on update, since the id is unchanged). Stamped even when an
@@ -840,6 +865,21 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     };
   }, [body]);
 
+  // Map each resolved IMAGE embed's relative link (`../Photos/x.jpg`) to its
+  // device URI so the markdown renderer can draw it inline (see makeImageRule).
+  // Non-image files stay out — they render as tappable rows in the card below.
+  const imageUriByRel = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of attachments) {
+      if (a.mime.startsWith("image/")) m.set(a.rel, a.uri);
+    }
+    return m;
+  }, [attachments]);
+  const markdownRules = useMemo(
+    () => ({ image: makeImageRule(imageUriByRel, styles.inlineImage) }),
+    [imageUriByRel],
+  );
+
   // Open a non-image attachment via the system share sheet. shareAsync wants a
   // file:// path; SAF content:// may not open on every device — surface the
   // failure rather than crash. (No-ops silently when sharing is unavailable.)
@@ -878,9 +918,16 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   }
 
   // Strip YAML frontmatter so the renderer doesn't show the `---` raw block,
-  // then strip paired-binary embeds/links — those render in the Attachments
-  // card below (the markdown renderer can't resolve the relative URIs anyway).
-  const renderBody = stripPairedBinaryLinks(stripFrontmatter(body));
+  // then strip only Audio + non-image File links (rendered by the player /
+  // files card). Image embeds STAY so they render inline in the prose via the
+  // custom markdown image rule (markdownRules). Non-image files render as
+  // tappable rows in the card below.
+  const renderBody = stripPairedBinaryLinks(stripFrontmatter(body), {
+    keepImages: true,
+  });
+  const fileAttachments = attachments.filter(
+    (a) => !a.mime.startsWith("image/"),
+  );
   const noteLocation = extractFrontmatterField(body, "location");
 
   // Rich (WYSIWYG) editing takes the whole screen so TenTap's formatting toolbar
@@ -1142,31 +1189,23 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
               </Card>
             ) : null}
 
-            {attachments.length > 0 ? (
+            {/* Images now render inline in the note body (below); only
+                non-image files surface here as tappable rows. */}
+            {fileAttachments.length > 0 ? (
               <Card style={styles.card}>
                 <Card.Title title="Attachments" />
                 <Card.Content style={styles.attachmentList}>
-                  {attachments.map((a) =>
-                    a.mime.startsWith("image/") ? (
-                      <Image
-                        key={a.rel}
-                        source={{ uri: a.uri }}
-                        style={styles.attachmentImage}
-                        resizeMode="contain"
-                        accessibilityLabel={a.filename}
-                      />
-                    ) : (
-                      <Button
-                        key={a.rel}
-                        mode="outlined"
-                        icon="file-document-outline"
-                        onPress={() => openAttachment(a.uri)}
-                        contentStyle={styles.attachmentFileContent}
-                      >
-                        {a.filename}
-                      </Button>
-                    ),
-                  )}
+                  {fileAttachments.map((a) => (
+                    <Button
+                      key={a.rel}
+                      mode="outlined"
+                      icon="file-document-outline"
+                      onPress={() => openAttachment(a.uri)}
+                      contentStyle={styles.attachmentFileContent}
+                    >
+                      {a.filename}
+                    </Button>
+                  ))}
                 </Card.Content>
               </Card>
             ) : null}
@@ -1174,7 +1213,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
             {!missing ? (
               <Card style={styles.card}>
                 <Card.Content>
-                  <Markdown style={markdownStyle(theme)}>{renderBody}</Markdown>
+                  <Markdown style={markdownStyle(theme)} rules={markdownRules}>
+                    {renderBody}
+                  </Markdown>
                 </Card.Content>
               </Card>
             ) : null}
@@ -1401,6 +1442,16 @@ const styles = StyleSheet.create({
     height: 240,
     borderRadius: 8,
     backgroundColor: "#0001",
+  },
+  // Inline image rendered in the note prose via makeImageRule. Same sizing as
+  // the (now files-only) attachment image, with vertical rhythm so it sits as
+  // its own block between paragraphs.
+  inlineImage: {
+    width: "100%",
+    height: 240,
+    borderRadius: 8,
+    backgroundColor: "#0001",
+    marginVertical: 8,
   },
   attachmentFileContent: { flexDirection: "row-reverse", justifyContent: "flex-end" },
 });

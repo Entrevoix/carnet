@@ -89,9 +89,20 @@ import {
   attachTags,
   uploadAsset,
   attachAssetToBookmark,
+  assetContentPath,
   KarakeepError,
   isNotConfiguredError,
 } from "./karakeep";
+
+describe("assetContentPath", () => {
+  it("builds the relative /api/assets/{id} serving path", () => {
+    expect(assetContentPath("as_1")).toBe("/api/assets/as_1");
+  });
+
+  it("percent-encodes an id with URL-significant characters", () => {
+    expect(assetContentPath("a b/c?d")).toBe("/api/assets/a%20b%2Fc%3Fd");
+  });
+});
 
 interface CreateBody {
   type: string;

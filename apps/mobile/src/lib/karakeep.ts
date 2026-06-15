@@ -70,6 +70,22 @@ const ATTACH_ASSET_TYPE = "userUploaded";
 // non-image files stay userUploaded (attached but not displayed).
 export const BANNER_ASSET_TYPE = "bannerImage";
 
+/**
+ * Relative URL path that serves an uploaded asset's bytes, for embedding INLINE
+ * in a bookmark's markdown body (`![](…)`). Verified against a live instance:
+ * `GET /api/assets/{id}` returns the image, and Karakeep's read-only markdown
+ * renderer (MarkdownReadonly, used for a text bookmark's `content.text`) renders
+ * images with no source restriction — so an `<img src="/api/assets/{id}">`
+ * loads via the viewer's web session.
+ *
+ * RELATIVE on purpose: it resolves against whatever origin the user opens
+ * Karakeep from, and rides the browser session cookie — no API key in the body,
+ * and no dependence on the configured base URL matching the viewing origin.
+ */
+export function assetContentPath(assetId: string): string {
+  return `/api/assets/${encodeURIComponent(assetId)}`;
+}
+
 /** Strip any "Bearer ..." substring from an error message so the API key
  * never lands in stored error logs or on-screen toasts. Also strip the
  * Authorization header form just in case. */

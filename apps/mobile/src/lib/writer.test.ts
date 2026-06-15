@@ -308,6 +308,30 @@ describe("stripPairedBinaryLinks", () => {
     const body = "# T\n\njust prose\n\n## Notes\n- a\n- b\n";
     expect(stripPairedBinaryLinks(body)).toBe(body);
   });
+
+  // keepImages: the detail view leaves `../Photos/` embeds in the prose so they
+  // render INLINE via the custom markdown image rule, while Audio + Files are
+  // still pulled out (player / files card).
+  it("keepImages: keeps a Photos embed but still strips Audio", () => {
+    const body =
+      "# T\n\n![](../Photos/shot.jpg)\n\nprose\n\n[m.mp3](../Audio/m.mp3)\n";
+    expect(stripPairedBinaryLinks(body, { keepImages: true })).toBe(
+      "# T\n\n![](../Photos/shot.jpg)\n\nprose\n",
+    );
+  });
+
+  it("keepImages: keeps a Photos embed but strips a ## Files section", () => {
+    const body =
+      "# T\n\n![](../Photos/a.jpg)\n\nbody\n\n## Files\n[spec.pdf](../Files/spec.pdf)\n";
+    expect(stripPairedBinaryLinks(body, { keepImages: true })).toBe(
+      "# T\n\n![](../Photos/a.jpg)\n\nbody\n",
+    );
+  });
+
+  it("keepImages: preserves an image's caption title in the embed", () => {
+    const body = '# T\n\n![alt](../Photos/a.jpg "a caption")\n\nbody\n';
+    expect(stripPairedBinaryLinks(body, { keepImages: true })).toBe(body);
+  });
 });
 
 // ── rewriteFrontmatterField ───────────────────────────────────────────────────

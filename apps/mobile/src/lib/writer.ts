@@ -505,9 +505,20 @@ export async function resolvePairedUri(
  * behind. Display-only — callers keep the original body for playback,
  * transcription, re-enrich, and edit.
  */
-export function stripPairedBinaryLinks(body: string): string {
+export function stripPairedBinaryLinks(
+  body: string,
+  opts?: { keepImages?: boolean },
+): string {
+  // With `keepImages`, leave `../Photos/` image embeds in the prose so the
+  // detail view can render them INLINE (a custom markdown image rule resolves
+  // each to a device URI); only Audio (dedicated player) and Files (tappable
+  // rows) are pulled out. Default — no opts — strips all three, as before.
+  const subdirs = opts?.keepImages ? "Audio|Files" : "Photos|Audio|Files";
+  const pairedLinkLine = new RegExp(
+    `^!?\\[[^\\]]*\\]\\(\\.\\.\\/(?:${subdirs})\\/[^)]+\\)$`,
+  );
   const lineIsPairedLink = (line: string): boolean =>
-    /^!?\[[^\]]*\]\(\.\.\/(Photos|Audio|Files)\/[^)]+\)$/.test(line.trim());
+    pairedLinkLine.test(line.trim());
 
   // Pass 1: drop standalone embed/link lines.
   const kept = body.split("\n").filter((l) => !lineIsPairedLink(l));
