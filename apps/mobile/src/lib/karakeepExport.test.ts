@@ -14,27 +14,29 @@ vi.mock("./karakeep", () => ({
   uploadAsset: vi.fn(),
   attachAssetToBookmark: vi.fn(),
   BANNER_ASSET_TYPE: "bannerImage",
+  // Real (pure) URL builder so the inline-URL map assertions are meaningful.
+  assetContentPath: (id: string) => `/api/assets/${encodeURIComponent(id)}`,
 }));
 // Mock the sync-record store so the orchestration logic — which links get
 // uploaded, in what order, what gets recorded, how failures short-circuit — is
 // tested in isolation. assetKey stays the real (pure) join.
 vi.mock("./karakeepAssetSync", () => ({
   assetKey: (subdir: string, filename: string) => `${subdir}/${filename}`,
-  loadPushedAssetKeys: vi.fn(),
-  savePushedAssetKeys: vi.fn(),
+  loadPushedAssets: vi.fn(),
+  savePushedAssets: vi.fn(),
 }));
 
 import { pushNoteAttachments } from "./karakeepExport";
 import { listPairedBinaries, resolvePairedUri } from "./writer";
 import { uploadAsset, attachAssetToBookmark } from "./karakeep";
-import { loadPushedAssetKeys, savePushedAssetKeys } from "./karakeepAssetSync";
+import { loadPushedAssets, savePushedAssets } from "./karakeepAssetSync";
 
 const mockList = vi.mocked(listPairedBinaries);
 const mockResolve = vi.mocked(resolvePairedUri);
 const mockUpload = vi.mocked(uploadAsset);
 const mockAttach = vi.mocked(attachAssetToBookmark);
-const mockLoadPushed = vi.mocked(loadPushedAssetKeys);
-const mockSavePushed = vi.mocked(savePushedAssetKeys);
+const mockLoadPushed = vi.mocked(loadPushedAssets);
+const mockSavePushed = vi.mocked(savePushedAssets);
 
 function link(subdir: "Photos" | "Files" | "Audio", filename: string) {
   return { subdir, filename, rel: `../${subdir}/${filename}` };
@@ -51,17 +53,21 @@ beforeEach(() => {
   mockUpload.mockImplementation(async () => ({ assetId: `as_${++n}` }));
   mockAttach.mockResolvedValue(undefined);
   // Default: nothing synced yet for this bookmark.
-  mockLoadPushed.mockResolvedValue(new Set());
+  mockLoadPushed.mockResolvedValue(new Map());
   mockSavePushed.mockResolvedValue(undefined);
 });
 
 describe("pushNoteAttachments", () => {
-  it("uploads and attaches each non-Audio attachment, returns null", async () => {
+  it("uploads + attaches each non-Audio attachment; returns no error and the image URL map", async () => {
     mockList.mockReturnValue([link("Photos", "a.jpg"), link("Files", "b.pdf")]);
 
     const result = await pushNoteAttachments("bk_1", "body");
 
-    expect(result).toBeNull();
+    expect(result.error).toBeNull();
+    // Only the IMAGE is in the inline map (Files are attached, not inlined).
+    expect(result.imageUrlByRel).toEqual(
+      new Map([["../Photos/a.jpg", "/api/assets/as_1"]]),
+    );
     expect(mockUpload).toHaveBeenCalledTimes(2);
     expect(mockUpload).toHaveBeenNthCalledWith(1, {
       uri: "file:///vault/Photos/a.jpg",
@@ -81,13 +87,20 @@ describe("pushNoteAttachments", () => {
       link("Photos", "b.jpg"),
     ]);
 
-    await pushNoteAttachments("bk_1", "body");
+    const result = await pushNoteAttachments("bk_1", "body");
 
     // doc.pdf (not an image) → default; a.jpg (first image) → bannerImage;
     // b.jpg (second image) → default.
     expect(mockAttach).toHaveBeenNthCalledWith(1, "bk_1", "as_1");
     expect(mockAttach).toHaveBeenNthCalledWith(2, "bk_1", "as_2", "bannerImage");
     expect(mockAttach).toHaveBeenNthCalledWith(3, "bk_1", "as_3");
+    // Both images inlined (doc.pdf is not).
+    expect(result.imageUrlByRel).toEqual(
+      new Map([
+        ["../Photos/a.jpg", "/api/assets/as_2"],
+        ["../Photos/b.jpg", "/api/assets/as_3"],
+      ]),
+    );
   });
 
   it("skips Audio links entirely (never resolves or uploads them)", async () => {
@@ -110,7 +123,9 @@ describe("pushNoteAttachments", () => {
 
     const result = await pushNoteAttachments("bk_1", "body");
 
-    expect(result).toBeNull();
+    expect(result.error).toBeNull();
+    // The broken image isn't inlined (no asset).
+    expect(result.imageUrlByRel).toEqual(new Map());
     expect(mockUpload).toHaveBeenCalledOnce();
     expect(mockUpload).toHaveBeenCalledWith({
       uri: "file:///vault/Files/ok.pdf",
@@ -125,7 +140,8 @@ describe("pushNoteAttachments", () => {
 
     const result = await pushNoteAttachments("bk_1", "body");
 
-    expect(result).toBe("Karakeep error — HTTP 413");
+    expect(result.error).toBe("Karakeep error — HTTP 413");
+    expect(result.imageUrlByRel).toEqual(new Map()); // nothing synced before the failure
     expect(mockUpload).toHaveBeenCalledOnce(); // did not attempt the second
     expect(mockAttach).not.toHaveBeenCalled();
   });
@@ -136,16 +152,17 @@ describe("pushNoteAttachments", () => {
 
     const result = await pushNoteAttachments("bk_1", "body");
 
-    expect(result).toBe("attach failed");
+    expect(result.error).toBe("attach failed");
     expect(mockUpload).toHaveBeenCalledOnce();
   });
 
-  it("returns null and makes no network calls when there are no attachments", async () => {
+  it("returns no error and makes no network calls when there are no attachments", async () => {
     mockList.mockReturnValue([]);
 
     const result = await pushNoteAttachments("bk_1", "body");
 
-    expect(result).toBeNull();
+    expect(result.error).toBeNull();
+    expect(result.imageUrlByRel).toEqual(new Map());
     expect(mockResolve).not.toHaveBeenCalled();
     expect(mockUpload).not.toHaveBeenCalled();
     expect(mockAttach).not.toHaveBeenCalled();
@@ -153,7 +170,7 @@ describe("pushNoteAttachments", () => {
 
   // ── Incremental sync ────────────────────────────────────────────────────────
 
-  it("loads the pushed-key set for the bookmark being exported", async () => {
+  it("loads the pushed-asset record for the bookmark being exported", async () => {
     mockList.mockReturnValue([]);
 
     await pushNoteAttachments("bk_42", "body");
@@ -161,13 +178,18 @@ describe("pushNoteAttachments", () => {
     expect(mockLoadPushed).toHaveBeenCalledWith("bk_42");
   });
 
-  it("skips attachments already attached to this bookmark", async () => {
+  it("skips an already-synced attachment but still inlines it from its recorded assetId", async () => {
     mockList.mockReturnValue([link("Photos", "a.jpg"), link("Files", "b.pdf")]);
-    mockLoadPushed.mockResolvedValue(new Set(["Photos/a.jpg"]));
+    mockLoadPushed.mockResolvedValue(new Map([["Photos/a.jpg", "as_existing"]]));
 
     const result = await pushNoteAttachments("bk_1", "body");
 
-    expect(result).toBeNull();
+    expect(result.error).toBeNull();
+    // a.jpg not re-uploaded, but its recorded assetId drives the inline URL so a
+    // re-export keeps the image embedded.
+    expect(result.imageUrlByRel).toEqual(
+      new Map([["../Photos/a.jpg", "/api/assets/as_existing"]]),
+    );
     expect(mockUpload).toHaveBeenCalledOnce();
     expect(mockUpload).toHaveBeenCalledWith({
       uri: "file:///vault/Files/b.pdf",
@@ -178,29 +200,62 @@ describe("pushNoteAttachments", () => {
     expect(mockAttach).toHaveBeenCalledWith("bk_1", "as_1");
   });
 
-  it("records nothing and uploads nothing when every attachment is already synced", async () => {
-    mockList.mockReturnValue([link("Photos", "a.jpg"), link("Files", "b.pdf")]);
-    mockLoadPushed.mockResolvedValue(new Set(["Photos/a.jpg", "Files/b.pdf"]));
+  it("re-uploads a legacy entry whose recorded assetId is empty", async () => {
+    mockList.mockReturnValue([link("Photos", "a.jpg")]);
+    // Legacy v1 record: key present, assetId unknown ("").
+    mockLoadPushed.mockResolvedValue(new Map([["Photos/a.jpg", ""]]));
 
     const result = await pushNoteAttachments("bk_1", "body");
 
-    expect(result).toBeNull();
+    expect(mockUpload).toHaveBeenCalledOnce();
+    expect(result.imageUrlByRel).toEqual(
+      new Map([["../Photos/a.jpg", "/api/assets/as_1"]]),
+    );
+    expect(mockSavePushed).toHaveBeenCalledWith(
+      "bk_1",
+      new Map([["Photos/a.jpg", "as_1"]]),
+    );
+  });
+
+  it("uploads nothing but still inlines recorded images when everything is already synced", async () => {
+    mockList.mockReturnValue([link("Photos", "a.jpg"), link("Files", "b.pdf")]);
+    mockLoadPushed.mockResolvedValue(
+      new Map([
+        ["Photos/a.jpg", "as_old1"],
+        ["Files/b.pdf", "as_old2"],
+      ]),
+    );
+
+    const result = await pushNoteAttachments("bk_1", "body");
+
+    expect(result.error).toBeNull();
+    expect(result.imageUrlByRel).toEqual(
+      new Map([["../Photos/a.jpg", "/api/assets/as_old1"]]),
+    );
     expect(mockResolve).not.toHaveBeenCalled();
     expect(mockUpload).not.toHaveBeenCalled();
     expect(mockSavePushed).not.toHaveBeenCalled();
   });
 
-  it("records each attachment key after its successful attach (cumulative)", async () => {
+  it("records each attachment key→assetId after its successful attach (cumulative)", async () => {
     mockList.mockReturnValue([link("Photos", "a.jpg"), link("Files", "b.pdf")]);
 
     await pushNoteAttachments("bk_1", "body");
 
     expect(mockSavePushed).toHaveBeenCalledTimes(2);
-    expect(mockSavePushed).toHaveBeenNthCalledWith(1, "bk_1", ["Photos/a.jpg"]);
-    expect(mockSavePushed).toHaveBeenNthCalledWith(2, "bk_1", [
-      "Photos/a.jpg",
-      "Files/b.pdf",
-    ]);
+    expect(mockSavePushed).toHaveBeenNthCalledWith(
+      1,
+      "bk_1",
+      new Map([["Photos/a.jpg", "as_1"]]),
+    );
+    expect(mockSavePushed).toHaveBeenNthCalledWith(
+      2,
+      "bk_1",
+      new Map([
+        ["Photos/a.jpg", "as_1"],
+        ["Files/b.pdf", "as_2"],
+      ]),
+    );
   });
 
   it("persists the success before a later failure and leaves the failed key unrecorded", async () => {
@@ -211,10 +266,16 @@ describe("pushNoteAttachments", () => {
 
     const result = await pushNoteAttachments("bk_1", "body");
 
-    expect(result).toBe("Karakeep error — HTTP 500");
-    // a.jpg attached → persisted once; b.jpg failed at upload → not persisted.
+    expect(result.error).toBe("Karakeep error — HTTP 500");
+    // a.jpg attached → persisted once + inlined; b.jpg failed at upload → neither.
+    expect(result.imageUrlByRel).toEqual(
+      new Map([["../Photos/a.jpg", "/api/assets/as_1"]]),
+    );
     expect(mockSavePushed).toHaveBeenCalledOnce();
-    expect(mockSavePushed).toHaveBeenCalledWith("bk_1", ["Photos/a.jpg"]);
+    expect(mockSavePushed).toHaveBeenCalledWith(
+      "bk_1",
+      new Map([["Photos/a.jpg", "as_1"]]),
+    );
   });
 
   it("does not record a broken link, so it retries on a later export", async () => {
@@ -223,7 +284,7 @@ describe("pushNoteAttachments", () => {
 
     const result = await pushNoteAttachments("bk_1", "body");
 
-    expect(result).toBeNull();
+    expect(result.error).toBeNull();
     expect(mockUpload).not.toHaveBeenCalled();
     expect(mockSavePushed).not.toHaveBeenCalled();
   });
