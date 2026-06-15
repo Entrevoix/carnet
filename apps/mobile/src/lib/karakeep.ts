@@ -60,10 +60,15 @@ const ASSET_FETCH_TIMEOUT_MS = 60_000;
 
 // assetType used when attaching an uploaded asset to a bookmark. "userUploaded"
 // is the generic "the user attached this file" slot in Karakeep's asset enum —
-// it accepts images and non-images alike. (Display nuance — e.g. promoting the
-// first image to "bannerImage" so it becomes the bookmark's cover — is a
-// live-instance tuning follow-up, deliberately not assumed here.)
+// it accepts images and non-images alike, but Karakeep does NOT render a
+// userUploaded asset on a TEXT bookmark (stored, but hidden in the UI).
 const ATTACH_ASSET_TYPE = "userUploaded";
+
+// The note's FIRST image is attached as "bannerImage" instead — Karakeep DOES
+// render that as the bookmark's cover on a text bookmark (verified against a
+// live instance 2026-06-14). Only one banner shows, so remaining images + all
+// non-image files stay userUploaded (attached but not displayed).
+export const BANNER_ASSET_TYPE = "bannerImage";
 
 /** Strip any "Bearer ..." substring from an error message so the API key
  * never lands in stored error logs or on-screen toasts. Also strip the
@@ -183,7 +188,6 @@ async function karakeepFetch(
     method: "POST" | "PATCH";
     body: BodyInit;
     headers?: Record<string, string>;
-    timeoutMs?: number;
   },
 ): Promise<Response> {
   const { url, apiKey } = await getKarakeepConfig();
@@ -192,7 +196,9 @@ async function karakeepFetch(
 
   const endpoint = `${trimmed}${path}`;
 
-  return await withTimeout(init.timeoutMs ?? FETCH_TIMEOUT_MS, async (signal) => {
+  // Only the small JSON calls go through here now; the multipart asset upload
+  // uses karakeepUpload (XHR) with its own longer ceiling.
+  return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
     let response: Response;
     try {
       response = await fetch(endpoint, {
@@ -236,6 +242,112 @@ async function karakeepSendJson(
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(jsonBody),
+  });
+}
+
+/** Append `: <message>` parsed from a JSON error body (`{error|message}`), or
+ * "" when the body is empty / non-JSON. Sync sibling of parseErrorBody for the
+ * XHR upload path (which exposes responseText, not a Response). */
+function parseErrorBodyText(body: string): string {
+  if (!body) return "";
+  try {
+    const json = JSON.parse(body) as { error?: string; message?: string };
+    const message = json.error ?? json.message;
+    return message ? `: ${sanitizeErrorMessage(message)}` : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Multipart upload via **XMLHttpRequest** instead of fetch. RN's `fetch`
+ * (whatwg-fetch) builds a `Request`, and for a FormData/multipart body that
+ * lazily loads a Blob polyfill module which is broken on Hermes — it references
+ * the absent `SharedArrayBuffer` global, and (once that is shimmed) a further
+ * `Cannot read property 'get' of undefined` — crashing the app the FIRST time a
+ * multipart fetch runs (confirmed on-device exporting Karakeep assets; all unit
+ * tests mock fetch, so it never surfaced). `XMLHttpRequest` is React Native's
+ * native networking (what fetch wraps for non-multipart requests) and serializes
+ * a FormData with `{uri,name,type}` parts natively, bypassing that module.
+ *
+ * Reuses the same hardening as karakeepFetch: not-configured throw on a blank
+ * URL, HTTPS-or-LAN enforcement, Bearer auth, a hard whole-operation timeout,
+ * and Bearer-token redaction in errors. Resolves with the raw status + body text
+ * (the caller parses its own JSON); rejects with a KarakeepError carrying the
+ * HTTP status (4xx/5xx) or status 0 (network/timeout).
+ */
+async function karakeepUpload(
+  path: string,
+  form: FormData,
+  timeoutMs: number,
+): Promise<{ status: number; body: string }> {
+  const { url, apiKey } = await getKarakeepConfig();
+  const trimmed = url.replace(/\/+$/, "");
+  assertHttpsOrLocal(trimmed);
+  const endpoint = `${trimmed}${path}`;
+
+  return await new Promise<{ status: number; body: string }>((resolve, reject) => {
+    let settled = false;
+    const done = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    const xhr = new XMLHttpRequest();
+    try {
+      xhr.open("POST", endpoint);
+      const auth = authHeader(apiKey).Authorization;
+      // No Content-Type header — XHR derives the multipart boundary from the
+      // FormData body, exactly as the fetch path relied on.
+      if (auth) xhr.setRequestHeader("Authorization", auth);
+      xhr.timeout = timeoutMs;
+      xhr.onload = () =>
+        done(() => {
+          const body = xhr.responseText ?? "";
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve({ status: xhr.status, body });
+          } else {
+            reject(
+              new KarakeepError(
+                `Karakeep error — HTTP ${xhr.status}${parseErrorBodyText(body)}`,
+                xhr.status,
+              ),
+            );
+          }
+        });
+      xhr.onerror = () =>
+        done(() =>
+          reject(
+            new KarakeepError(
+              `Karakeep network error — ${sanitizeErrorMessage(xhr.responseText || "upload failed")}`,
+              0,
+            ),
+          ),
+        );
+      xhr.ontimeout = () =>
+        done(() =>
+          reject(
+            new KarakeepError(
+              `Karakeep unreachable — timed out after ${Math.round(timeoutMs / 1000)}s. Check your connection.`,
+              0,
+            ),
+          ),
+        );
+      // RN dispatches exactly one terminal event (load|error|timeout|abort); an
+      // abort fires ONLY `onabort` (not `onerror`), so handle it too or the
+      // promise could never settle. Nothing here calls xhr.abort(), so this is
+      // defensive against a native/teardown abort.
+      xhr.onabort = () =>
+        done(() => reject(new KarakeepError("Karakeep upload aborted", 0)));
+      xhr.send(form);
+    } catch (e: unknown) {
+      const raw = e instanceof Error ? e.message : String(e);
+      done(() =>
+        reject(
+          new KarakeepError(`Karakeep network error — ${sanitizeErrorMessage(raw)}`, 0),
+        ),
+      );
+    }
   });
 }
 
@@ -324,11 +436,14 @@ export async function attachTags(
  * expects). Returns the new `assetId`, which {@link attachAssetToBookmark} then
  * links to a bookmark.
  *
- * The file part uses the React Native `{ uri, name, type }` form (mirrors the
- * Whisper upload in VoiceButton): `fetch` streams the uri (a `file://` sandbox
- * path or a SAF `content://` URI) and sets the multipart boundary itself, so NO
- * Content-Type header is set here. Gets the longer asset timeout since it ships
- * bytes over the network.
+ * The file part uses the React Native `{ uri, name, type }` form. The upload
+ * goes through {@link karakeepUpload} (XMLHttpRequest, NOT fetch): RN's native
+ * networking streams the uri (a `file://` sandbox path or a SAF `content://`
+ * URI) and derives the multipart boundary itself, so NO Content-Type header is
+ * set here. Gets the longer asset timeout since it ships bytes over the network.
+ * (VoiceButton's Whisper upload uses the same `{uri,name,type}` part shape but
+ * still posts via `fetch` — it shares the latent Hermes crash karakeepUpload
+ * works around, and needs the same XHR migration as a follow-up.)
  */
 export async function uploadAsset(input: {
   uri: string;
@@ -342,20 +457,22 @@ export async function uploadAsset(input: {
     type: input.mime,
   } as unknown as Blob);
 
-  const response = await karakeepFetch("/api/v1/assets", {
-    method: "POST",
-    body: form,
-    timeoutMs: ASSET_FETCH_TIMEOUT_MS,
-  });
+  const { status, body } = await karakeepUpload(
+    "/api/v1/assets",
+    form,
+    ASSET_FETCH_TIMEOUT_MS,
+  );
 
   // Spec response is { assetId, contentType, size, fileName }; some versions/
   // forks key the new asset's id as `id` instead, so accept either. The parse
-  // is guarded so a non-JSON 200 yields the friendly malformed-asset error
+  // is guarded so a non-JSON 2xx yields the friendly malformed-asset error
   // rather than a raw SyntaxError.
-  const json = (await response.json().catch(() => ({}))) as {
-    assetId?: unknown;
-    id?: unknown;
-  };
+  let json: { assetId?: unknown; id?: unknown } = {};
+  try {
+    json = JSON.parse(body) as { assetId?: unknown; id?: unknown };
+  } catch {
+    // non-JSON body → falls through to the malformed-asset error below
+  }
   const assetId =
     typeof json.assetId === "string" && json.assetId.length > 0
       ? json.assetId
@@ -365,7 +482,7 @@ export async function uploadAsset(input: {
   if (!assetId) {
     throw new KarakeepError(
       "Karakeep returned a malformed asset (no assetId)",
-      response.status,
+      status,
     );
   }
   return { assetId };

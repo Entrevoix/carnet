@@ -7,7 +7,7 @@
 // file` links to storage URIs needs the writer layer.
 
 import { listPairedBinaries, resolvePairedUri } from "./writer";
-import { attachAssetToBookmark, uploadAsset } from "./karakeep";
+import { attachAssetToBookmark, uploadAsset, BANNER_ASSET_TYPE } from "./karakeep";
 import {
   assetKey,
   loadPushedAssetKeys,
@@ -49,6 +49,15 @@ export async function pushNoteAttachments(
   // so no second run races this bookmark's record.
   const pushed = await loadPushedAssetKeys(bookmarkId);
   const links = listPairedBinaries(noteBody).filter((b) => b.subdir !== "Audio");
+  // The note's FIRST image becomes the bookmark cover (bannerImage) — Karakeep
+  // renders that on a text bookmark, but not a plain userUploaded attachment, so
+  // a note's lead photo is visible. Remaining images + files stay userUploaded.
+  // Deterministic by note order, not push order; if the lead image was already
+  // synced (skipped), the cover isn't re-applied on re-export (accepted).
+  const firstImage = links.find((b) => b.subdir === "Photos");
+  const bannerKey = firstImage
+    ? assetKey(firstImage.subdir, firstImage.filename)
+    : null;
   for (const link of links) {
     const key = assetKey(link.subdir, link.filename);
     if (pushed.has(key)) continue; // already attached to this bookmark — skip
@@ -60,7 +69,11 @@ export async function pushNoteAttachments(
         mime: resolved.mime,
         filename: link.filename,
       });
-      await attachAssetToBookmark(bookmarkId, assetId);
+      if (key === bannerKey) {
+        await attachAssetToBookmark(bookmarkId, assetId, BANNER_ASSET_TYPE);
+      } else {
+        await attachAssetToBookmark(bookmarkId, assetId);
+      }
       pushed.add(key);
       // Persist after EACH success (a fresh array snapshot, not the live Set)
       // so a later failure in this same loop can't lose the record — those
