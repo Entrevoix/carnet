@@ -22,6 +22,7 @@ import {
   buildSharedLinkPrompt,
   type PromptPair,
 } from "./prompts";
+import { isCredentialSafeUrl } from "./netAllowlist";
 import { fetchUrlPreview, type UrlPreview } from "./urlpreview";
 import {
   readNote,
@@ -170,15 +171,15 @@ function sanitizeErrorMessage(raw: string): string {
 
 /**
  * Reject non-HTTPS OmniRoute URLs to prevent the API key from being sent
- * over cleartext. Localhost / loopback / RFC1918 (10.x) are allowed for
- * dev — the host-on-LAN dev loop relies on plain HTTP. All other http://
- * URLs throw.
+ * over cleartext. HTTPS is always allowed; plain http:// is allowed only for
+ * the local / LAN dev + self-hosted loop (loopback, 10.x, 192.168.x) via
+ * exact-host parsing in {@link isCredentialSafeUrl}. All other http:// URLs
+ * throw.
  *
  * Extracted from three call sites (executeChat, listModels, transcribeAudio).
  */
 function assertHttpsOrLocal(trimmed: string): void {
-  if (/^https:\/\//i.test(trimmed)) return;
-  if (/^http:\/\/(localhost|127\.0\.0\.1|10\.)/i.test(trimmed)) return;
+  if (isCredentialSafeUrl(trimmed)) return;
   throw new OmniRouteError(
     "OmniRoute URL must use https:// to protect the API key",
     0,
