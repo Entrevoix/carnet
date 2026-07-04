@@ -35,16 +35,19 @@ Recommended merge order: **B3 → B0 → B1 → B2 → B4 → B5 → B6 → B7.*
 ## B3 — sanitize LLM markdown + frontmatter normalizer (Security H1 + AUDIT §1.5)
 
 **Why:** THE dogfooding gate. Unsanitized model output is written to a vault that is a code-execution surface in Obsidian (Dataview `dataviewjs`, raw HTML, `javascript:` links). Same code path also fixes L6 (external-image beaconing) and delivers the schema-stability normalizer.
-**Changes:** new `lib/enrichSanitize.ts`, applied in `omniroute.ts` before returning `markdown` (covers every mode at once):
-- Strip fenced ` ```dataviewjs `/` ```js `/` ```html ` blocks; neutralize raw `<script>`/`<iframe>`/`on*=` HTML; rewrite `javascript:`/`data:` link targets to inert.
-- **Normalizer:** parse frontmatter, assert the required key set per note type (AUDIT.md §1.5 table: idea `created/status/tags`, journal `date/tags/people`, person contact fields, `kind`), re-serialize in canonical order. On parse failure or missing required keys → treat as enrichment failure so the caller falls into its existing degraded path (stub+banner for photo/share; queue/keep-raw for text) rather than writing a malformed note.
+**Design decision to make first — neutralize, don't delete.** The main RCE vectors are covered below, but the approach must not destroy legitimate content or regress a shipped feature (critic findings):
+- **Neutralize in place, do not delete.** A knowledge vault legitimately holds ` ```js `/` ```html ` code snippets a user captured on purpose. **Deleting** those blocks is silent data loss the golden-sample tests (which exercise the LLM's happy-path output) will not catch. Prefer rendering-inert over removal: rename an executable fence language to a non-executing one (` ```dataviewjs ` → ` ```text ` or an escaped variant), escape rather than strip raw HTML. The only thing that must be truly removed/rewritten is genuinely executable-on-render markup (`<script>`/`<iframe>`/`on*=`, `javascript:` targets).
+- **Cover the full Obsidian surface, not just Dataview.** Also neutralize Templater `<%…%>` (executes JS, popular) and inline `dataview`/DQL blocks — not only ` ```dataviewjs `. Do not claim completeness; document what's covered.
+- **Do not regress #60 inline images.** The shipped inline-image feature renders `data:` and `http(s):` image `src` (`inlineImageSrc.ts:40`). A blunt `data:`-stripping pass would break it. Scope link-target rewriting to non-image link contexts, or allowlist image `data:`/`http(s):` src — verify against `inlineImageSrc.ts` before shipping.
+**Changes:** new `lib/enrichSanitize.ts`, applied in `omniroute.ts` before returning `markdown` (covers every mode at once), implementing the neutralize policy above.
+- **Normalizer:** parse frontmatter, assert the required key set per note type (verified against prompts.ts: idea `created/status/tags` `prompts.ts:46-48`, journal `date/tags/people` `:75-78`, person `name`+contact `:105-113`, shared `kind` `:157,220`), re-serialize in canonical order. On parse failure or missing required keys → treat as enrichment failure so the caller falls into its existing degraded path (stub+banner for photo/share; queue/keep-raw for text) rather than writing a malformed note.
 - Preserve byte-exact conventions: `location: lat,lon`, `[[Name]]` wikilinks, journal `## HH:MM` + separators, `karakeepId`.
-**Tests:** injected dataviewjs/script/js-link stripped; valid notes pass unchanged (byte-for-byte for each mode's golden sample); malformed frontmatter → degraded path, no file written; the AUDIT.md must-not-drift list asserted per mode.
-**Risk:** medium — over-aggressive stripping could damage legit notes. Golden-sample round-trip tests per mode are the guard.
+**Tests:** injected dataviewjs/Templater/script/js-link neutralized; a legit user-authored ` ```js ` snippet SURVIVES (explicit false-positive test, not just happy-path golden samples); a note with a `data:` inline image still renders (no #60 regression); valid notes pass byte-for-byte per mode; malformed frontmatter → degraded path, no file written; the AUDIT.md must-not-drift list asserted per mode.
+**Risk:** medium — over-aggressive handling could damage legit notes or break #60. The neutralize-not-delete policy + the false-positive and #60-regression tests are the guard.
 
 ## B1 — per-task model split (`chatModel` / `visionModel`) (AUDIT §1.4)
 
-**Why:** one `omniRouteModel` serves text and vision today; nothing guarantees image parts reach a vision-capable model, and a silent drop yields confidently-wrong "enrichment" with no banner. Prerequisite for B2 and B7.
+**Why:** one `omniRouteModel` serves text and vision today; nothing guarantees image parts reach a vision-capable model, and a silent drop yields confidently-wrong "enrichment" with no banner. **Hard prerequisite for B7** (a text-only local backend must never silently eat image parts). **Soft prerequisite for B2** — B2 could call `enrichSharedImage` with the single existing model, but B1 is what makes it *correct* (routes card images to a vision model); ship B1 first, but it's not strictly blocking B2.
 **Changes:**
 - `settings.ts`: add `omniRouteVisionModel` to `Settings`/`PersistedSettings` (non-secret; default a known vision-capable model). Keep `omniRouteModel` as the chat/text model. Backward-compat via the existing `{...DEFAULT_PERSISTED, ...parsed}` spread. Retire or repurpose the vestigial `omniRouteTranscriptionModel` (transcription is on-device — AUDIT.md §1.6.5; coordinate with the `TODO.md:24` Whisper-consolidation decision — Open Question 6).
 - `omniroute.ts`: `enrichSharedImage` (and any image-bearing `enrichSharedLink`) uses `visionModel`; text paths use `chatModel`.
@@ -63,13 +66,16 @@ Recommended merge order: **B3 → B0 → B1 → B2 → B4 → B5 → B6 → B7.*
 
 ## B4 — capture timing: save-first for Idea/Journal (`capture-timing.decision.md`)
 
-**Why:** removes the blocking LLM call from the two speed-critical modes and unblocks B5. Person keeps enrich-then-preview. Full rationale + Syncthing overwrite-race mitigation in the decision memo.
+**Why:** removes the blocking LLM call from the two speed-critical modes and unblocks B5. Person keeps enrich-then-preview. **Read the decision memo's corrected Facts/Mechanics before coding — two of the original mitigations were fictional and the branch is bigger than first stated** (critic-confirmed).
+**Scope reality (corrected):** this is a UX-policy change **plus net-new conflict-detection code** — there is no existing mtime guard to reuse (the promote-idea race is itself unbuilt, `TODO.md:33`; only existence checks exist, `writer.ts:180,194,207`). And there is no block-scoped journal rewrite primitive; `## HH:MM` is not unique; block-scoping does nothing for Syncthing (whole-file replication). Cost B4 as a real feature, not a toggle.
 **Changes:**
-- Idea/Journal: on Save, write immediately with client-side frontmatter + `status: pending-enrich` (idea) / block marker (journal), then enrich async; on success overwrite (guarded by mtime check — reuse the promote-idea race mitigation, `TODO.md:33`) preserving client-injected frontmatter; on failure → existing queue/degraded path. Journal async rewrite touches **only its own `## HH:MM` block**, never the whole file.
+- **Build the mtime conflict guard** (step 1 of the memo): record `modificationTime` at raw write, re-check before enriched overwrite, keep-user-version + banner on change. Closes the promote-idea race too.
+- **Idea (low-risk):** write a fresh unique-slug file on Save with client frontmatter + `status: pending-enrich`; slug from raw text; on enrichment **update in place, do not rename** to the enriched title (rename = delete+create = Syncthing churn + collision handling).
+- **Journal (needs real design — see memo):** do **not** assume a block rewrite. Start with the deferred-write model (Journal stays near-blocking, save-first only for Idea) unless Journal inline-reply is explicitly wanted, in which case use a unique per-block capture-id marker (not `## HH:MM`) for the targeted rewrite. Note this means B5 inline-reply may cover Idea only in v1.
 - `Settings.previewBeforeSave` (default **off**) restores the old flow. Person ignores it.
 - Reuse the shipped stub+banner + retro-enrich machinery (`PhotoCaptureScreen.tsx:150-248`; `recents-retro-enrich`).
-**Tests:** raw note lands before enrichment; enriched overwrite preserves user tags/location; mtime-conflict keeps the user's version + banner (no clobber); journal rewrite leaves sibling blocks byte-identical; `previewBeforeSave=on` reproduces old flow; Person unaffected.
-**Risk:** medium — the overwrite race is the sharp edge; the mtime guard + tests are the control. **Decision to confirm:** flip default to save-first (recommended) vs. opt-in (AUDIT.md Open Question 5).
+**Tests:** raw Idea note lands before enrichment; in-place enriched update preserves user tags/location and keeps the same filename; mtime-conflict keeps the user's version + banner (no clobber); `previewBeforeSave=on` reproduces old flow; Person unaffected; if Journal targeted-rewrite is built, sibling blocks stay byte-identical and same-minute captures don't collide.
+**Risk:** medium-high — the conflict handling is net-new and the Journal path is the sharp edge; concurrent cross-device edits resolve to Syncthing `*.sync-conflict-*.md` (recoverable, not loss) rather than being fully prevented. **Decision to confirm:** flip default to save-first (recommended) vs. opt-in (AUDIT.md Open Question 5); Journal deferred-write vs. true save-first.
 
 ## B5 — notification inline reply (RemoteInput) (AUDIT §2.2)
 
@@ -97,6 +103,7 @@ Recommended merge order: **B3 → B0 → B1 → B2 → B4 → B5 → B6 → B7.*
 ## Cross-cutting housekeeping (fold into whichever branch touches the file)
 
 - Retire `navetted`-named desktop keychain commands (`apps/desktop/src-tauri/src/lib.rs:20`) and the "OmniRoute / navetted" line in `docs/CODEMAPS/architecture.md` (AUDIT.md §1.6.5).
+- The remaining `navetted` surface is a migration path, **not** dead code — a `navettedUrl?` field (`settings.ts:86`) and a live legacy-migration banner (`SettingsScreen.tsx:397`). Leave the migration UX intact; only remove it once you're confident no device still holds a legacy token/URL to migrate. Fold the decision into this sweep rather than deleting blindly.
 - Fix the stale `RecentDetailScreen.tsx:4-10` "read-only this iteration" header (edit mode is shipped).
 - `gitignore` the untracked `.reports/` scan artifact (noted across session handoffs).
 

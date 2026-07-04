@@ -1,0 +1,44 @@
+Codemap scan — 2026-06-14
+==========================
+
+Status: UPDATE (previous scan 2026-06-11). Additive changes, in place (< 30% rewrite).
+Driver: Karakeep export feature + STT onboarding landed since the initial scan.
+
+Updated docs/CODEMAPS/ (all 5):
+  ~ architecture.md   added per-note Karakeep export branch; external = OmniRoute + Karakeep + Syncthing; v0.2.0
+  ~ backend.md        new "Karakeep export" section (karakeep client + export + asset sync); STT onboarding in extras
+  ~ frontend.md       RecentDetail "Send to Karakeep"; Settings Karakeep creds + Voice input; Home VoiceReadinessBanner
+  ~ data.md           +2 AsyncStorage stores (karakeep asset record, stt-onboarding flag); karakeepId frontmatter
+  ~ dependencies.md   +Karakeep service row; +expo-speech-recognition, +expo-secure-store; CI job detail
+
+Files added since last scan (non-test):
+  + apps/mobile/src/lib/karakeep.ts            (390)  REST client (#51/#54/#55)
+  + apps/mobile/src/lib/karakeepExport.ts      (75)   pushNoteAttachments orchestration (#55/#57)
+  + apps/mobile/src/lib/karakeepAssetSync.ts   (76)   per-bookmark pushed-asset record, AsyncStorage (#57)
+  + apps/mobile/src/voice/sttReadiness.ts      (143)  en-model probe / code-12 dead-end (#50)
+  + apps/mobile/src/voice/sttOnboarding.ts     (133)  proactive prompt logic + one-shot flag (#53)
+  + apps/mobile/src/voice/VoiceReadinessBanner.tsx (126)  Home one-shot banner (#53)
+  + apps/mobile/src/voice/VoiceSetupCheck.tsx  (183)  Settings "Check voice setup" (#53)
+
+Files modified (notable line-count growth):
+  ~ src/screens/RecentDetailScreen.tsx  1170 → 1406  (Send to Karakeep + export flow)
+  ~ src/screens/SettingsScreen.tsx       781 →  882  (Karakeep creds + Voice input section)
+  ~ src/voice/VoiceButton.tsx           1487 → 1520
+  ~ src/lib/writer.ts                   1059 → 1074  (read-only findSubdir; resolvePairedUri no longer creates dirs)
+
+New dependencies detected:
+  + Karakeep (self-hosted) — third external service, opt-in per-note export (HTTPS REST /api/v1, Bearer key)
+  + expo-speech-recognition — on-device voice model download (STT onboarding)
+  + expo-secure-store — now also holds the Karakeep API key (was OmniRoute-only)
+
+Architecture changes:
+  - New opt-in EXPORT path (vault note → Karakeep bookmark + tags + asset attachments); capture pipeline unchanged.
+  - Still server-less, file-based, no SQL DB — vault remains the source of truth.
+  - package.json 0.1.x → 0.2.0.
+
+Scan summary:
+  - Workspaces: apps/mobile (Expo/RN), apps/desktop (Tauri+React), packages/shared
+  - Source files scanned: ~53 (.ts/.tsx + Rust, excluding tests)
+  - No new screens (still 8); no new workspaces.
+
+Staleness: prior codemaps were 3 days old (2026-06-11) — refreshed. None > 90 days.
