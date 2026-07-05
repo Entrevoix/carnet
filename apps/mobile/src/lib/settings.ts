@@ -16,11 +16,11 @@ const MIGRATION_BANNER_KEY = "carnet:migration_banner_dismissed:v1";
 const LEGACY_PURGE_KEY = "carnet:legacy_purge:v1";
 
 export const DEFAULT_OMNIROUTE_MODEL = "openrouter/openai/gpt-4o-mini";
-/** Default transcription model. Uses Gemini's audio modality via the
- * /v1/chat/completions endpoint (LiteLLM bridges OpenAI's `input_audio`
- * content type to Gemini natively). Cheaper and faster than Whisper on
- * most proxies, no separate /v1/audio/transcriptions route required. */
-export const DEFAULT_TRANSCRIPTION_MODEL = "gemini/gemini-2.5-flash-lite";
+/** Default vision model — used for image-bearing enrichment (share-target
+ * photos). Held separately from omniRouteModel (the chat/text model) so a
+ * text-only chat model can never silently eat image parts and return a
+ * confidently-wrong "enrichment". Defaults to a known vision-capable model. */
+export const DEFAULT_VISION_MODEL = "openrouter/openai/gpt-4o-mini";
 
 /**
  * Per-capture-mode system prompt overrides. Empty/missing fields fall back
@@ -39,10 +39,12 @@ export interface Settings {
   omniRouteUrl: string;
   omniRouteApiKey: string;
   omniRouteModel: string;
-  /** Whisper-compatible model for /v1/audio/transcriptions. Defaults to
-   * whisper-1. Held separately from omniRouteModel so swapping the chat
-   * model doesn't break transcription (and vice versa). */
-  omniRouteTranscriptionModel: string;
+  /** Vision-capable model for image-bearing enrichment (share-target photos).
+   * Held separately from omniRouteModel (the chat/text model) so swapping the
+   * chat model can't misroute image parts to a text-only model. Repurposed
+   * from the vestigial transcription-model field (transcription is on-device
+   * now via Whisper, so that config was dead). */
+  omniRouteVisionModel: string;
   /** JS-side hint for the Settings UI's initial render — avoids a Switch
    * flicker before the async native read resolves. Source of truth lives
    * in native SharedPreferences (BootReceiver reads it directly). Whenever
@@ -55,6 +57,14 @@ export interface Settings {
    * editor instead of the markdown TextInput + toolbar. Default false — off
    * until on-device round-trip fidelity is signed off. */
   richEditorEnabled: boolean;
+  /**
+   * When true, Idea captures restore the old blocking flow: enrich → preview →
+   * Save tap → write. Default false, i.e. save-first is the default — the raw
+   * note is written immediately and enrichment updates it in place afterwards.
+   * Person always previews and ignores this flag; Journal is unaffected (it
+   * stays on the deferred-write model this branch does not change).
+   */
+  previewBeforeSave: boolean;
   /**
    * Root folder for captured notes. Defaults to the app sandbox carnet/ dir.
    * Set to a Syncthing-watched folder for automatic sync to workstation.
@@ -72,10 +82,11 @@ export interface Settings {
 interface PersistedSettings {
   omniRouteUrl: string;
   omniRouteModel: string;
-  omniRouteTranscriptionModel: string;
+  omniRouteVisionModel: string;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
+  previewBeforeSave: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
   karakeepUrl: string;
@@ -91,10 +102,11 @@ interface LegacyPersistedSettings {
 const DEFAULT_PERSISTED: PersistedSettings = {
   omniRouteUrl: "",
   omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
-  omniRouteTranscriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
+  omniRouteVisionModel: DEFAULT_VISION_MODEL,
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
+  previewBeforeSave: false,
   captureFolderPath: "",
   promptOverrides: {},
   karakeepUrl: "",
@@ -135,10 +147,11 @@ async function readPersisted(): Promise<PersistedSettings> {
       return {
         omniRouteUrl: legacy.omniRouteUrl ?? "",
         omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
-        omniRouteTranscriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
+        omniRouteVisionModel: DEFAULT_VISION_MODEL,
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
+        previewBeforeSave: false,
         captureFolderPath: legacy.captureFolderPath ?? "",
         promptOverrides: {},
         karakeepUrl: "",
@@ -155,10 +168,11 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
   const sanitised: PersistedSettings = {
     omniRouteUrl: settings.omniRouteUrl,
     omniRouteModel: settings.omniRouteModel,
-    omniRouteTranscriptionModel: settings.omniRouteTranscriptionModel,
+    omniRouteVisionModel: settings.omniRouteVisionModel,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
+    previewBeforeSave: settings.previewBeforeSave,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: sanitisePromptOverrides(settings.promptOverrides),
     karakeepUrl: settings.karakeepUrl,
@@ -195,10 +209,11 @@ export async function getSettings(): Promise<Settings> {
     omniRouteUrl: persisted.omniRouteUrl,
     omniRouteApiKey,
     omniRouteModel: persisted.omniRouteModel,
-    omniRouteTranscriptionModel: persisted.omniRouteTranscriptionModel,
+    omniRouteVisionModel: persisted.omniRouteVisionModel,
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
     autoTranscribeOnSave: persisted.autoTranscribeOnSave,
     richEditorEnabled: persisted.richEditorEnabled,
+    previewBeforeSave: persisted.previewBeforeSave,
     captureFolderPath: persisted.captureFolderPath,
     promptOverrides: persisted.promptOverrides,
     karakeepUrl: persisted.karakeepUrl,
@@ -210,10 +225,11 @@ export async function saveSettings(settings: Settings): Promise<void> {
   await writePersisted({
     omniRouteUrl: settings.omniRouteUrl,
     omniRouteModel: settings.omniRouteModel,
-    omniRouteTranscriptionModel: settings.omniRouteTranscriptionModel,
+    omniRouteVisionModel: settings.omniRouteVisionModel,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
+    previewBeforeSave: settings.previewBeforeSave,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: settings.promptOverrides,
     karakeepUrl: settings.karakeepUrl,

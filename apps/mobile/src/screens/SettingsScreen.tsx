@@ -18,7 +18,7 @@ import {
 
 import {
   DEFAULT_OMNIROUTE_MODEL,
-  DEFAULT_TRANSCRIPTION_MODEL,
+  DEFAULT_VISION_MODEL,
   dismissMigrationBanner,
   getSettings,
   hasKarakeepApiKey,
@@ -72,10 +72,11 @@ function defaultPromptFor(mode: PromptModeKey): string {
 interface FormState {
   omniRouteUrl: string;
   omniRouteModel: string;
-  omniRouteTranscriptionModel: string;
+  omniRouteVisionModel: string;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
+  previewBeforeSave: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
   karakeepUrl: string;
@@ -125,6 +126,10 @@ export default function SettingsScreen() {
   const [browseError, setBrowseError] = useState<string | null>(null);
   const [models, setModels] = useState<string[] | null>(null);
   const [modelFilter, setModelFilter] = useState("");
+  // Which model field the browser is picking for — the same modal drives both
+  // the chat and the vision picker so the listModels catalog is fetched once
+  // per open and routed to the right form field on select.
+  const [browseTarget, setBrowseTarget] = useState<"chat" | "vision">("chat");
 
   // useMemo MUST run on every render in the same order — must live above
   // the `if (!form) return …` early return below, or hook count changes
@@ -175,10 +180,11 @@ export default function SettingsScreen() {
       setForm({
         omniRouteUrl: s.omniRouteUrl,
         omniRouteModel: s.omniRouteModel,
-        omniRouteTranscriptionModel: s.omniRouteTranscriptionModel,
+        omniRouteVisionModel: s.omniRouteVisionModel,
         persistentNotificationEnabled: initialNotificationEnabled,
         autoTranscribeOnSave: s.autoTranscribeOnSave,
         richEditorEnabled: s.richEditorEnabled,
+        previewBeforeSave: s.previewBeforeSave,
         captureFolderPath: s.captureFolderPath,
         promptOverrides: s.promptOverrides,
         karakeepUrl: s.karakeepUrl,
@@ -207,11 +213,12 @@ export default function SettingsScreen() {
     const next: Settings = {
       omniRouteUrl: form.omniRouteUrl,
       omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
-      omniRouteTranscriptionModel:
-        form.omniRouteTranscriptionModel || DEFAULT_TRANSCRIPTION_MODEL,
+      omniRouteVisionModel:
+        form.omniRouteVisionModel || DEFAULT_VISION_MODEL,
       persistentNotificationEnabled: form.persistentNotificationEnabled,
       autoTranscribeOnSave: form.autoTranscribeOnSave,
       richEditorEnabled: form.richEditorEnabled,
+      previewBeforeSave: form.previewBeforeSave,
       // Pass an empty string here so saveSettings doesn't touch the key.
       // Then we handle the key write separately below.
       omniRouteApiKey: "",
@@ -315,8 +322,9 @@ export default function SettingsScreen() {
   /** Open the model browser. Uses the URL from form state and the API key
    * from SecureStore (via getSettings) — or the freshly-typed pendingKey
    * if the user hasn't saved it yet. */
-  const openBrowse = async () => {
+  const openBrowse = async (target: "chat" | "vision" = "chat") => {
     if (!form) return;
+    setBrowseTarget(target);
     setBrowseError(null);
     setBrowseOpen(true);
     setModelFilter("");
@@ -378,7 +386,11 @@ export default function SettingsScreen() {
 
   const pickModel = (id: string) => {
     if (!form) return;
-    setForm({ ...form, omniRouteModel: id });
+    if (browseTarget === "vision") {
+      setForm({ ...form, omniRouteVisionModel: id });
+    } else {
+      setForm({ ...form, omniRouteModel: id });
+    }
     setBrowseOpen(false);
   };
 
@@ -446,7 +458,7 @@ export default function SettingsScreen() {
         mode="text"
         icon="format-list-bulleted"
         compact
-        onPress={openBrowse}
+        onPress={() => openBrowse("chat")}
         disabled={!form.omniRouteUrl.trim()}
         style={styles.browseBtn}
       >
@@ -454,19 +466,30 @@ export default function SettingsScreen() {
       </Button>
 
       <TextInput
-        label="Transcription model"
+        label="Vision model"
         mode="outlined"
         autoCapitalize="none"
         autoCorrect={false}
-        value={form.omniRouteTranscriptionModel}
-        onChangeText={(v) => update({ omniRouteTranscriptionModel: v })}
-        placeholder={DEFAULT_TRANSCRIPTION_MODEL}
+        value={form.omniRouteVisionModel}
+        onChangeText={(v) => update({ omniRouteVisionModel: v })}
+        placeholder={DEFAULT_VISION_MODEL}
       />
       <HelperText type="info" visible>
-        Model for audio note transcription. Defaults to gemini/gemini-2.5-flash-lite
-        — uses the chat-completion audio modality so any multimodal chat model
-        on your proxy works. Whisper-style endpoints are no longer required.
+        Vision-capable model used when you share a photo or image into carnet.
+        Held separate from the chat model so a text-only model can't silently
+        drop the image. Must handle image input (e.g. gpt-4o-mini, Gemini
+        Flash, Claude). Tap Browse to pick from your provider's catalog.
       </HelperText>
+      <Button
+        mode="text"
+        icon="format-list-bulleted"
+        compact
+        onPress={() => openBrowse("vision")}
+        disabled={!form.omniRouteUrl.trim()}
+        style={styles.browseBtn}
+      >
+        Browse available models
+      </Button>
 
       <TextInput
         label="Capture folder"
@@ -585,6 +608,27 @@ export default function SettingsScreen() {
         <HelperText type="info" visible>
           Doubles the OmniRoute API spend per audio capture. Skip if you only
           transcribe occasionally.
+        </HelperText>
+        <List.Item
+          title="Preview ideas before saving"
+          description={
+            form.previewBeforeSave
+              ? "Idea captures wait for enrichment, then you review + Save"
+              : "Off — ideas save instantly and enrich in the background"
+          }
+          left={(p) => <List.Icon {...p} icon="eye-check" />}
+          right={() => (
+            <Switch
+              value={form.previewBeforeSave}
+              onValueChange={(next) => update({ previewBeforeSave: next })}
+            />
+          )}
+          style={styles.notificationRow}
+        />
+        <HelperText type="info" visible>
+          Default off: an idea is written to your vault the moment you tap Save,
+          and the AI structures it afterwards. Turn on to vet the AI's version
+          before it lands. Contacts always preview regardless of this setting.
         </HelperText>
       </View>
 
@@ -759,7 +803,10 @@ export default function SettingsScreen() {
               <HelperText type="error" visible>
                 {browseError}
               </HelperText>
-              <Button mode="contained-tonal" onPress={openBrowse}>
+              <Button
+                mode="contained-tonal"
+                onPress={() => openBrowse(browseTarget)}
+              >
                 Retry
               </Button>
             </View>

@@ -12,6 +12,7 @@
  *   promoteIdea   — rewrite an existing idea at a higher maturity status
  */
 
+import { sanitizeAndNormalize, sanitizeMarkdown, type NoteType } from "./enrichSanitize";
 import { getPromptOverrides, getSettings } from "./settings";
 import {
   buildIdeaPrompt,
@@ -22,6 +23,7 @@ import {
   buildSharedLinkPrompt,
   type PromptPair,
 } from "./prompts";
+import { isCredentialSafeUrl } from "./netAllowlist";
 import { fetchUrlPreview, type UrlPreview } from "./urlpreview";
 import {
   readNote,
@@ -170,15 +172,15 @@ function sanitizeErrorMessage(raw: string): string {
 
 /**
  * Reject non-HTTPS OmniRoute URLs to prevent the API key from being sent
- * over cleartext. Localhost / loopback / RFC1918 (10.x) are allowed for
- * dev — the host-on-LAN dev loop relies on plain HTTP. All other http://
- * URLs throw.
+ * over cleartext. HTTPS is always allowed; plain http:// is allowed only for
+ * the local / LAN dev + self-hosted loop (loopback, 10.x, 192.168.x) via
+ * exact-host parsing in {@link isCredentialSafeUrl}. All other http:// URLs
+ * throw.
  *
  * Extracted from three call sites (executeChat, listModels, transcribeAudio).
  */
 function assertHttpsOrLocal(trimmed: string): void {
-  if (/^https:\/\//i.test(trimmed)) return;
-  if (/^http:\/\/(localhost|127\.0\.0\.1|10\.)/i.test(trimmed)) return;
+  if (isCredentialSafeUrl(trimmed)) return;
   throw new OmniRouteError(
     "OmniRoute URL must use https:// to protect the API key",
     0,
@@ -260,6 +262,7 @@ async function executeChat(
   apiKey: string,
   model: string,
   messages: OpenAIMessage[],
+  noteType: NoteType,
 ): Promise<EnrichResult> {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   assertHttpsOrLocal(trimmed);
@@ -305,7 +308,14 @@ async function executeChat(
       );
     }
 
-    const markdown = stripCodeFences(content);
+    // Security gate (B3): neutralize any executable content the model emitted
+    // (Dataview/Templater/raw HTML/javascript: links) and canonicalize the
+    // frontmatter BEFORE the markdown reaches any caller or the vault.
+    // Neutralization is unconditional; when frontmatter normalization fails
+    // (malformed / missing required keys) we still return the neutralized —
+    // and therefore inert — markdown rather than a note that could execute.
+    const stripped = stripCodeFences(content);
+    const markdown = sanitizeAndNormalize(stripped, noteType) ?? sanitizeMarkdown(stripped);
     const modelUsed = json.model ?? model;
     return { markdown, model: modelUsed };
   });
@@ -320,12 +330,13 @@ async function chatCompletion(
   apiKey: string,
   model: string,
   prompt: PromptPair,
+  noteType: NoteType,
 ): Promise<EnrichResult> {
   const messages: OpenAIMessage[] = [
     { role: "system", content: prompt.system },
     { role: "user", content: prompt.user },
   ];
-  return executeChat(baseUrl, apiKey, model, messages);
+  return executeChat(baseUrl, apiKey, model, messages, noteType);
 }
 
 /** Strip a leading ``` fence (and matching trailer). Does not trim unfenced content. */
@@ -363,9 +374,30 @@ async function getModel(): Promise<string> {
   return settings.omniRouteModel.trim() || "openrouter/openai/gpt-4o-mini";
 }
 
+/**
+ * The vision-capable model for image-bearing enrichment. Held separately from
+ * getModel() (the chat/text model) so a text-only chat model can never
+ * silently eat image parts. Unlike getModel(), this does NOT fall back to a
+ * hard-coded default: a blank vision model surfaces as a not-configured
+ * OmniRouteError so callers route it through the same isNotConfiguredError
+ * degraded path as a blank URL — the user fixes Settings rather than the app
+ * misrouting an image to whatever the fallback happens to be.
+ */
+async function getVisionModel(): Promise<string> {
+  const settings = await getSettings();
+  const model = settings.omniRouteVisionModel.trim();
+  if (!model) {
+    throw new OmniRouteError(
+      "Vision model not configured — set it in Settings",
+      0,
+      { notConfigured: true },
+    );
+  }
+  return model;
+}
+
 // (getTranscriptionModel removed — transcribeAudio is on-device now and
-// doesn't route through OmniRoute. The Settings field stays defined for
-// future opt-in network-fallback use.)
+// doesn't route through OmniRoute.)
 
 /**
  * Fetch the available model catalog from `${baseUrl}/v1/models`. Returns
@@ -429,7 +461,7 @@ export async function enrichIdea(text: string): Promise<EnrichResult> {
     getPromptOverrides(),
   ]);
   const pair = withSystemOverride(buildIdeaPrompt(text), overrides.idea);
-  return chatCompletion(baseUrl, apiKey, model, pair);
+  return chatCompletion(baseUrl, apiKey, model, pair, "idea");
 }
 
 /** Enrich a journal voice transcript (plus optional notes) into a journal entry. */
@@ -447,7 +479,7 @@ export async function enrichJournal(input: {
     buildJournalPrompt(input.transcript, input.notes),
     overrides.journal,
   );
-  return chatCompletion(baseUrl, apiKey, model, pair);
+  return chatCompletion(baseUrl, apiKey, model, pair, "journal");
 }
 
 /** Enrich a business card OCR result + context into a contact note. */
@@ -465,7 +497,7 @@ export async function enrichPerson(input: {
     buildPersonPrompt(input.ocrResult, input.context),
     overrides.person,
   );
-  return chatCompletion(baseUrl, apiKey, model, pair);
+  return chatCompletion(baseUrl, apiKey, model, pair, "person");
 }
 
 /**
@@ -487,10 +519,13 @@ export async function enrichSharedImage(input: {
   const safeMime = /^image\/(jpe?g|png|webp|gif|heic|heif)$/.test(input.mimeType)
     ? input.mimeType
     : "image/jpeg";
+  // Vision path: route to the dedicated vision model, NOT getModel() (the
+  // chat/text model). A text-only chat model would silently drop the image
+  // part and return a confidently-wrong enrichment with no banner.
   const [baseUrl, apiKey, model, overrides] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
-    getModel(),
+    getVisionModel(),
     getPromptOverrides(),
   ]);
   const { system: defaultSystem, userText } = buildSharedImagePrompt(input.context);
@@ -510,7 +545,7 @@ export async function enrichSharedImage(input: {
       ],
     },
   ];
-  return executeChat(baseUrl, apiKey, model, messages);
+  return executeChat(baseUrl, apiKey, model, messages, "shared");
 }
 
 /**
@@ -556,7 +591,7 @@ export async function enrichSharedLink(input: {
     buildSharedLinkPrompt(input.url, input.text, input.context, preview),
     overrides.sharedLink,
   );
-  return chatCompletion(baseUrl, apiKey, model, pair);
+  return chatCompletion(baseUrl, apiKey, model, pair, "shared");
 }
 
 /**
@@ -670,5 +705,6 @@ export async function promoteIdea(
     apiKey,
     model,
     buildPromoteIdeaPrompt(currentMarkdown, target),
+    "idea",
   );
 }

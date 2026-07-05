@@ -37,6 +37,7 @@ import {
   writePerson,
   slugify,
   injectAttachments,
+  updateNoteIfUnchanged,
   type AttachmentRef,
 } from "./writer";
 import { mergeUserTags } from "./tags";
@@ -70,6 +71,17 @@ export interface IdeaPayload {
   tags?: string[];
   /** User-selected `lat,lon`, injected into frontmatter on drain. */
   location?: string;
+  /**
+   * Save-first (B4): when set, the raw Idea note already exists on disk at this
+   * path (written immediately on Save, before a transient enrichment failure
+   * queued it). The drain then updates THIS file in place instead of creating a
+   * new one — otherwise the drain would write a duplicate note. Absent for the
+   * classic offline path where nothing was written before queuing.
+   */
+  filepath?: string;
+  /** mtime baseline captured at the raw write, guarding the in-place overwrite
+   * so a synced/user edit during the queue window isn't clobbered. */
+  baselineMtime?: number | null;
 }
 
 export interface JournalPayload {
@@ -265,8 +277,6 @@ export async function drainQueue(): Promise<void> {
 async function processRow(payload: QueuePayload): Promise<void> {
   if (payload.mode === "idea") {
     const result = await enrichIdea(payload.text);
-    const title = deriveTitle(result.markdown);
-    const slug = slugify(title) || "untitled";
     // Binaries were already written to disk at enqueue; fold their rel-paths
     // back into the body so the drained note matches the online capture.
     // Tags are merged AFTER attachments so the frontmatter merge sees the final body.
@@ -274,7 +284,17 @@ async function processRow(payload: QueuePayload): Promise<void> {
       mergeUserTags(injectAttachments(result.markdown, payload.attachments ?? []), payload.tags),
       payload.location,
     );
-    await writeIdea(slug, md);
+    if (payload.filepath) {
+      // Save-first: the raw note is already on disk — update it in place,
+      // guarded so a synced/user edit during the queue window is kept rather
+      // than clobbered. A skipped write (conflict) still counts as processed;
+      // the raw note stays and the user's edit wins.
+      await updateNoteIfUnchanged(payload.filepath, md, payload.baselineMtime ?? null);
+    } else {
+      const title = deriveTitle(result.markdown);
+      const slug = slugify(title) || "untitled";
+      await writeIdea(slug, md);
+    }
   } else if (payload.mode === "journal") {
     const result = await enrichJournal({
       transcript: payload.transcript,
