@@ -12,6 +12,7 @@
  *   promoteIdea   — rewrite an existing idea at a higher maturity status
  */
 
+import { sanitizeAndNormalize, sanitizeMarkdown, type NoteType } from "./enrichSanitize";
 import { getPromptOverrides, getSettings } from "./settings";
 import {
   buildIdeaPrompt,
@@ -261,6 +262,7 @@ async function executeChat(
   apiKey: string,
   model: string,
   messages: OpenAIMessage[],
+  noteType: NoteType,
 ): Promise<EnrichResult> {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   assertHttpsOrLocal(trimmed);
@@ -306,7 +308,14 @@ async function executeChat(
       );
     }
 
-    const markdown = stripCodeFences(content);
+    // Security gate (B3): neutralize any executable content the model emitted
+    // (Dataview/Templater/raw HTML/javascript: links) and canonicalize the
+    // frontmatter BEFORE the markdown reaches any caller or the vault.
+    // Neutralization is unconditional; when frontmatter normalization fails
+    // (malformed / missing required keys) we still return the neutralized —
+    // and therefore inert — markdown rather than a note that could execute.
+    const stripped = stripCodeFences(content);
+    const markdown = sanitizeAndNormalize(stripped, noteType) ?? sanitizeMarkdown(stripped);
     const modelUsed = json.model ?? model;
     return { markdown, model: modelUsed };
   });
@@ -321,12 +330,13 @@ async function chatCompletion(
   apiKey: string,
   model: string,
   prompt: PromptPair,
+  noteType: NoteType,
 ): Promise<EnrichResult> {
   const messages: OpenAIMessage[] = [
     { role: "system", content: prompt.system },
     { role: "user", content: prompt.user },
   ];
-  return executeChat(baseUrl, apiKey, model, messages);
+  return executeChat(baseUrl, apiKey, model, messages, noteType);
 }
 
 /** Strip a leading ``` fence (and matching trailer). Does not trim unfenced content. */
@@ -451,7 +461,7 @@ export async function enrichIdea(text: string): Promise<EnrichResult> {
     getPromptOverrides(),
   ]);
   const pair = withSystemOverride(buildIdeaPrompt(text), overrides.idea);
-  return chatCompletion(baseUrl, apiKey, model, pair);
+  return chatCompletion(baseUrl, apiKey, model, pair, "idea");
 }
 
 /** Enrich a journal voice transcript (plus optional notes) into a journal entry. */
@@ -469,7 +479,7 @@ export async function enrichJournal(input: {
     buildJournalPrompt(input.transcript, input.notes),
     overrides.journal,
   );
-  return chatCompletion(baseUrl, apiKey, model, pair);
+  return chatCompletion(baseUrl, apiKey, model, pair, "journal");
 }
 
 /** Enrich a business card OCR result + context into a contact note. */
@@ -487,7 +497,7 @@ export async function enrichPerson(input: {
     buildPersonPrompt(input.ocrResult, input.context),
     overrides.person,
   );
-  return chatCompletion(baseUrl, apiKey, model, pair);
+  return chatCompletion(baseUrl, apiKey, model, pair, "person");
 }
 
 /**
@@ -535,7 +545,7 @@ export async function enrichSharedImage(input: {
       ],
     },
   ];
-  return executeChat(baseUrl, apiKey, model, messages);
+  return executeChat(baseUrl, apiKey, model, messages, "shared");
 }
 
 /**
@@ -581,7 +591,7 @@ export async function enrichSharedLink(input: {
     buildSharedLinkPrompt(input.url, input.text, input.context, preview),
     overrides.sharedLink,
   );
-  return chatCompletion(baseUrl, apiKey, model, pair);
+  return chatCompletion(baseUrl, apiKey, model, pair, "shared");
 }
 
 /**
@@ -695,5 +705,6 @@ export async function promoteIdea(
     apiKey,
     model,
     buildPromoteIdeaPrompt(currentMarkdown, target),
+    "idea",
   );
 }
