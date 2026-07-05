@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type Ref } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
+  Banner,
   Button,
   Card,
   Chip,
@@ -41,11 +42,18 @@ import {
   injectAttachments,
   extFromMime,
   readNote,
-  updateNote,
+  updateNoteIfUnchanged,
+  getModificationTime,
   rewriteFrontmatterField,
   extractNameFromMarkdown,
   type AttachmentRef,
 } from "../lib/writer";
+import {
+  enrichIdeaInPlace,
+  writeRawIdea,
+  type EnrichIdeaOutcome,
+  type RawIdeaInput,
+} from "../lib/ideaSaveFirst";
 import { pickAttachment, type PickedAttachment } from "../lib/attachments";
 import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
 import { mergeUserTags } from "../lib/tags";
@@ -124,6 +132,19 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const [knownTags, setKnownTags] = useState<string[]>([]);
   // User-selected location as a `lat,lon` string, injected into frontmatter on save.
   const [location, setLocation] = useState<string | null>(null);
+  // Save-first vs. blocking-preview for Idea. Default false = save-first (the raw
+  // note is written immediately, enrichment updates it in place). Loaded from
+  // settings on mount; Journal/Person never consult it.
+  const [previewBeforeSave, setPreviewBeforeSave] = useState(false);
+  // Saved-screen state for the save-first Idea failure paths (mirrors photo):
+  // `degradedReason` = permanent enrichment failure (raw note kept, Re-enrich
+  // offered); `enrichNotice` = an info line (queued offline, or conflict).
+  const [degradedReason, setDegradedReason] = useState<string | null>(null);
+  const [enrichNotice, setEnrichNotice] = useState<string | null>(null);
+  // The captured Idea inputs, stashed so the saved-screen Re-enrich can re-run
+  // enrichment against the same text/tags/location/attachments after the input
+  // fields were cleared.
+  const saveFirstCtxRef = useRef<RawIdeaInput | null>(null);
 
   /** Inject the selected location into a note's frontmatter (no-op when unset). */
   const withLocation = (markdown: string): string =>
@@ -136,6 +157,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
     // Load the vault tag index for autocomplete (cache-first; never blocks UI).
     void getTagIndex()
       .then((index) => setKnownTags(index.tags.map((entry) => entry.tag)))
+      .catch(() => {});
+    // Load the save-first preference (default false = save-first).
+    void getSettings()
+      .then((s) => setPreviewBeforeSave(s.previewBeforeSave))
       .catch(() => {});
   }, []);
 
@@ -264,37 +289,160 @@ export default function CaptureScreen({ route, navigation }: Props) {
     }
   };
 
+  /** Map a save-first enrichment outcome onto the UI: success closes the
+   * screen; conflict/queued surface an info banner; permanent failure surfaces
+   * the degraded banner + Re-enrich. The raw note is already on disk in every
+   * branch, so nothing is ever lost. `mtime` is the guard baseline to re-queue
+   * with on a transient failure. */
+  const finishSaveFirst = async (
+    outcome: EnrichIdeaOutcome,
+    ctx: RawIdeaInput,
+    filepath: string,
+    mtime: number | null,
+  ): Promise<void> => {
+    if (outcome.kind === "updated") {
+      setPhase("saved");
+      navigation.goBack();
+      return;
+    }
+    if (outcome.kind === "conflict") {
+      setEnrichNotice(
+        "This note changed on disk during enrichment — your version was kept.",
+      );
+      setPhase("saved");
+      return;
+    }
+    // outcome.kind === "failed"
+    if (outcome.transient) {
+      try {
+        await enqueue({
+          mode: "idea",
+          text: ctx.text,
+          attachments: ctx.attachments,
+          tags: ctx.tags,
+          location: ctx.location,
+          // Update the raw note we already wrote in place on drain — do NOT
+          // write a duplicate.
+          filepath,
+          baselineMtime: mtime,
+        });
+        setQueueDepth(await getQueueDepth());
+        setEnrichNotice(
+          "Saved as a raw note — enrichment queued and will finish when OmniRoute is reachable.",
+        );
+      } catch {
+        setEnrichNotice(
+          "Saved as a raw note — enrichment will retry next time you open carnet.",
+        );
+      }
+    } else {
+      setDegradedReason(outcome.reason);
+    }
+    setPhase("saved");
+  };
+
+  /** Re-run enrichment on the already-saved raw note from the saved screen.
+   * Re-reads the mtime as a fresh guard baseline (the note may have synced). */
+  const reEnrichSaved = async (): Promise<void> => {
+    const ctx = saveFirstCtxRef.current;
+    if (!ctx || !savedFilepath) return;
+    setError(null);
+    setDegradedReason(null);
+    setEnrichNotice(null);
+    setPhase("submitting");
+    const baseline = await getModificationTime(savedFilepath);
+    const outcome = await enrichIdeaInPlace({
+      filepath: savedFilepath,
+      expectedMtime: baseline,
+      text: ctx.text,
+      tags: ctx.tags,
+      location: ctx.location,
+      attachments: ctx.attachments,
+    });
+    await finishSaveFirst(outcome, ctx, savedFilepath, baseline);
+  };
+
   const submit = async () => {
     setPhase("submitting");
     setError(null);
+    setDegradedReason(null);
+    setEnrichNotice(null);
 
     if (mode === "idea") {
-      try {
-        const result = await enrichIdea(text.trim());
-        const title = deriveTitle(result.markdown);
-        const slug = slugify(title) || "untitled";
-        setPendingIdea({ slug, markdown: result.markdown, model: result.model });
-        setOmniModel(result.model);
-        setResponse({
-          type: "capture_response",
-          request_id: "",
-          status: "ok",
-          preview_markdown: result.markdown,
-        });
-        setPhase("preview");
-      } catch (e: unknown) {
-        await handleCaptureError(e, async () => {
-          // Write the binaries to disk first (local + offline-safe), then
-          // queue only their rel-paths — never base64.
-          const refs = await persistAttachments();
-          await enqueue({
-            mode: "idea",
-            text: text.trim(),
-            attachments: refs,
-            tags,
-            location: location ?? undefined,
+      // Blocking-preview (opt-in): enrich → preview → Save, exactly as before.
+      if (previewBeforeSave) {
+        try {
+          const result = await enrichIdea(text.trim());
+          const title = deriveTitle(result.markdown);
+          const slug = slugify(title) || "untitled";
+          setPendingIdea({ slug, markdown: result.markdown, model: result.model });
+          setOmniModel(result.model);
+          setResponse({
+            type: "capture_response",
+            request_id: "",
+            status: "ok",
+            preview_markdown: result.markdown,
           });
+          setPhase("preview");
+        } catch (e: unknown) {
+          await handleCaptureError(e, async () => {
+            // Write the binaries to disk first (local + offline-safe), then
+            // queue only their rel-paths — never base64.
+            const refs = await persistAttachments();
+            await enqueue({
+              mode: "idea",
+              text: text.trim(),
+              attachments: refs,
+              tags,
+              location: location ?? undefined,
+            });
+          });
+        }
+        return;
+      }
+
+      // Save-first (default): write the raw note NOW, then enrich it in place.
+      try {
+        const refs = await persistAttachments();
+        const ctx: RawIdeaInput = {
+          text: text.trim(),
+          tags,
+          location: location ?? undefined,
+          attachments: refs,
+        };
+        const { filepath, mtime } = await writeRawIdea(ctx);
+        const title = deriveTitle(ctx.text) || "Idea";
+        await recordCapture({
+          id: localId(),
+          mode,
+          title,
+          filepath,
+          createdAt: Date.now(),
         });
+        void invalidateTagIndex().catch(() => undefined);
+        setSavedFilepath(filepath);
+        saveFirstCtxRef.current = ctx;
+        // The capture is safely persisted — clear the inputs so a back-out
+        // leaves nothing staged and the next capture starts fresh.
+        setPending([]);
+        setTags([]);
+        setLocation(null);
+        setText("");
+        const outcome = await enrichIdeaInPlace({
+          filepath,
+          expectedMtime: mtime,
+          text: ctx.text,
+          tags: ctx.tags,
+          location: ctx.location,
+          attachments: ctx.attachments,
+        });
+        await finishSaveFirst(outcome, ctx, filepath, mtime);
+      } catch (e: unknown) {
+        // The raw write itself failed (disk/permission) — nothing was saved,
+        // so keep the inputs and return the user to the form.
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        setPhase("input");
       }
       return;
     }
@@ -460,14 +608,25 @@ export default function CaptureScreen({ route, navigation }: Props) {
         filepath: savedFilepath ?? undefined,
       });
 
-      // If file was already written, update it on disk
+      // If file was already written, update it on disk — guarded by the mtime
+      // check so a workstation edit synced in between our read and write is kept
+      // rather than clobbered (closes the promote-idea race, TODO.md).
       if (savedFilepath) {
+        const baseline = await getModificationTime(savedFilepath);
+        let conflict = false;
         try {
           const existing = await readNote(savedFilepath);
           const patched = rewriteFrontmatterField(existing, "status", next);
-          await updateNote(savedFilepath, patched);
+          const res = await updateNoteIfUnchanged(savedFilepath, patched, baseline);
+          conflict = !res.ok;
         } catch {
-          await updateNote(savedFilepath, result.markdown);
+          const res = await updateNoteIfUnchanged(savedFilepath, result.markdown, baseline);
+          conflict = !res.ok;
+        }
+        if (conflict) {
+          setError(
+            "This note changed on disk — reopen it before promoting so your edits aren't lost.",
+          );
         }
       }
     } catch (e: unknown) {
@@ -623,6 +782,46 @@ export default function CaptureScreen({ route, navigation }: Props) {
               </HelperText>
             </Card.Content>
           )}
+        </Card>
+      )}
+
+      {phase === "saved" && (degradedReason || enrichNotice) && (
+        <Card style={styles.previewCard}>
+          <Card.Title title="Saved to vault" />
+          <Card.Content>
+            {degradedReason ? (
+              <Banner visible icon="alert" actions={[]} style={styles.degradedBanner}>
+                {`Saved as a raw note — AI enrichment failed. ${degradedReason}`}
+              </Banner>
+            ) : null}
+            {enrichNotice ? (
+              <Banner
+                visible
+                icon="information"
+                actions={[]}
+                style={styles.degradedBanner}
+              >
+                {enrichNotice}
+              </Banner>
+            ) : null}
+            <Text variant="bodySmall" selectable style={styles.previewRendered}>
+              {savedFilepath ?? ""}
+            </Text>
+            <HelperText type="info" visible>
+              Open Obsidian (or your editor) on the synced folder to read and
+              edit. Carnet is intake-only.
+            </HelperText>
+          </Card.Content>
+          <Card.Actions>
+            {degradedReason ? (
+              <Button mode="text" onPress={reEnrichSaved}>
+                Re-enrich
+              </Button>
+            ) : null}
+            <Button mode="contained" onPress={() => navigation.goBack()}>
+              Done
+            </Button>
+          </Card.Actions>
         </Card>
       )}
     </ScrollView>
@@ -827,4 +1026,5 @@ const styles = StyleSheet.create({
   attachBlock: { gap: 8 },
   attachRow: { flexDirection: "row", gap: 8 },
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  degradedBanner: { marginBottom: 8 },
 });
