@@ -76,6 +76,7 @@ interface FormState {
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
+  previewBeforeSave: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
   karakeepUrl: string;
@@ -183,6 +184,7 @@ export default function SettingsScreen() {
         persistentNotificationEnabled: initialNotificationEnabled,
         autoTranscribeOnSave: s.autoTranscribeOnSave,
         richEditorEnabled: s.richEditorEnabled,
+        previewBeforeSave: s.previewBeforeSave,
         captureFolderPath: s.captureFolderPath,
         promptOverrides: s.promptOverrides,
         karakeepUrl: s.karakeepUrl,
@@ -216,6 +218,7 @@ export default function SettingsScreen() {
       persistentNotificationEnabled: form.persistentNotificationEnabled,
       autoTranscribeOnSave: form.autoTranscribeOnSave,
       richEditorEnabled: form.richEditorEnabled,
+      previewBeforeSave: form.previewBeforeSave,
       // Pass an empty string here so saveSettings doesn't touch the key.
       // Then we handle the key write separately below.
       omniRouteApiKey: "",
@@ -605,6 +608,27 @@ export default function SettingsScreen() {
         <HelperText type="info" visible>
           Doubles the OmniRoute API spend per audio capture. Skip if you only
           transcribe occasionally.
+        </HelperText>
+        <List.Item
+          title="Preview ideas before saving"
+          description={
+            form.previewBeforeSave
+              ? "Idea captures wait for enrichment, then you review + Save"
+              : "Off — ideas save instantly and enrich in the background"
+          }
+          left={(p) => <List.Icon {...p} icon="eye-check" />}
+          right={() => (
+            <Switch
+              value={form.previewBeforeSave}
+              onValueChange={(next) => update({ previewBeforeSave: next })}
+            />
+          )}
+          style={styles.notificationRow}
+        />
+        <HelperText type="info" visible>
+          Default off: an idea is written to your vault the moment you tap Save,
+          and the AI structures it afterwards. Turn on to vet the AI's version
+          before it lands. Contacts always preview regardless of this setting.
         </HelperText>
       </View>
 

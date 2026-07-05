@@ -58,6 +58,14 @@ export interface Settings {
    * until on-device round-trip fidelity is signed off. */
   richEditorEnabled: boolean;
   /**
+   * When true, Idea captures restore the old blocking flow: enrich → preview →
+   * Save tap → write. Default false, i.e. save-first is the default — the raw
+   * note is written immediately and enrichment updates it in place afterwards.
+   * Person always previews and ignores this flag; Journal is unaffected (it
+   * stays on the deferred-write model this branch does not change).
+   */
+  previewBeforeSave: boolean;
+  /**
    * Root folder for captured notes. Defaults to the app sandbox carnet/ dir.
    * Set to a Syncthing-watched folder for automatic sync to workstation.
    */
@@ -78,6 +86,7 @@ interface PersistedSettings {
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
+  previewBeforeSave: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
   karakeepUrl: string;
@@ -97,6 +106,7 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
+  previewBeforeSave: false,
   captureFolderPath: "",
   promptOverrides: {},
   karakeepUrl: "",
@@ -141,6 +151,7 @@ async function readPersisted(): Promise<PersistedSettings> {
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
+        previewBeforeSave: false,
         captureFolderPath: legacy.captureFolderPath ?? "",
         promptOverrides: {},
         karakeepUrl: "",
@@ -161,6 +172,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
+    previewBeforeSave: settings.previewBeforeSave,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: sanitisePromptOverrides(settings.promptOverrides),
     karakeepUrl: settings.karakeepUrl,
@@ -201,6 +213,7 @@ export async function getSettings(): Promise<Settings> {
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
     autoTranscribeOnSave: persisted.autoTranscribeOnSave,
     richEditorEnabled: persisted.richEditorEnabled,
+    previewBeforeSave: persisted.previewBeforeSave,
     captureFolderPath: persisted.captureFolderPath,
     promptOverrides: persisted.promptOverrides,
     karakeepUrl: persisted.karakeepUrl,
@@ -216,6 +229,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
+    previewBeforeSave: settings.previewBeforeSave,
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: settings.promptOverrides,
     karakeepUrl: settings.karakeepUrl,

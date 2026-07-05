@@ -13,6 +13,7 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     persistentNotificationEnabled: false,
     autoTranscribeOnSave: false,
     richEditorEnabled: false,
+    previewBeforeSave: false,
     captureFolderPath: "",
     promptOverrides: {},
     karakeepUrl: "https://karakeep.example.com",
