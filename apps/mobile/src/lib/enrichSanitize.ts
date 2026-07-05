@@ -15,6 +15,11 @@
  *   - ```js and ```html fenced blocks survive BYTE-FOR-BYTE — they are not an
  *     execution surface in Obsidian; the threat is Dataview + Templater. HTML
  *     neutralization therefore never reaches inside a fenced code block.
+ *   - EXCEPTION: Templater `<%…%>` is stripped EVERYWHERE, fence or no fence.
+ *     Templater does a raw find-and-replace over the whole file and ignores
+ *     code fences, so a `<%…%>` hidden inside ```js / ```dataviewjs executes
+ *     regardless. It is Templater's own execution syntax, never legitimate
+ *     captured content, so byte-for-byte fence preservation does not apply to it.
  *   - Neutralize raw HTML (<script>/<iframe> removed, on*= handlers stripped),
  *     javascript: link targets, and data: targets in NON-image link contexts.
  *   - #60 inline images (`![alt](data:image/…)`) MUST survive — data: rewriting
@@ -69,7 +74,13 @@ const EXECUTABLE_FENCE_LANGS = new Set(["dataviewjs", "dataview"]);
  * languages are renamed in place. Pure and total — never returns null.
  */
 export function sanitizeMarkdown(markdown: string): string {
-  const lines = markdown.split("\n");
+  // Templater `<%…%>` executes JS and ignores code fences (raw find-and-replace),
+  // so it must die EVERYWHERE — inside ```js/```html/```dataviewjs bodies too,
+  // not just the outside-fence text neutralizeText() handles. Strip it globally
+  // up front, before the fence-aware pass preserves any remaining fence bodies.
+  const lines = markdown
+    .replace(/<%[\s\S]*?%>/g, "[templater expression removed]")
+    .split("\n");
   const out: string[] = [];
   let textBuf: string[] = [];
 
@@ -130,8 +141,10 @@ function neutralizeText(text: string): string {
   s = s.replace(/<iframe\b[^>]*>/gi, "[iframe removed]");
 
   // on*= inline event-handler attributes (onclick=, onload=, …). Strip the
-  // whole attribute, quoted or bare, leaving the surrounding tag inert.
-  s = s.replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+  // whole attribute, quoted or bare, leaving the surrounding tag inert. The
+  // leading delimiter is whitespace OR `/` so tag-slash forms without a space
+  // (`<svg/onload=…>`, `<img/onerror=…>`) are caught, not just ` onload=…`.
+  s = s.replace(/[\s/]on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
 
   // Inline Dataview DQL query span: a code span whose content starts with `=`.
   s = s.replace(/`=\s*[^`]*`/g, "`[inline dataview removed]`");
@@ -142,11 +155,14 @@ function neutralizeText(text: string): string {
   s = s.replace(/(\]\(\s*)javascript:/gi, "$1#");
   s = s.replace(/(\bhref\s*=\s*["']?)javascript:/gi, "$1#");
 
-  // data: targets in NON-image links only. `[text](data:…)` → neutralized;
-  // `![alt](data:image/…)` (an inline image — #60) is left untouched.
+  // data: targets in NON-image links only. `[text](data:…)` → neutralized. The
+  // image exception is MIME-GATED: only `![alt](data:image/…)` (a genuine inline
+  // image — #60) is left untouched. A `data:text/html` (or any non-image mime)
+  // disguised with a leading `!` is NOT a safe image and is neutralized too.
   s = s.replace(
-    /(!?)(\[[^\]]*\]\(\s*)data:/gi,
-    (full, bang: string, mid: string) => (bang ? full : `${mid}#`),
+    /(!?)(\[[^\]]*\]\(\s*)data:(image\/)?/gi,
+    (full, bang: string, mid: string, image: string | undefined) =>
+      bang && image ? full : `${bang}${mid}#`,
   );
 
   return s;

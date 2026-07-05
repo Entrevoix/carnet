@@ -43,6 +43,35 @@ describe("sanitizeMarkdown — executable fences", () => {
     expect(out).not.toContain("`= this.file.name`");
     expect(out).toContain("[inline dataview removed]");
   });
+
+  it("(1t) renames a ```dataviewjs fence AND neutralizes Templater hidden in its body", () => {
+    const input = ideaNote(
+      "# Title\n\n```dataviewjs\n<%* const {exec}=require('child_process'); exec('curl evil') %>\n```\n",
+    );
+    const out = sanitizeMarkdown(input);
+    // fence language is defanged
+    expect(out).toContain("```text");
+    expect(out).not.toContain("```dataviewjs");
+    // AND the Templater expression inside the fence is gone (not passed through)
+    expect(out).not.toContain("<%");
+    expect(out).not.toContain("require('child_process')");
+    expect(out).toContain("[templater expression removed]");
+  });
+
+  it("(2t) preserves a legitimate ```js fence language but STILL neutralizes Templater inside it", () => {
+    const input = ideaNote(
+      "# Title\n\n```js\nconst x = 1; // <%= tp.file.title %>\n```\n",
+    );
+    const out = sanitizeMarkdown(input);
+    // ```js is not a dangerous fence type — the language survives
+    expect(out).toContain("```js");
+    // but Templater is caught even inside an otherwise-"safe" fence
+    expect(out).not.toContain("<%");
+    expect(out).not.toContain("tp.file.title");
+    expect(out).toContain("[templater expression removed]");
+    // the surrounding legitimate JS is preserved
+    expect(out).toContain("const x = 1;");
+  });
 });
 
 describe("sanitizeMarkdown — templater / html / links", () => {
@@ -71,6 +100,19 @@ describe("sanitizeMarkdown — templater / html / links", () => {
     expect(out).not.toContain("alert(1)");
   });
 
+  it("(4c) neutralizes an on*= handler with a `/` (no-space) tag delimiter — <svg/onload>", () => {
+    const input = ideaNote("# Title\n\n<svg/onload=alert(1)>\n");
+    const out = sanitizeMarkdown(input);
+    expect(out).not.toContain("onload");
+    expect(out).not.toContain("alert(1)");
+  });
+
+  it("(4d) neutralizes an on*= handler with a `/` delimiter mid-tag — <img/onerror=x src=y>", () => {
+    const input = ideaNote("# Title\n\n<img/onerror=x src=y>\n");
+    const out = sanitizeMarkdown(input);
+    expect(out).not.toContain("onerror");
+  });
+
   it("(5) neutralizes a javascript: markdown link target", () => {
     const input = ideaNote("# Title\n\n[click](javascript:alert(1))\n");
     const out = sanitizeMarkdown(input);
@@ -86,6 +128,17 @@ describe("sanitizeMarkdown — templater / html / links", () => {
     const out = sanitizeMarkdown(input);
     expect(out).not.toContain("[dl](data:");
     expect(out).toContain("[dl](#");
+  });
+
+  it("(5c) neutralizes a NON-image data: URI disguised as an image with a leading `!`", () => {
+    const input = ideaNote(
+      "# Title\n\n![text](data:text/html;base64,PHNjcmlwdD4=)\n",
+    );
+    const out = sanitizeMarkdown(input);
+    // the mime is not `image/`, so the image exception must NOT apply — the
+    // data: scheme is defanged rather than passed through as a "safe image"
+    expect(out).not.toContain("data:text/html");
+    expect(out).toContain("](#text/html;base64,PHNjcmlwdD4=)");
   });
 });
 
