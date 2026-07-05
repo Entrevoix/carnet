@@ -11,7 +11,7 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     omniRouteUrl: "https://llm.example.com",
     omniRouteApiKey: "test-key",
     omniRouteModel: "gpt-4o-mini",
-    omniRouteTranscriptionModel: "gemini/gemini-2.5-flash-lite",
+    omniRouteVisionModel: "vision-model-xyz",
     persistentNotificationEnabled: false,
     autoTranscribeOnSave: false,
     richEditorEnabled: false,
@@ -80,6 +80,7 @@ import {
   enrichIdea,
   enrichJournal,
   enrichPerson,
+  enrichSharedImage,
   enrichSharedLink,
   autoTranscribeIfEnabled,
   promoteIdea,
@@ -400,6 +401,78 @@ describe("promoteIdea", () => {
   });
 });
 
+// ── model routing: chat vs vision (B1 model split) ───────────────────────────
+
+describe("model routing (chat text vs image vision)", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  it("enrichSharedImage requests the vision model, not the chat model", async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse("---\nkind: shared-image\n---\n# Photo\n"),
+    );
+
+    await enrichSharedImage({
+      base64: "QkFTRTY0",
+      mimeType: "image/jpeg",
+      context: "test ctx",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { model: string };
+    // BASE_SETTINGS: omniRouteModel = "gpt-4o-mini", vision = "vision-model-xyz".
+    expect(body.model).toBe("vision-model-xyz");
+    expect(body.model).not.toBe("gpt-4o-mini");
+  });
+
+  it("enrichIdea requests the chat model, not the vision model", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
+    await enrichIdea("a plain thought");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("gpt-4o-mini");
+    expect(body.model).not.toBe("vision-model-xyz");
+  });
+
+  it("enrichJournal requests the chat model, not the vision model", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# j\n"));
+    await enrichJournal({ transcript: "today", notes: "" });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("gpt-4o-mini");
+  });
+
+  it("surfaces a not-configured OmniRouteError when the vision model is blank", async () => {
+    // Blank vision model must route through the SAME isNotConfiguredError
+    // degraded path as a blank URL — never a crash, never a new error shape,
+    // and never a silent fetch to a text-only fallback model.
+    const { getSettings } = await import("./settings");
+    vi.mocked(getSettings).mockResolvedValue({
+      ...BASE_SETTINGS,
+      omniRouteVisionModel: "",
+    });
+    let caught: unknown;
+    try {
+      await enrichSharedImage({
+        base64: "QkFTRTY0",
+        mimeType: "image/jpeg",
+        context: "ctx",
+      });
+    } catch (e) {
+      caught = e;
+    } finally {
+      vi.mocked(getSettings).mockResolvedValue(BASE_SETTINGS);
+    }
+    expect(caught).toBeInstanceOf(OmniRouteError);
+    expect(isNotConfiguredError(caught)).toBe(true);
+    expect(isPermanentError(caught)).toBe(false);
+    expect((caught as OmniRouteError).status).toBe(0);
+    // No fetch attempted — the config gap short-circuits before the network.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 // ── HTTPS enforcement ─────────────────────────────────────────────────────────
 
 describe("HTTPS enforcement", () => {
@@ -409,7 +482,7 @@ describe("HTTPS enforcement", () => {
       omniRouteUrl: "http://evil.example.com",
       omniRouteApiKey: "test-key",
       omniRouteModel: "gpt-4o-mini",
-      omniRouteTranscriptionModel: "whisper-1",
+      omniRouteVisionModel: "vision-model-xyz",
       persistentNotificationEnabled: false,
       autoTranscribeOnSave: false,
       richEditorEnabled: false,
@@ -430,7 +503,7 @@ describe("HTTPS enforcement", () => {
       omniRouteUrl: "http://localhost:8080",
       omniRouteApiKey: "",
       omniRouteModel: "gpt-4o-mini",
-      omniRouteTranscriptionModel: "whisper-1",
+      omniRouteVisionModel: "vision-model-xyz",
       persistentNotificationEnabled: false,
       autoTranscribeOnSave: false,
       richEditorEnabled: false,
