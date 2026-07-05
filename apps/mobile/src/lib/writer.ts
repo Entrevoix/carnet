@@ -696,11 +696,16 @@ export async function writeIdea(
  * Read-then-write is serialized per-filepath so two captures arriving in
  * quick succession (e.g. during an offline drain pass) don't both read the
  * same baseline and clobber each other.
+ *
+ * Returns the day file's full accumulated markdown (every same-day capture
+ * merged, with this entry's tags unioned into the frontmatter) alongside its
+ * filepath — callers that maintain the note/tag index must index off this,
+ * not the just-written fragment, or earlier same-day tags are lost.
  */
 export async function appendJournal(
   date: string,
   markdown: string,
-): Promise<{ filepath: string }> {
+): Promise<{ filepath: string; markdown: string }> {
   const root = await resolveRoot();
   const journalUri = await findOrCreateSubdir(root, "Journal");
   const filename = `${date}.md`;
@@ -732,11 +737,11 @@ export async function appendJournal(
       const appended = stripFrontmatter(markdown);
       const finalMarkdown = `${base.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
       await writeByUri(existingUri, finalMarkdown);
-      return { filepath: existingUri };
+      return { filepath: existingUri, markdown: finalMarkdown };
     }
 
     const filepath = await writeNewFile(journalUri, filename, markdown, root.isSaf);
-    return { filepath };
+    return { filepath, markdown };
   });
 }
 

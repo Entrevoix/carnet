@@ -82,7 +82,7 @@ import { makeImageRule } from "../components/markdownImageRule";
 import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
 import { TagInput } from "../components/TagInput";
 import { applyTagsToHeader } from "../lib/tags";
-import { getTagIndex, invalidateTagIndex, tagsForNote } from "../lib/vault";
+import { getTagIndex, invalidateNoteIndex, tagsForNote } from "../lib/vault";
 import { enrichSharedImage, transcribeAudio } from "../lib/omniroute";
 import {
   removeFromHistory,
@@ -720,7 +720,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       setBody(next);
       // A tag change makes the vault index stale — drop the cache so the
       // browser counts + capture autocomplete rebuild on next read.
-      if (tagsChanged) void invalidateTagIndex().catch(() => undefined);
+      if (tagsChanged) void invalidateNoteIndex().catch(() => undefined);
     } catch (e: unknown) {
       const reason = e instanceof Error ? e.message : String(e);
       console.warn("[RecentDetail] save (rich) failed:", reason);
