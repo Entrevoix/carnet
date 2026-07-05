@@ -152,11 +152,23 @@ function firstParagraph(html: string): string {
  * the SSRF check operates on the same host the native layer will resolve,
  * and so the behavior is identical on-device and under the Node test URL. */
 function extractHost(rawUrl: string): string | null {
-  const schemeMatch = rawUrl.match(/^[a-z][a-z0-9+.-]*:\/\//i);
+  // WHATWG URL parsing strips ASCII tab / newline / carriage-return from the
+  // URL *before* parsing, and the native fetch layer (OkHttp / NSURLSession)
+  // does the same before it dials — so we must strip them first, or a byte
+  // injected into the host (`http://12\t7.0.0.1/`) is seen here as the literal
+  // `12<TAB>7.0.0.1` (which fails IP parsing) while the socket resolves the
+  // stripped `127.0.0.1` and connects to loopback anyway.
+  const cleaned = rawUrl.replace(/[\t\n\r]/g, "");
+  const schemeMatch = cleaned.match(/^[a-z][a-z0-9+.-]*:\/\//i);
   if (!schemeMatch) return null;
-  const rest = rawUrl.slice(schemeMatch[0].length);
-  // Authority ends at the first path / query / fragment delimiter.
-  const authEnd = rest.search(/[/?#]/);
+  const rest = cleaned.slice(schemeMatch[0].length);
+  // Authority ends at the first path / query / fragment delimiter. For special
+  // (http/https) schemes WHATWG treats a backslash the same as a forward slash
+  // when locating the authority boundary, so `\` also terminates the authority:
+  // `http://127.0.0.1\@evil.com/` dials 127.0.0.1, not evil.com. The scan stops
+  // at the FIRST such delimiter, so a legitimate `\` later in the path or query
+  // is never reached and stays untouched.
+  const authEnd = rest.search(/[/\\?#]/);
   let authority = authEnd === -1 ? rest : rest.slice(0, authEnd);
   // Drop any userinfo (`user:pass@`).
   const at = authority.lastIndexOf("@");
