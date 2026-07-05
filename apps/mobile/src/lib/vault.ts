@@ -1,24 +1,42 @@
 /**
- * Vault tag index for carnet.
+ * Vault note + tag index for carnet.
  *
- * Builds a tag → note index by scanning every markdown note's frontmatter
- * (listNoteFiles + getFrontmatterTags). Recents (AsyncStorage, max 20) is a
- * capture history, not a vault scan, so it cannot back tag autocomplete or the
- * tag browser — those need a real file enumeration, which is what this does.
+ * The primary artifact is a NOTE INDEX (one metadata row per markdown note),
+ * built by scanning every note once (listNoteFiles + readNote) and cached to a
+ * single AsyncStorage blob. The tag index (tag → carrying notes) is DERIVED
+ * from it — one scan, one blob — so the tag browser, capture autocomplete, and
+ * the search screen all share the same cache rather than each paying a separate
+ * full-vault scan. Recents (AsyncStorage, max 20) is a capture history, not a
+ * vault scan, so it cannot back any of these — they need a real file
+ * enumeration, which is what this does.
  *
  * The scan is potentially slow on a large vault (one read per note), so it is
  * bounded-concurrency and the result is cached to AsyncStorage. Callers should
- * read the cache for instant render and refresh lazily (on focus / pull /
- * after a capture), not on every keystroke.
+ * read the cache for instant render and refresh lazily (on focus / pull), and
+ * upsert incrementally after a capture (upsertNoteInIndex) so the common path
+ * never rescans, not on every keystroke.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { deriveTitle } from "@carnet/shared";
 
-import { extractFrontmatterField, getFrontmatterTags, normalizeTag } from "./frontmatter";
-import { listNoteFiles, readNote } from "./writer";
+import {
+  extractFrontmatterField,
+  getFrontmatterTags,
+  normalizeTag,
+  stripFrontmatter,
+} from "./frontmatter";
+import { listNoteFiles, readNote, type NoteFileRef, type NoteSubdir } from "./writer";
 import type { CaptureEntry, CaptureMode } from "./storage";
 
-const CACHE_KEY = "carnet:tagindex:v1";
+/** One AsyncStorage blob holding per-note metadata for browse + search; the tag
+ * index is derived from it (deriveTagIndex). One scan, one blob keeps the
+ * shared ~6 MB AsyncStorage ceiling from being split across two vault-sized
+ * caches. */
+const NOTE_INDEX_KEY = "carnet:noteindex:v1";
+
+/** Max characters kept per note excerpt — capped to bound blob growth against
+ * the shared AsyncStorage ceiling (see NOTE_INDEX_KEY). */
+const EXCERPT_MAX = 200;
 
 /** Max concurrent note reads during a scan — keeps SAF/IPC pressure bounded. */
 const SCAN_CONCURRENCY = 8;
@@ -39,6 +57,33 @@ export interface TagIndex {
   tags: TagIndexEntry[];
 }
 
+/** One metadata row per markdown note — everything browse + search needs
+ * without re-reading the file body. Bodies are NOT stored (only a capped
+ * excerpt) to keep the blob small against the shared AsyncStorage ceiling. */
+export interface NoteIndexEntry {
+  /** Full readable URI (file:// or SAF content:// document URI). */
+  uri: string;
+  /** The note subdir it lives in (Ideas / Journal / People). */
+  subdir: NoteSubdir;
+  /** H1 title, else the filename (see synthesizeEntry's title rule). */
+  title: string;
+  /** `created:`/`date:` frontmatter parsed to epoch ms, else 0. */
+  createdOrDate: number;
+  /** Distinct normalized tags carried by the note. */
+  tags: string[];
+  /** Capture mode inferred from the subdir. */
+  mode: CaptureMode;
+  /** First ~200 chars of the stripped body (EXCERPT_MAX), whitespace-collapsed. */
+  excerpt: string;
+}
+
+export interface NoteIndex {
+  /** Epoch ms the index was built — lets callers show staleness / decide refresh. */
+  builtAt: number;
+  /** One entry per readable note, in vault enumeration order. */
+  notes: NoteIndexEntry[];
+}
+
 /** Run `fn` over `items` with at most `limit` in flight at once. */
 async function mapWithConcurrency<T>(
   items: readonly T[],
@@ -57,54 +102,98 @@ async function mapWithConcurrency<T>(
   await Promise.all(workers);
 }
 
+/** Map a capture mode back to the note subdir it lives in — used when only a
+ * URI + markdown are known (incremental upsert) rather than a NoteFileRef. */
+function subdirForMode(mode: CaptureMode): NoteSubdir {
+  if (mode === "journal") return "Journal";
+  if (mode === "person") return "People";
+  return "Ideas";
+}
+
+/** First ~EXCERPT_MAX chars of the stripped body, with a leading H1 dropped
+ * (it duplicates the title) and whitespace collapsed to single spaces. */
+function makeExcerpt(markdown: string): string {
+  const body = stripFrontmatter(markdown).replace(/^\s*#\s+.*(?:\n|$)/, "");
+  return body.replace(/\s+/g, " ").trim().slice(0, EXCERPT_MAX);
+}
+
+/** Build a note index row from a note's ref + markdown. */
+function buildNoteEntry(uri: string, subdir: NoteSubdir, markdown: string): NoteIndexEntry {
+  return {
+    uri,
+    subdir,
+    title: deriveTitle(markdown) || basenameTitle(uri),
+    createdOrDate: frontmatterDateMs(markdown) ?? 0,
+    tags: tagsForNote(markdown),
+    mode: inferNoteMode(uri),
+    excerpt: makeExcerpt(markdown),
+  };
+}
+
 /**
- * Scan the vault and build the tag index fresh (no cache read/write). Notes
- * that fail to read (deleted mid-scan, SAF permission revoked) or carry no
- * frontmatter are skipped. Tags are normalized; a tag counted once per note.
+ * Scan the vault and build the note index fresh (no cache read/write). Notes
+ * that fail to read (deleted mid-scan, SAF permission revoked) are skipped.
+ * Entries preserve vault enumeration order.
  */
-export async function buildTagIndex(): Promise<TagIndex> {
+export async function buildNoteIndex(): Promise<NoteIndex> {
   const files = await listNoteFiles();
-  const tagToFiles = new Map<string, Set<string>>();
+  const slots: (NoteIndexEntry | null)[] = new Array(files.length).fill(null);
   let skipped = 0;
 
-  await mapWithConcurrency(files, SCAN_CONCURRENCY, async (file) => {
-    let markdown: string;
-    try {
-      markdown = await readNote(file.uri);
-    } catch {
-      skipped += 1; // unreadable (deleted mid-scan / perm revoked) — skip, don't fail
-      return;
-    }
-    for (const raw of getFrontmatterTags(markdown)) {
-      const tag = normalizeTag(raw);
-      if (!tag) continue;
+  await mapWithConcurrency(
+    files.map((file, i) => ({ file, i })),
+    SCAN_CONCURRENCY,
+    async ({ file, i }: { file: NoteFileRef; i: number }) => {
+      let markdown: string;
+      try {
+        markdown = await readNote(file.uri);
+      } catch {
+        skipped += 1; // unreadable (deleted mid-scan / perm revoked) — skip, don't fail
+        return;
+      }
+      slots[i] = buildNoteEntry(file.uri, file.subdir, markdown);
+    },
+  );
+
+  if (skipped > 0) {
+    console.warn(`[vault] note index skipped ${skipped}/${files.length} unreadable note(s)`);
+  }
+
+  return {
+    builtAt: Date.now(),
+    notes: slots.filter((n): n is NoteIndexEntry => n !== null),
+  };
+}
+
+/** Derive the tag index (tag → carrying notes, count-sorted) from a note index.
+ * Tags are already normalized on each note; a tag is counted once per note. */
+function deriveTagIndex(index: NoteIndex): TagIndex {
+  const tagToFiles = new Map<string, Set<string>>();
+  for (const note of index.notes) {
+    for (const tag of note.tags) {
       let set = tagToFiles.get(tag);
       if (!set) {
         set = new Set<string>();
         tagToFiles.set(tag, set);
       }
-      set.add(file.uri);
+      set.add(note.uri);
     }
-  });
-
-  if (skipped > 0) {
-    console.warn(`[vault] tag index skipped ${skipped}/${files.length} unreadable note(s)`);
   }
-
   const tags: TagIndexEntry[] = [...tagToFiles.entries()]
     .map(([tag, set]) => ({ tag, count: set.size, files: [...set] }))
     .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
-
-  return { builtAt: Date.now(), tags };
+  return { builtAt: index.builtAt, tags };
 }
 
-/** Read the cached index, or null when absent / corrupt. */
-export async function loadCachedTagIndex(): Promise<TagIndex | null> {
-  const raw = await AsyncStorage.getItem(CACHE_KEY);
+// ── Note index cache lifecycle ────────────────────────────────────────────────
+
+/** Read the cached note index, or null when absent / corrupt. */
+export async function loadCachedNoteIndex(): Promise<NoteIndex | null> {
+  const raw = await AsyncStorage.getItem(NOTE_INDEX_KEY);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as TagIndex;
-    if (parsed && typeof parsed.builtAt === "number" && Array.isArray(parsed.tags)) {
+    const parsed = JSON.parse(raw) as NoteIndex;
+    if (parsed && typeof parsed.builtAt === "number" && Array.isArray(parsed.notes)) {
       return parsed;
     }
     return null;
@@ -113,32 +202,89 @@ export async function loadCachedTagIndex(): Promise<TagIndex | null> {
   }
 }
 
-/** Build the index fresh and persist it to the cache. */
-export async function refreshTagIndex(): Promise<TagIndex> {
-  const index = await buildTagIndex();
-  await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(index));
+/** Build the note index fresh and persist it to the cache. */
+export async function refreshNoteIndex(): Promise<NoteIndex> {
+  const index = await buildNoteIndex();
+  await AsyncStorage.setItem(NOTE_INDEX_KEY, JSON.stringify(index));
   return index;
 }
 
 /**
- * Drop the cached index so the next getTagIndex rebuilds from the vault. Call
- * (fire-and-forget) after any write that can change tags — a capture, an
- * offline drain, or a tag edit — so the browser counts and capture autocomplete
- * don't keep serving stale data for the rest of the session.
+ * Drop the cached note index so the next read rebuilds from the vault. Call
+ * (fire-and-forget) after a write that changes note metadata but where an
+ * incremental upsert isn't available (offline drain, in-place tag edit). The
+ * common capture path should prefer upsertNoteInIndex to avoid a full rescan.
  */
-export async function invalidateTagIndex(): Promise<void> {
-  await AsyncStorage.removeItem(CACHE_KEY);
+export async function invalidateNoteIndex(): Promise<void> {
+  await AsyncStorage.removeItem(NOTE_INDEX_KEY);
 }
 
 /**
- * Return the cached index immediately when present, else build + persist one.
- * For stale-while-revalidate, render this result and fire refreshTagIndex() in
+ * Return the cached note index immediately when present, else build + persist
+ * one. Hold the result in memory for the session; refresh lazily via pull.
+ */
+export async function getNoteIndex(): Promise<NoteIndex> {
+  const cached = await loadCachedNoteIndex();
+  if (cached) return cached;
+  return refreshNoteIndex();
+}
+
+/**
+ * Incrementally add/replace a single note's row in the cached index — the
+ * common capture path, where the URI + content just written are already known,
+ * so no full vault rescan is needed. No-op when there is no cached index yet
+ * (the next getNoteIndex builds it fresh, which would include this note anyway).
+ */
+export async function upsertNoteInIndex(uri: string, markdown: string): Promise<void> {
+  const cached = await loadCachedNoteIndex();
+  if (!cached) return;
+  const entry = buildNoteEntry(uri, subdirForMode(inferNoteMode(uri)), markdown);
+  const idx = cached.notes.findIndex((n) => n.uri === uri);
+  const notes =
+    idx === -1
+      ? [...cached.notes, entry]
+      : cached.notes.map((n, i) => (i === idx ? entry : n));
+  await AsyncStorage.setItem(NOTE_INDEX_KEY, JSON.stringify({ builtAt: cached.builtAt, notes }));
+}
+
+// ── Tag index (derived from the note index) ───────────────────────────────────
+
+/**
+ * Build the tag index fresh (no cache read/write) by scanning the vault into a
+ * note index and deriving tags from it. Notes that fail to read or carry no
+ * tags contribute nothing; tags are normalized, counted once per note.
+ */
+export async function buildTagIndex(): Promise<TagIndex> {
+  return deriveTagIndex(await buildNoteIndex());
+}
+
+/** Read the cached tag index (derived from the cached note index), or null. */
+export async function loadCachedTagIndex(): Promise<TagIndex | null> {
+  const cached = await loadCachedNoteIndex();
+  return cached ? deriveTagIndex(cached) : null;
+}
+
+/** Rebuild + persist the note index, returning the derived tag index. */
+export async function refreshTagIndex(): Promise<TagIndex> {
+  return deriveTagIndex(await refreshNoteIndex());
+}
+
+/**
+ * Drop the cached index so the next read rebuilds. Kept as the tag-index name
+ * for existing call sites; delegates to invalidateNoteIndex since the tag index
+ * is now derived from the single note-index blob.
+ */
+export async function invalidateTagIndex(): Promise<void> {
+  await invalidateNoteIndex();
+}
+
+/**
+ * Return the tag index derived from the cached note index (built on a cold
+ * miss). For stale-while-revalidate, render this and fire refreshTagIndex() in
  * the background.
  */
 export async function getTagIndex(): Promise<TagIndex> {
-  const cached = await loadCachedTagIndex();
-  if (cached) return cached;
-  return refreshTagIndex();
+  return deriveTagIndex(await getNoteIndex());
 }
 
 /** Just the distinct normalized tags carried by a note's markdown. */
@@ -243,4 +389,73 @@ export async function notesForTag(index: TagIndex, tag: string): Promise<Capture
   });
   out.sort((a, b) => b.createdAt - a.createdAt || a.title.localeCompare(b.title));
   return out;
+}
+
+// ── Search over the note index ────────────────────────────────────────────────
+
+/** Optional facet filters for a search — narrow to a capture mode or subdir. */
+export interface NoteSearchFilters {
+  mode?: CaptureMode;
+  subdir?: NoteSubdir;
+}
+
+/**
+ * Rank a note against a lowercased query. Lower is better; null = no match.
+ * Field precedence title → tags → excerpt, prefix ahead of substring within a
+ * field, matching the tag-suggestion precedent (suggestTags).
+ */
+function noteMatchTier(entry: NoteIndexEntry, q: string): number | null {
+  const title = entry.title.toLowerCase();
+  if (title.startsWith(q)) return 0;
+  if (title.includes(q)) return 1;
+  if (entry.tags.some((tag) => tag.startsWith(q))) return 2;
+  if (entry.tags.some((tag) => tag.includes(q))) return 3;
+  if (entry.excerpt.toLowerCase().includes(q)) return 4;
+  return null;
+}
+
+/**
+ * Search the note index. Results are ranked prefix-then-substring over title,
+ * then tags, then excerpt, newest-first on ties (then title asc). An empty
+ * query returns every note passing the filters, newest-first — i.e. a browse
+ * view. Filters (mode / subdir) are applied before ranking.
+ */
+export function searchNotes(
+  index: NoteIndex,
+  query: string,
+  filters: NoteSearchFilters = {},
+): NoteIndexEntry[] {
+  const pool = index.notes.filter(
+    (n) =>
+      (filters.mode === undefined || n.mode === filters.mode) &&
+      (filters.subdir === undefined || n.subdir === filters.subdir),
+  );
+  const byRecency = (a: NoteIndexEntry, b: NoteIndexEntry): number =>
+    b.createdOrDate - a.createdOrDate || a.title.localeCompare(b.title);
+
+  const q = query.trim().toLowerCase();
+  if (!q) return [...pool].sort(byRecency);
+
+  const scored: Array<{ entry: NoteIndexEntry; tier: number }> = [];
+  for (const entry of pool) {
+    const tier = noteMatchTier(entry, q);
+    if (tier !== null) scored.push({ entry, tier });
+  }
+  scored.sort((a, b) => a.tier - b.tier || byRecency(a.entry, b.entry));
+  return scored.map((s) => s.entry);
+}
+
+/**
+ * Read a single note and adapt it into a CaptureEntry for RecentDetail —
+ * mirrors the per-note resolution notesForTag does, for a search result tap.
+ * Returns null when the note became unreadable since it was indexed.
+ */
+export async function resolveNoteEntry(uri: string): Promise<CaptureEntry | null> {
+  let markdown: string;
+  try {
+    markdown = await readNote(uri);
+  } catch {
+    return null;
+  }
+  return synthesizeEntry(uri, markdown);
 }

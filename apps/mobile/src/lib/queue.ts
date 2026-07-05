@@ -41,7 +41,7 @@ import {
 } from "./writer";
 import { mergeUserTags } from "./tags";
 import { upsertFrontmatterField } from "./frontmatter";
-import { invalidateTagIndex } from "./vault";
+import { invalidateNoteIndex } from "./vault";
 import { deriveTitle } from "@carnet/shared";
 
 /** Inject a `location: lat,lon` frontmatter field, or a no-op when unset. */
@@ -299,7 +299,7 @@ async function processRow(payload: QueuePayload): Promise<void> {
   }
   // A drained capture adds tags to the vault — drop the stale index cache so the
   // browser + autocomplete rebuild. Best-effort; never fail the drain on this.
-  void invalidateTagIndex().catch(() => undefined);
+  void invalidateNoteIndex().catch(() => undefined);
 }
 
 /**

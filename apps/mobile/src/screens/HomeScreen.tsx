@@ -42,6 +42,10 @@ export default function HomeScreen({ navigation }: Props) {
       headerRight: () => (
         <View style={styles.headerActions}>
           <IconButton
+            icon="magnify"
+            onPress={() => navigation.navigate("Search")}
+          />
+          <IconButton
             icon="tag-multiple-outline"
             onPress={() => navigation.navigate("TagBrowser")}
           />

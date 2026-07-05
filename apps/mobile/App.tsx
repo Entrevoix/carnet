@@ -23,6 +23,7 @@ import PhotoCaptureScreen from "./src/screens/PhotoCaptureScreen";
 import AudioCaptureScreen from "./src/screens/AudioCaptureScreen";
 import RecentDetailScreen from "./src/screens/RecentDetailScreen";
 import TagBrowserScreen from "./src/screens/TagBrowserScreen";
+import SearchScreen from "./src/screens/SearchScreen";
 import type { CaptureEntry, CaptureMode } from "./src/lib/storage";
 import { inkAndMistDark, inkAndMistLight } from "./src/lib/theme";
 
@@ -35,6 +36,7 @@ export type RootStackParamList = {
   AudioCapture: undefined;
   RecentDetail: { entry: CaptureEntry };
   TagBrowser: { tag?: string } | undefined;
+  Search: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -195,6 +197,7 @@ export default function App() {
               options={({ route }) => ({ title: route.params.entry.title })}
             />
             <Stack.Screen name="TagBrowser" component={TagBrowserScreen} options={{ title: "Tags" }} />
+            <Stack.Screen name="Search" component={SearchScreen} options={{ title: "Search" }} />
           </Stack.Navigator>
           <ShareIntentRouter navigation={navRef} />
         </NavigationContainer>
