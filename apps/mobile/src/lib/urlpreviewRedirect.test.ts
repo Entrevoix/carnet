@@ -40,6 +40,17 @@ describe("fetchUrlPreview redirect hardening", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks a redirect to a decimal-encoded metadata address (#68)", async () => {
+    // 2852039166 == 169.254.169.254 — the redirect hop must normalize the
+    // non-canonical encoding, not just string-match the dotted form.
+    fetchMock.mockResolvedValueOnce(redirectResponse("http://2852039166/"));
+
+    const result = await fetchUrlPreview("https://public.example.com/start");
+
+    expect(result).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks a redirect to localhost", async () => {
     fetchMock.mockResolvedValueOnce(
       redirectResponse("http://localhost/internal"),

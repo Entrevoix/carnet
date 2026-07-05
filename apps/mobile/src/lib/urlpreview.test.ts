@@ -218,6 +218,75 @@ describe("fetchUrlPreview", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // Non-canonical IP encodings (#68). RN's URL does no canonicalization, so a
+  // string-literal deny-list is bypassed by decimal/hex/octal/short forms even
+  // though the native fetch layer resolves them to the real loopback / metadata
+  // address. The guard now normalizes to a numeric range before comparing.
+  it("blocks decimal-encoded loopback (2130706433 = 127.0.0.1)", async () => {
+    expect(await fetchUrlPreview("http://2130706433/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks hex-encoded loopback (0x7f000001 = 127.0.0.1)", async () => {
+    expect(await fetchUrlPreview("http://0x7f000001/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks octal-encoded loopback (0177.0.0.1 = 127.0.0.1)", async () => {
+    expect(await fetchUrlPreview("http://0177.0.0.1/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks short-form loopback (127.1 = 127.0.0.1)", async () => {
+    expect(await fetchUrlPreview("http://127.1/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks decimal-encoded cloud metadata (2852039166 = 169.254.169.254)", async () => {
+    expect(await fetchUrlPreview("http://2852039166/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks IPv6 loopback [::1]", async () => {
+    expect(await fetchUrlPreview("http://[::1]/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks IPv4-mapped IPv6 loopback [::ffff:127.0.0.1]", async () => {
+    expect(await fetchUrlPreview("http://[::ffff:127.0.0.1]/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Host-normalization bypasses (#68 follow-up). WHATWG URL parsing (and the
+  // native fetch layer) strip ASCII tab/newline/CR and treat `\` as `/` in the
+  // authority BEFORE dialing; extractHost must normalize identically or the
+  // deny-list checks a different host than the socket connects to.
+  it("blocks tab-injected loopback (http://12\\t7.0.0.1/ = 127.0.0.1)", async () => {
+    expect(await fetchUrlPreview("http://12\t7.0.0.1/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks newline-injected loopback (http://127.0.0.1\\n/ = 127.0.0.1)", async () => {
+    expect(await fetchUrlPreview("http://127.0.0.1\n/")).toBeNull();
+    expect(await fetchUrlPreview("http://12\n7.0.0.1/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks backslash-authority bypass (http://127.0.0.1\\@evil.com/ dials 127.0.0.1)", async () => {
+    expect(await fetchUrlPreview("http://127.0.0.1\\@evil.com/")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not block a genuine public HTTPS host (no false positive)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      htmlResponse("<html><head><title>Public</title></head></html>"),
+    );
+    const result = await fetchUrlPreview("https://example.com/");
+    expect(result).not.toBeNull();
+    expect(result!.title).toBe("Public");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("allows general private RFC1918 ranges (self-hosted is legitimate)", async () => {
     fetchMock.mockResolvedValueOnce(
       htmlResponse("<html><head><title>Internal Wiki</title></head></html>"),
@@ -225,6 +294,19 @@ describe("fetchUrlPreview", () => {
     const result = await fetchUrlPreview("http://192.168.1.10/wiki");
     expect(result).not.toBeNull();
     expect(result!.title).toBe("Internal Wiki");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still previews a public URL with a literal backslash in the path", async () => {
+    // The `\` sits AFTER the authority boundary (`/` comes first), so it must
+    // NOT be treated as a host terminator — the host is still example.com and
+    // the preview proceeds normally.
+    fetchMock.mockResolvedValueOnce(
+      htmlResponse("<html><head><title>Doc Ref</title></head></html>"),
+    );
+    const result = await fetchUrlPreview("https://example.com/docs\\ref?q=1");
+    expect(result).not.toBeNull();
+    expect(result!.title).toBe("Doc Ref");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
