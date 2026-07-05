@@ -166,12 +166,76 @@ function isBlockedHost(hostname: string): boolean {
   return false;
 }
 
-/** Internal: do the fetch with a HARD timeout. Rejects on timeout,
- * propagates other fetch errors (the sole caller maps any throw to null).
+/** Maximum redirect hops to follow before giving up. Guards against redirect
+ * loops and a malicious server dragging out the fetch with an endless 3xx
+ * chain. */
+const MAX_REDIRECTS = 5;
+
+/** HTTP status codes that carry a `Location` header we follow manually. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** Internal: follow redirects MANUALLY (`redirect: "manual"`), re-running the
+ * SSRF host guard on every hop.
  *
- * Races the fetch against an independent reject-timer because RN's fetch
- * does not reject when AbortController.abort() fires during a stuck connect
- * to an unreachable host — a bare AbortController would hang forever. */
+ * `redirect: "follow"` would let a public page 3xx-redirect to `localhost`,
+ * `169.254.169.254`, or a LAN host and the browser/RN engine would silently
+ * fire the follow-up GET before we could inspect the target — the exact SSRF
+ * hole isBlockedHost is meant to close. Following by hand lets us validate the
+ * scheme AND host of each redirect target before issuing the next request. */
+async function followWithRedirects(
+  startUrl: string,
+  signal: AbortSignal,
+): Promise<Response> {
+  let currentUrl = startUrl;
+  let redirects = 0;
+  for (;;) {
+    const response = await fetch(currentUrl, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml",
+      },
+      signal,
+    });
+    if (!REDIRECT_STATUSES.has(response.status)) return response;
+
+    // A 3xx with no Location is malformed — hand it back so the caller's
+    // `!response.ok` path collapses it to null rather than looping.
+    const location = response.headers.get("location");
+    if (!location) return response;
+
+    redirects += 1;
+    if (redirects > MAX_REDIRECTS) {
+      throw new Error(`URL preview: too many redirects (>${MAX_REDIRECTS})`);
+    }
+
+    let next: URL;
+    try {
+      // Resolve relative Location headers against the current URL.
+      next = new URL(location, currentUrl);
+    } catch {
+      throw new Error("URL preview: invalid redirect Location");
+    }
+    if (next.protocol !== "http:" && next.protocol !== "https:") {
+      throw new Error("URL preview: redirect to non-http(s) scheme blocked");
+    }
+    // SSRF guard on EVERY hop — see isBlockedHost JSDoc for the threat model.
+    if (isBlockedHost(next.hostname)) {
+      throw new Error("URL preview: redirect to blocked host");
+    }
+    currentUrl = next.toString();
+  }
+}
+
+/** Internal: do the fetch with a HARD timeout, following redirects manually.
+ * Rejects on timeout or a blocked redirect target; propagates other fetch
+ * errors (the sole caller maps any throw to null).
+ *
+ * Races the whole redirect chain against an independent reject-timer because
+ * RN's fetch does not reject when AbortController.abort() fires during a stuck
+ * connect to an unreachable host — a bare AbortController would hang forever.
+ * The timeout budget covers the ENTIRE chain, not each hop. */
 async function fetchWithTimeout(url: string): Promise<Response> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -187,15 +251,7 @@ async function fetchWithTimeout(url: string): Promise<Response> {
   });
   try {
     return await Promise.race([
-      fetch(url, {
-        method: "GET",
-        redirect: "follow",
-        headers: {
-          "User-Agent": USER_AGENT,
-          Accept: "text/html,application/xhtml+xml",
-        },
-        signal: controller.signal,
-      }),
+      followWithRedirects(url, controller.signal),
       timeout,
     ]);
   } finally {
