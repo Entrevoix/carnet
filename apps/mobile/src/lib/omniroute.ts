@@ -363,9 +363,30 @@ async function getModel(): Promise<string> {
   return settings.omniRouteModel.trim() || "openrouter/openai/gpt-4o-mini";
 }
 
+/**
+ * The vision-capable model for image-bearing enrichment. Held separately from
+ * getModel() (the chat/text model) so a text-only chat model can never
+ * silently eat image parts. Unlike getModel(), this does NOT fall back to a
+ * hard-coded default: a blank vision model surfaces as a not-configured
+ * OmniRouteError so callers route it through the same isNotConfiguredError
+ * degraded path as a blank URL — the user fixes Settings rather than the app
+ * misrouting an image to whatever the fallback happens to be.
+ */
+async function getVisionModel(): Promise<string> {
+  const settings = await getSettings();
+  const model = settings.omniRouteVisionModel.trim();
+  if (!model) {
+    throw new OmniRouteError(
+      "Vision model not configured — set it in Settings",
+      0,
+      { notConfigured: true },
+    );
+  }
+  return model;
+}
+
 // (getTranscriptionModel removed — transcribeAudio is on-device now and
-// doesn't route through OmniRoute. The Settings field stays defined for
-// future opt-in network-fallback use.)
+// doesn't route through OmniRoute.)
 
 /**
  * Fetch the available model catalog from `${baseUrl}/v1/models`. Returns
@@ -487,10 +508,13 @@ export async function enrichSharedImage(input: {
   const safeMime = /^image\/(jpe?g|png|webp|gif|heic|heif)$/.test(input.mimeType)
     ? input.mimeType
     : "image/jpeg";
+  // Vision path: route to the dedicated vision model, NOT getModel() (the
+  // chat/text model). A text-only chat model would silently drop the image
+  // part and return a confidently-wrong enrichment with no banner.
   const [baseUrl, apiKey, model, overrides] = await Promise.all([
     getBaseUrl(),
     getApiKey(),
-    getModel(),
+    getVisionModel(),
     getPromptOverrides(),
   ]);
   const { system: defaultSystem, userText } = buildSharedImagePrompt(input.context);
