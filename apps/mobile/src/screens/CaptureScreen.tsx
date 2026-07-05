@@ -545,7 +545,16 @@ export default function CaptureScreen({ route, navigation }: Props) {
         const markdown = withLocation(
           mergeUserTags(injectAttachments(pendingJournal.markdown, refs), tags),
         );
-        const { filepath } = await appendJournal(pendingJournal.date, markdown);
+        // A journal day-file accumulates every same-day capture into one note:
+        // appendJournal unions each capture's tags into the file's frontmatter
+        // and returns the full accumulated markdown. Index off THAT, not the
+        // just-written fragment — otherwise the upsert would overwrite the note's
+        // index row with only this capture's tags, silently dropping earlier
+        // same-day tags from the derived tag/search index.
+        const { filepath, markdown: dayFileMarkdown } = await appendJournal(
+          pendingJournal.date,
+          markdown,
+        );
         console.log("[confirmSave] appendJournal ok", filepath);
         setPending([]);
         setTags([]);
@@ -553,7 +562,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         setSavedFilepath(filepath);
         const title = deriveTitle(pendingJournal.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
-        void upsertNoteInIndex(filepath, markdown).catch(() => undefined);
+        void upsertNoteInIndex(filepath, dayFileMarkdown).catch(() => undefined);
         setPhase("saved");
         navigation.goBack();
       } catch (e: unknown) {
