@@ -1,3 +1,16 @@
+// ⚠️  CI DOES NOT COMPILE THE KOTLIN BELOW BY DEFAULT.
+// The Kotlin emitted from this file is generated at `expo prebuild` time into
+// the gitignored android/ tree. vitest + `tsc --noEmit` (the only checks in the
+// required `gate` CI job) never see it, so a Kotlin compile error here passes CI
+// and only fails on a real Gradle build. A non-blocking `mobile-android` CI job
+// (.github/workflows/ci.yml) runs a real prebuild + `:app:compileDebugKotlin`,
+// but until it is promoted into `gate.needs`, BEFORE MERGING any change to the
+// Kotlin templates here you MUST manually run:
+//   cd apps/mobile && npx expo prebuild --clean -p android \
+//     && cd android && ./gradlew :app:compileDebugKotlin
+// and confirm BUILD SUCCESSFUL. (See withCaptureNotification.js for the B5
+// getTaskConfig regression that motivated this warning.)
+//
 // TODO(plugin-cleanup): Kotlin templates are embedded as JS strings here
 // for expedience. Future refactor: move to plugins/templates/audiodecoder/*.kt
 // and render via __PACKAGE__ placeholder substitution. See the matching TODO

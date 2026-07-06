@@ -1,3 +1,19 @@
+// ⚠️  CI DOES NOT COMPILE THE KOTLIN BELOW BY DEFAULT.
+// The Kotlin emitted from this file is generated at `expo prebuild` time into
+// the gitignored android/ tree. vitest + `tsc --noEmit` (the only checks in the
+// required `gate` CI job) never see it, so an invalid override signature or type
+// error here compiles clean in CI and only fails on a real Gradle build. This
+// exact trap shipped once: `getTaskConfig(intent: Intent)` should be
+// `getTaskConfig(intent: Intent?)` — the base HeadlessJsTaskService signature is
+// nullable — and it broke every clean prebuild until caught on-device.
+// There IS a `mobile-android` CI job (.github/workflows/ci.yml) that runs a real
+// prebuild + `:app:compileDebugKotlin`, but it is currently non-blocking (not in
+// `gate.needs`). Until it is promoted to a required check, BEFORE MERGING any
+// change to the Kotlin templates in this file you MUST manually run:
+//   cd apps/mobile && npx expo prebuild --clean -p android \
+//     && cd android && ./gradlew :app:compileDebugKotlin
+// and confirm BUILD SUCCESSFUL.
+//
 // TODO(plugin-cleanup): Kotlin templates are embedded as JS strings here
 // for expedience. Future refactor: move to plugins/templates/notification/*.kt
 // and render via __PACKAGE__ placeholder substitution. Defer until we have a
@@ -419,8 +435,8 @@ import com.facebook.react.jstasks.HeadlessJsTaskConfig
  * runs if the app happens to be foregrounded when the reply is sent.
  */
 class QuickIdeaTaskService : HeadlessJsTaskService() {
-  override fun getTaskConfig(intent: Intent): HeadlessJsTaskConfig? {
-    val extras: Bundle = intent.extras ?: return null
+  override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig? {
+    val extras: Bundle = intent?.extras ?: return null
     return HeadlessJsTaskConfig(
       "CarnetQuickIdea",
       Arguments.fromBundle(extras),
