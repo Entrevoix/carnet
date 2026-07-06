@@ -23,6 +23,19 @@ export const DEFAULT_OMNIROUTE_MODEL = "openrouter/openai/gpt-4o-mini";
 export const DEFAULT_VISION_MODEL = "openrouter/openai/gpt-4o-mini";
 
 /**
+ * Enrichment backend selector (Stage 2 / branch B7). `"omniroute"` is the
+ * shipped default and the only backend wired in Phase 1; `"on-device"` is
+ * reserved for the pluggable local-inference backend (native module + model
+ * download, later phases). Persisted as a plain string in the AsyncStorage
+ * settings blob — non-secret, so old blobs without the key take the default
+ * via the `{...DEFAULT_PERSISTED, ...parsed}` spread in readPersisted.
+ */
+export type LlmBackend = "omniroute" | "on-device";
+
+/** Default backend — the shipped OmniRoute client. */
+export const DEFAULT_LLM_BACKEND: LlmBackend = "omniroute";
+
+/**
  * Per-capture-mode system prompt overrides. Empty/missing fields fall back
  * to the defaults in `prompts.ts`. Whitespace-only values are sanitised to
  * empty on write so a stray accidental edit doesn't strand a noise override.
@@ -45,6 +58,10 @@ export interface Settings {
    * from the vestigial transcription-model field (transcription is on-device
    * now via Whisper, so that config was dead). */
   omniRouteVisionModel: string;
+  /** Which enrichment backend serves captures. Default `"omniroute"`; the
+   * dispatcher (dispatcher.ts) routes on this. Only `"omniroute"` is wired in
+   * Phase 1 — see {@link LlmBackend}. */
+  llmBackend: LlmBackend;
   /** JS-side hint for the Settings UI's initial render — avoids a Switch
    * flicker before the async native read resolves. Source of truth lives
    * in native SharedPreferences (BootReceiver reads it directly). Whenever
@@ -83,6 +100,7 @@ interface PersistedSettings {
   omniRouteUrl: string;
   omniRouteModel: string;
   omniRouteVisionModel: string;
+  llmBackend: LlmBackend;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
@@ -103,6 +121,7 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   omniRouteUrl: "",
   omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
   omniRouteVisionModel: DEFAULT_VISION_MODEL,
+  llmBackend: DEFAULT_LLM_BACKEND,
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
@@ -148,6 +167,7 @@ async function readPersisted(): Promise<PersistedSettings> {
         omniRouteUrl: legacy.omniRouteUrl ?? "",
         omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
         omniRouteVisionModel: DEFAULT_VISION_MODEL,
+        llmBackend: DEFAULT_LLM_BACKEND,
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
@@ -169,6 +189,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     omniRouteUrl: settings.omniRouteUrl,
     omniRouteModel: settings.omniRouteModel,
     omniRouteVisionModel: settings.omniRouteVisionModel,
+    llmBackend: settings.llmBackend,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -210,6 +231,7 @@ export async function getSettings(): Promise<Settings> {
     omniRouteApiKey,
     omniRouteModel: persisted.omniRouteModel,
     omniRouteVisionModel: persisted.omniRouteVisionModel,
+    llmBackend: persisted.llmBackend,
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
     autoTranscribeOnSave: persisted.autoTranscribeOnSave,
     richEditorEnabled: persisted.richEditorEnabled,
@@ -226,6 +248,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     omniRouteUrl: settings.omniRouteUrl,
     omniRouteModel: settings.omniRouteModel,
     omniRouteVisionModel: settings.omniRouteVisionModel,
+    llmBackend: settings.llmBackend,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,

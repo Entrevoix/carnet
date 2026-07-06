@@ -115,6 +115,54 @@ describe("Person + Journal ignore previewBeforeSave", () => {
   });
 });
 
+// ── B7: old blob without llmBackend defaults to "omniroute" ──────────────────
+
+describe("llmBackend default merge (B7 dispatcher)", () => {
+  it("defaults to omniroute when no settings blob exists", async () => {
+    const s = await getSettings();
+    expect(s.llmBackend).toBe("omniroute");
+  });
+
+  it("defaults an old blob missing llmBackend to omniroute without crashing", async () => {
+    // A settings blob persisted before B7 added the field (mirrors the real
+    // upgrade shape — post-B1/B4 keys present, llmBackend absent).
+    _async.set(
+      SETTINGS_KEY,
+      JSON.stringify({
+        omniRouteUrl: "https://llm.example.com",
+        omniRouteModel: "gpt-4o-mini",
+        omniRouteVisionModel: "claude/claude-sonnet-4-6",
+        persistentNotificationEnabled: false,
+        autoTranscribeOnSave: false,
+        richEditorEnabled: true,
+        previewBeforeSave: false,
+        captureFolderPath: "",
+        promptOverrides: {},
+        karakeepUrl: "",
+        // note: no llmBackend key
+      }),
+    );
+
+    const s = await getSettings();
+    expect(s.llmBackend).toBe("omniroute");
+    // The rest of the blob still loaded — no crash / no reset to defaults.
+    expect(s.omniRouteUrl).toBe("https://llm.example.com");
+    expect(s.omniRouteVisionModel).toBe("claude/claude-sonnet-4-6");
+  });
+
+  it("round-trips llmBackend through save + load", async () => {
+    const base = await getSettings();
+    await saveSettings({ ...base, llmBackend: "omniroute" });
+    const persisted = JSON.parse(_async.get(SETTINGS_KEY) ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    expect(persisted.llmBackend).toBe("omniroute");
+    const reloaded = await getSettings();
+    expect(reloaded.llmBackend).toBe("omniroute");
+  });
+});
+
 describe("getSettings — persisted-blob migration (B1 vision model split)", () => {
   it("loads a pre-B1 blob (transcription-model key, no vision-model key) without crashing and defaults the vision model", async () => {
     // Exactly the shape a user upgrading from the pre-B1 build has on disk:
@@ -188,6 +236,7 @@ describe("getSettings — persisted-blob migration (B1 vision model split)", () 
       omniRouteApiKey: "",
       omniRouteModel: "gpt-4o-mini",
       omniRouteVisionModel: "gemini/gemini-2.5-flash",
+      llmBackend: "omniroute",
       persistentNotificationEnabled: false,
       autoTranscribeOnSave: false,
       richEditorEnabled: true,

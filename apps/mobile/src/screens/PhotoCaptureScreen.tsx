@@ -37,7 +37,8 @@ import {
   writeBinary,
   writeIdea,
 } from "../lib/writer";
-import { assertBase64UnderLimit, enrichSharedImage } from "../lib/omniroute";
+import { enrichSharedImage } from "../lib/dispatcher";
+import { assertBase64UnderLimit } from "../lib/omniroute";
 import { deriveTitle } from "@carnet/shared";
 
 type Props = NativeStackScreenProps<RootStackParamList, "PhotoCapture">;

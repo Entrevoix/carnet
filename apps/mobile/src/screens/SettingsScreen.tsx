@@ -17,6 +17,7 @@ import {
 } from "react-native-paper";
 
 import {
+  DEFAULT_LLM_BACKEND,
   DEFAULT_OMNIROUTE_MODEL,
   DEFAULT_VISION_MODEL,
   dismissMigrationBanner,
@@ -215,6 +216,10 @@ export default function SettingsScreen() {
       omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
       omniRouteVisionModel:
         form.omniRouteVisionModel || DEFAULT_VISION_MODEL,
+      // Phase 1 (B7) has no backend-picker UI, and no code path can produce a
+      // non-default value, so persist the default. Phase 4 threads the selected
+      // backend through FormState when the picker lands.
+      llmBackend: DEFAULT_LLM_BACKEND,
       persistentNotificationEnabled: form.persistentNotificationEnabled,
       autoTranscribeOnSave: form.autoTranscribeOnSave,
       richEditorEnabled: form.richEditorEnabled,

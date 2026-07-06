@@ -10,6 +10,7 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     omniRouteApiKey: "omni-key",
     omniRouteModel: "gpt-4o-mini",
     omniRouteVisionModel: "vision-model-xyz",
+    llmBackend: "omniroute" as const,
     persistentNotificationEnabled: false,
     autoTranscribeOnSave: false,
     richEditorEnabled: false,
