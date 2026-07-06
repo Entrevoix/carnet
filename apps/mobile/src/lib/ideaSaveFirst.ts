@@ -29,7 +29,7 @@ import {
 } from "./writer";
 import { upsertFrontmatterField } from "./frontmatter";
 import { mergeUserTags } from "./tags";
-import { enrichIdea, isNotConfiguredError, isPermanentError } from "./omniroute";
+import { enrichIdea, isNotConfiguredError, isPermanentError } from "./dispatcher";
 
 /** Frontmatter `status` value stamped on the raw note before enrichment lands.
  * Enrichment overwrites the whole note (including this) with the LLM result. */

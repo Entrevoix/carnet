@@ -38,11 +38,10 @@ import {
   writeBinary,
   writeIdea,
 } from "../lib/writer";
+import { enrichSharedImage, enrichSharedLink } from "../lib/dispatcher";
 import {
   assertBase64UnderLimit,
   autoTranscribeIfEnabled,
-  enrichSharedImage,
-  enrichSharedLink,
   MAX_SHARED_IMAGE_BYTES,
 } from "../lib/omniroute";
 import {

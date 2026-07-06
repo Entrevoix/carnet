@@ -32,7 +32,7 @@ import {
   isPermanentError,
   isNotConfiguredError,
   promoteIdea as omniPromoteIdea,
-} from "../lib/omniroute";
+} from "../lib/dispatcher";
 import {
   slugify,
   writeIdea,

@@ -30,7 +30,7 @@ import {
   enrichPerson,
   isPermanentError,
   isNotConfiguredError,
-} from "./omniroute";
+} from "./dispatcher";
 import {
   writeIdea,
   appendJournal,

@@ -83,7 +83,8 @@ import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEdito
 import { TagInput } from "../components/TagInput";
 import { applyTagsToHeader } from "../lib/tags";
 import { getTagIndex, invalidateNoteIndex, tagsForNote } from "../lib/vault";
-import { enrichSharedImage, transcribeAudio } from "../lib/omniroute";
+import { enrichSharedImage } from "../lib/dispatcher";
+import { transcribeAudio } from "../lib/omniroute";
 import {
   removeFromHistory,
   removeFromHistoryByFilepath,
