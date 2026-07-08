@@ -1,0 +1,11 @@
+{
+  "model": "openrouter/openai/gpt-4o-mini",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "---\ncreated: 2026-07-05T10:05:00Z\ntags: [missing-status]\n---\n\n# Note missing the required status field\n\nThis response's frontmatter is missing the `status` key that `idea` notes\nrequire, so normalizeFrontmatter should reject it (return null) and the\ncaller falls back to the sanitized-but-uncanonicalized markdown.\n"
+      }
+    }
+  ]
+}

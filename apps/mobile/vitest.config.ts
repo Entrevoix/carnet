@@ -6,7 +6,7 @@ const stubDir = path.resolve(__dirname, "test/__stubs__");
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "test/fixtures/**/*.test.ts"],
   },
   resolve: {
     alias: {

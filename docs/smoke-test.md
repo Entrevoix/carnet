@@ -10,6 +10,22 @@ There is **no daemon, no QR pairing, no token handshake** — all configuration 
 entered in-app on the **Settings** screen. Tick boxes inline as you go; most
 steps take under a minute.
 
+**Automated coverage:** most of the logic below (frontmatter shape, slug
+collision, same-day journal append, tag/vault indexing, WYSIWYG frontmatter
+preservation, and fixture-driven repro of the four historical bug classes) is
+already exercised headlessly — no device needed:
+
+```
+npm -w @carnet/mobile run verify:capture-flow
+```
+
+This runs `writer.test.ts`, `frontmatter.test.ts`, `queue.test.ts`,
+`vault.test.ts`, `vaultSearch.test.ts`, `journalTagIndex.test.ts`,
+`markdownRoundTrip.test.ts`, and `test/fixtures/repro.test.ts`. Sections below
+are annotated with `(automated coverage: ...)` where this script already
+checks the underlying logic; the manual steps remain necessary for anything
+device-only (voice/OCR, real share-sheet, Syncthing, Karakeep network calls).
+
 ---
 
 ## Prerequisites
@@ -34,6 +50,9 @@ steps take under a minute.
 
 ## Capture — Idea (golden path)
 
+_(automated coverage: `npm run verify:capture-flow` — frontmatter shape via
+`writer.test.ts`/`frontmatter.test.ts`)_
+
 - [ ] Home → **Idea** → type a sentence ("test idea — verifying smoke flow").
 - [ ] Tap **Send**. A loading state shows while the gateway enriches.
 - [ ] After a few seconds a preview card renders with the markdown + filepath.
@@ -44,6 +63,9 @@ steps take under a minute.
 
 ## Promote idea status
 
+_(automated coverage: `npm run verify:capture-flow` — mtime conflict guard via
+`writer.test.ts` and `test/fixtures/repro.test.ts`)_
+
 - [ ] Repeat the idea capture; this time tap **developing** in the preview card
       before Save. The markdown re-renders.
 - [ ] Reload the file: frontmatter now reads `status: developing`, and the body
@@ -51,6 +73,10 @@ steps take under a minute.
 - [ ] Tap **mature** → reload → frontmatter `status: mature`.
 
 ## Capture — Journal (voice + same-day append)
+
+_(automated coverage: `npm run verify:capture-flow` — same-day append/merge
+via `writer.test.ts`, `journalTagIndex.test.ts`, and
+`test/fixtures/repro.test.ts`; voice dictation itself is still device-only)_
 
 - [ ] Home → **Journal** → press and hold the voice button, dictate a sentence,
       release. The transcript field populates.
@@ -80,6 +106,10 @@ steps take under a minute.
 
 ## Offline queue (capture while unreachable)
 
+_(automated coverage: `npm run verify:capture-flow` — queue persistence/drain
+logic via `queue.test.ts`; the airplane-mode/force-quit device behavior
+itself is still manual)_
+
 - [ ] Put the phone in airplane mode (or stop the gateway). Capture an idea →
       **Send**. The capture is buffered on-device (AsyncStorage, `lib/queue.ts`),
       surfaced as queued — **not** a wedged UI or a lost note.
@@ -90,6 +120,9 @@ steps take under a minute.
       tmp+rename write).
 
 ## Rich edit (WYSIWYG / RecentDetail)
+
+_(automated coverage: `npm run verify:capture-flow` — byte-intact frontmatter
+across body-only edits via `markdownRoundTrip.test.ts`)_
 
 - [ ] Open a note from Recents → **RecentDetail**. The TenTap WYSIWYG editor loads
       the body; tags chip, geo chip, and attachments render.
@@ -122,6 +155,9 @@ steps take under a minute.
       model, so this path needs a model-less device to exercise.)
 
 ## Unicode + collision edge cases
+
+_(automated coverage: `npm run verify:capture-flow` — slug collision and
+non-Latin H1 handling via `writer.test.ts` and `test/fixtures/repro.test.ts`)_
 
 - [ ] Capture an idea titled `Mémoire & flux` → file lands at
       `Ideas/memoire-flux.md` (transliterated, not "untitled").
