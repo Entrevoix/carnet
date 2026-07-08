@@ -118,7 +118,10 @@ export interface QueueRow {
 }
 
 const QUEUE_KEY = "carnet:queue:v1";
-const MAX_AUTO_RETRY_ATTEMPTS = 10;
+/** Exported so UI surfaces (the sync-detail sheet) can classify a row as
+ * permanently failed with the same threshold the drain uses — a duplicated
+ * literal would silently drift if this cap changes. */
+export const MAX_AUTO_RETRY_ATTEMPTS = 10;
 /** Sentinel attempts value meaning "permanent failure — do not auto-retry".
  * Set when OmniRoute returns a 4xx (auth, bad model, malformed input). */
 const PERMANENT_FAILURE_ATTEMPTS = MAX_AUTO_RETRY_ATTEMPTS;

@@ -93,7 +93,13 @@ vi.mock("@carnet/shared", () => ({
 }));
 
 // Import after all mocks are set up
-import { enqueue, getQueueCounts, getQueueDepth, drainQueue } from "./queue";
+import {
+  enqueue,
+  getQueueCounts,
+  getQueueDepth,
+  drainQueue,
+  listQueueRows,
+} from "./queue";
 
 /** Current persisted queue rows (parsed from the AsyncStorage mock). */
 function rows(): Row[] {
@@ -119,6 +125,19 @@ describe("getQueueCounts", () => {
   it("returns zeros on an empty queue", async () => {
     _store.delete(QUEUE_KEY);
     expect(await getQueueCounts()).toEqual({ pending: 0, failed: 0 });
+  });
+});
+
+describe("listQueueRows", () => {
+  it("returns a snapshot whose mutation doesn't touch the stored queue", async () => {
+    seed([
+      { id: "a", mode: "idea", payload_json: "{}", created_at: 1, attempts: 2, last_error: "5xx" },
+    ]);
+    const snapshot = await listQueueRows();
+    expect(snapshot).toHaveLength(1);
+    expect(snapshot[0].attempts).toBe(2);
+    snapshot[0].attempts = 99;
+    expect((await listQueueRows())[0].attempts).toBe(2);
   });
 });
 

@@ -23,7 +23,12 @@ import {
   type NoteIndexEntry,
 } from "../lib/vault";
 import { getSyncStatus, type SyncStatus } from "../lib/syncStatus";
-import { drainQueue, listQueueRows, type QueueRow } from "../lib/queue";
+import {
+  drainQueue,
+  listQueueRows,
+  MAX_AUTO_RETRY_ATTEMPTS,
+  type QueueRow,
+} from "../lib/queue";
 import { formatRelative, modeStamp } from "../components/NoteCard";
 import { useCarnetTheme } from "../lib/theme";
 import { VoiceReadinessBanner } from "../voice/VoiceReadinessBanner";
@@ -361,12 +366,12 @@ export default function HomeScreen({ navigation }: Props) {
                   variant="labelSmall"
                   style={{
                     color:
-                      row.attempts >= 10
+                      row.attempts >= MAX_AUTO_RETRY_ATTEMPTS
                         ? theme.colors.error
                         : theme.colors.onSurfaceVariant,
                   }}
                 >
-                  {row.attempts >= 10
+                  {row.attempts >= MAX_AUTO_RETRY_ATTEMPTS
                     ? "needs attention"
                     : row.attempts > 0
                       ? `retried ${row.attempts}×`
