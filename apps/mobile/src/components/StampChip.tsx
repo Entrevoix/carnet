@@ -3,13 +3,14 @@ import { Icon, Text } from "react-native-paper";
 
 import { useCarnetTheme } from "../lib/theme";
 
-export type StampTone = "accent" | "stamp";
+export type StampTone = "accent" | "stamp" | "neutral";
 
 interface StampChipProps {
   label: string;
   /** Material Community icon name rendered before the label. */
   icon?: string;
-  /** "accent" (default) = teal tag/badge; "stamp" = destructive/attention red. */
+  /** "accent" (default) = teal tag/badge; "stamp" = destructive/attention
+   * red; "neutral" = quiet gray for inactive filter pills. */
   tone?: StampTone;
 }
 
@@ -22,13 +23,23 @@ interface StampChipProps {
 export function StampChip({ label, icon, tone = "accent" }: StampChipProps) {
   const theme = useCarnetTheme();
   const border =
-    tone === "stamp" ? theme.carnet.stamp : theme.colors.primary;
+    tone === "stamp"
+      ? theme.carnet.stamp
+      : tone === "neutral"
+        ? theme.colors.outline
+        : theme.colors.primary;
   const background =
-    tone === "stamp" ? theme.colors.errorContainer : theme.colors.primaryContainer;
+    tone === "stamp"
+      ? theme.colors.errorContainer
+      : tone === "neutral"
+        ? theme.colors.surfaceVariant
+        : theme.colors.primaryContainer;
   const foreground =
     tone === "stamp"
       ? theme.colors.onErrorContainer
-      : theme.colors.onPrimaryContainer;
+      : tone === "neutral"
+        ? theme.colors.onSurfaceVariant
+        : theme.colors.onPrimaryContainer;
 
   return (
     <View

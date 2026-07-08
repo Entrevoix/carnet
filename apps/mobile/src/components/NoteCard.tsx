@@ -1,7 +1,7 @@
 import { StyleSheet, View } from "react-native";
 import { Card, Checkbox, Text } from "react-native-paper";
 
-import type { CaptureEntry, CaptureMode } from "../lib/storage";
+import type { CaptureMode } from "../lib/storage";
 import { useCarnetTheme } from "../lib/theme";
 import { StampChip } from "./StampChip";
 
@@ -35,17 +35,23 @@ export function formatRelative(unixMs: number, now = Date.now()): string {
 }
 
 interface NoteCardProps {
-  entry: CaptureEntry;
+  /** Display fields — pass from a CaptureEntry (Home) or a NoteIndexEntry
+   * (Search), so browse surfaces share one card without forcing per-row
+   * entry resolution. */
+  title: string;
+  mode: CaptureMode;
+  /** Epoch ms for the relative timestamp; omit (or 0) to hide it. */
+  createdAt?: number;
   /** Body excerpt from the vault note index; empty/undefined hides the line. */
   excerpt?: string;
   /** Note tags from the vault note index (already normalized). */
   tags?: string[];
   /** True when the note is still awaiting enrichment (status: pending-enrich). */
   pendingEnrich?: boolean;
-  selectionMode: boolean;
-  selected: boolean;
+  selectionMode?: boolean;
+  selected?: boolean;
   onPress: () => void;
-  onLongPress: () => void;
+  onLongPress?: () => void;
 }
 
 /** Max tag stamps per card — the footer stays one line; the rest collapse
@@ -58,17 +64,19 @@ const MAX_TAGS = 3;
  * elevation comes from the surface tone + 1px outline border, not shadow.
  */
 export function NoteCard({
-  entry,
+  title,
+  mode,
+  createdAt,
   excerpt,
   tags = [],
   pendingEnrich = false,
-  selectionMode,
-  selected,
+  selectionMode = false,
+  selected = false,
   onPress,
   onLongPress,
 }: NoteCardProps) {
   const theme = useCarnetTheme();
-  const { label, icon } = modeStamp(entry.mode);
+  const { label, icon } = modeStamp(mode);
   const shownTags = tags.slice(0, MAX_TAGS);
   const hiddenCount = tags.length - shownTags.length;
 
@@ -87,7 +95,7 @@ export function NoteCard({
             : theme.colors.surface,
         },
       ]}
-      accessibilityLabel={`${label}: ${entry.title}`}
+      accessibilityLabel={`${label}: ${title}`}
     >
       <Card.Content style={{ gap: theme.carnet.spacing.sm }}>
         <View style={styles.titleRow}>
@@ -97,14 +105,16 @@ export function NoteCard({
             <Checkbox.Android status={selected ? "checked" : "unchecked"} />
           ) : null}
           <Text variant="titleMedium" numberOfLines={2} style={styles.title}>
-            {entry.title}
+            {title}
           </Text>
-          <Text
-            variant="labelSmall"
-            style={{ color: theme.colors.onSurfaceVariant }}
-          >
-            {formatRelative(entry.createdAt)}
-          </Text>
+          {createdAt ? (
+            <Text
+              variant="labelSmall"
+              style={{ color: theme.colors.onSurfaceVariant }}
+            >
+              {formatRelative(createdAt)}
+            </Text>
+          ) : null}
         </View>
 
         {excerpt ? (

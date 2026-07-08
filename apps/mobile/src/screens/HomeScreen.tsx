@@ -260,7 +260,9 @@ export default function HomeScreen({ navigation }: Props) {
           const meta = noteMeta.get(item.filepath);
           return (
             <NoteCard
-              entry={item}
+              title={item.title}
+              mode={item.mode}
+              createdAt={item.createdAt}
               excerpt={meta?.excerpt}
               tags={meta?.tags}
               pendingEnrich={meta?.status === "pending-enrich"}

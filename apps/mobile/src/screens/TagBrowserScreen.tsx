@@ -101,7 +101,9 @@ export default function TagBrowserScreen({ route, navigation }: Props) {
             {index > 0 && <Divider />}
             <List.Item
               title={`#${entry.tag}`}
-              onPress={() => navigation.push("TagBrowser", { tag: entry.tag })}
+              // Land in Search pre-filtered — one browse surface for
+              // "notes carrying this tag" instead of a parallel list here.
+              onPress={() => navigation.navigate("Search", { tag: entry.tag })}
               left={(props) => <List.Icon {...props} icon="tag-outline" />}
               right={() => (
                 <Text variant="labelLarge" style={[styles.count, { color: theme.colors.primary }]}>

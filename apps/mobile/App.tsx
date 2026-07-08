@@ -45,7 +45,8 @@ export type RootStackParamList = {
   AudioCapture: undefined;
   RecentDetail: { entry: CaptureEntry };
   TagBrowser: { tag?: string } | undefined;
-  Search: undefined;
+  /** `tag` pre-applies a tag filter — how "tap a tag anywhere" lands here. */
+  Search: { tag?: string } | undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
