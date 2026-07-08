@@ -2,7 +2,7 @@
 <!--
   carnet — Android adaptive icon foreground
   1024×1024 transparent. Android composites this over the
-  adaptiveIcon.backgroundColor (#5E63FF) defined in app.json, then
+  adaptiveIcon.backgroundColor (#2C6155) defined in app.json, then
   applies the user's launcher mask (circle, squircle, rounded square, etc.).
 
   Geometry:
@@ -14,7 +14,7 @@
   <path
     d="M 664 424 A 176 176 0 1 0 664 600"
     fill="none"
-    stroke="#FAFAF7"
+    stroke="#F5F2EA"
     stroke-width="80"
     stroke-linecap="round"
   />

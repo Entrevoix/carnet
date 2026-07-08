@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { RichText, Toolbar, useEditorBridge, TenTapStartKit } from '@10play/tentap-editor';
+import { useTheme, type MD3Theme } from 'react-native-paper';
 import { editorHtml } from '../../editor-web/generated/editorHtml';
 import { MarkdownBridge, awaitMarkdownResponse, onceContentAck } from '../bridges/MarkdownBridge';
 import {
@@ -12,17 +13,24 @@ import {
 } from '../lib/editorImages';
 import { resolvePhotoDataUri } from '../lib/photoDataUri';
 
-// Higher-contrast toolbar icons than TenTap's washed-out greys. Deep-merged over
-// the default theme by useEditorBridge (lodash merge), so only these keys change:
-// active icons go near-black, and the disabled state (shown whenever the editor
-// isn't focused) stays clearly visible instead of fading to a faint #CACACA.
-const EDITOR_THEME = {
-  toolbar: {
-    icon: { tintColor: '#1F2430' },
-    iconDisabled: { tintColor: '#8A9099' },
-    iconWrapperDisabled: { opacity: 0.55 },
-  },
-};
+// Higher-contrast toolbar icons than TenTap's washed-out greys, tinted from the
+// active Paper theme so the bar holds contrast in dark mode too. Deep-merged
+// over the default theme by useEditorBridge (lodash merge), so only these keys
+// change: active icons take the theme's text color, the toolbar bar takes the
+// theme surface, and the disabled state (shown whenever the editor isn't
+// focused) stays clearly visible instead of fading to a faint #CACACA.
+function editorTheme(colors: MD3Theme['colors']) {
+  return {
+    toolbar: {
+      toolbarBody: { backgroundColor: colors.surface, borderTopColor: colors.outline, borderBottomColor: colors.outline },
+      icon: { tintColor: colors.onSurface },
+      iconDisabled: { tintColor: colors.onSurfaceVariant },
+      iconWrapper: { backgroundColor: colors.surface },
+      iconWrapperActive: { backgroundColor: colors.secondaryContainer },
+      iconWrapperDisabled: { opacity: 0.55 },
+    },
+  };
+}
 
 // Re-send schedule for the idempotent body injection (ms). A setMarkdown sent
 // before the WebView bridge is listening is silently dropped, and the ~800 KB
@@ -67,6 +75,7 @@ interface WysiwygEditorProps {
  */
 export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
   function WysiwygEditor({ value }, ref) {
+    const theme = useTheme();
     const editor = useEditorBridge({
       customSource: editorHtml,
       // Give the WebView a real origin; without a baseUrl, Android loads with a
@@ -78,10 +87,10 @@ export const WysiwygEditor = forwardRef<WysiwygEditorRef, WysiwygEditorProps>(
       // initialContent is HTML-only; the markdown body is injected after mount
       // via editor.setMarkdown (markdown passed here would be parsed as HTML).
       initialContent: '<p></p>',
-      // Darken the toolbar icons. TenTap's defaults are low-contrast greys
-      // (#898989 active, #CACACA @ 0.3 opacity when disabled) which read as
-      // "greyed out" against the white bar; deep-merged over the defaults.
-      theme: EDITOR_THEME,
+      // Theme-derived toolbar tints (see editorTheme above). TenTap's defaults
+      // are low-contrast greys (#898989 active, #CACACA @ 0.3 opacity when
+      // disabled) which read as "greyed out"; deep-merged over the defaults.
+      theme: editorTheme(theme.colors),
     });
 
     // Session map of `data:` URI → canonical `../Photos/...` path, populated as

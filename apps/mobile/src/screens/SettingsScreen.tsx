@@ -10,6 +10,7 @@ import {
   List,
   Modal,
   Portal,
+  SegmentedButtons,
   Snackbar,
   Switch,
   Text,
@@ -32,6 +33,11 @@ import {
   type Settings,
 } from "../lib/settings";
 import { listModels } from "../lib/omniroute";
+import { spacing } from "../lib/theme";
+import {
+  useThemePreference,
+  type ThemePreference,
+} from "../lib/themePreference";
 import * as captureNotification from "../lib/captureNotification";
 import { VoiceSetupCheck } from "../voice/VoiceSetupCheck";
 import {
@@ -97,6 +103,7 @@ const RECOMMENDED_MODELS = [
 ] as const;
 
 export default function SettingsScreen() {
+  const themePreference = useThemePreference();
   const [form, setForm] = useState<FormState | null>(null);
   const [keyConfigured, setKeyConfigured] = useState<boolean>(false);
   /** Holds a NEW API key the user is entering. Empty string means "no change". */
@@ -414,6 +421,23 @@ export default function SettingsScreen() {
         navetted has been replaced by OmniRoute. Configure your OmniRoute key
         below to continue capturing.
       </Banner>
+
+      {/* Appearance — light/dark follows the OS unless pinned here. Applies
+          instantly (no Save tap); persisted via themePreference, not the
+          settings blob, so App.tsx can read it at cold start. */}
+      <Text variant="titleMedium">Appearance</Text>
+      <SegmentedButtons
+        value={themePreference.preference}
+        onValueChange={(v) =>
+          themePreference.setPreference(v as ThemePreference)
+        }
+        buttons={[
+          { value: "system", label: "System", icon: "theme-light-dark" },
+          { value: "light", label: "Light", icon: "white-balance-sunny" },
+          { value: "dark", label: "Dark", icon: "weather-night" },
+        ]}
+        style={{ marginBottom: spacing.sm }}
+      />
 
       <TextInput
         label="OmniRoute URL"
