@@ -160,10 +160,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
     location ? upsertFrontmatterField(markdown, "location", location) : markdown;
 
   // Draft persistence: restore on entry, autosave (debounced) while typing,
-  // cleared at every point the capture is safely persisted. Guards against
-  // the autosave racing the restore (an empty first render must not wipe a
-  // stored draft before it loads).
-  const draftLoadedRef = useRef(false);
+  // cleared at every point the capture is safely persisted. State (not a
+  // ref) so the autosave effect re-arms as soon as the restore completes —
+  // otherwise text typed before loadDraft resolves isn't persisted until
+  // the next keystroke. The guard also stops the empty first render from
+  // wiping a stored draft before it loads.
+  const [draftLoaded, setDraftLoaded] = useState(false);
   useEffect(() => {
     let cancelled = false;
     loadDraft(mode)
@@ -176,7 +178,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         setOcrText((cur) => cur || draft.ocrText);
       })
       .finally(() => {
-        if (!cancelled) draftLoadedRef.current = true;
+        if (!cancelled) setDraftLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -184,14 +186,14 @@ export default function CaptureScreen({ route, navigation }: Props) {
   }, [mode]);
 
   useEffect(() => {
-    if (!draftLoadedRef.current || phase !== "input") return;
+    if (!draftLoaded || phase !== "input") return;
     const timer = setTimeout(() => {
       saveDraft(mode, { text, transcript, ocrText }).catch(() => {
         // Best-effort: a failed autosave must never surface mid-typing.
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [mode, phase, text, transcript, ocrText]);
+  }, [draftLoaded, mode, phase, text, transcript, ocrText]);
 
   useEffect(() => {
     void getQueueDepth().then(setQueueDepth);
