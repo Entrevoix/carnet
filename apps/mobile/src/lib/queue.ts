@@ -195,6 +195,14 @@ export async function getQueueDepth(): Promise<number> {
   return rows.filter((r) => r.attempts < MAX_AUTO_RETRY_ATTEMPTS).length;
 }
 
+/** Read-only snapshot of the queue rows — feeds the sync-detail sheet so it
+ * can list what's waiting (mode, age, failure) without exposing the locked
+ * mutation paths. */
+export async function listQueueRows(): Promise<QueueRow[]> {
+  const rows = await loadRows();
+  return rows.map((r) => ({ ...r }));
+}
+
 /** Pending vs permanently-failed row counts in one read — feeds the sync
  * status indicator so it can distinguish "working through a backlog" from
  * "something needs your attention" without two storage round-trips. */

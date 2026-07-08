@@ -23,6 +23,8 @@ import {
   type NoteIndexEntry,
 } from "../lib/vault";
 import { getSyncStatus, type SyncStatus } from "../lib/syncStatus";
+import { drainQueue, listQueueRows, type QueueRow } from "../lib/queue";
+import { formatRelative, modeStamp } from "../components/NoteCard";
 import { useCarnetTheme } from "../lib/theme";
 import { VoiceReadinessBanner } from "../voice/VoiceReadinessBanner";
 import { CaptureFab, type CaptureTarget } from "../components/CaptureFab";
@@ -41,6 +43,8 @@ export default function HomeScreen({ navigation }: Props) {
   const [noteMeta, setNoteMeta] = useState<Map<string, NoteMeta>>(new Map());
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncDialogVisible, setSyncDialogVisible] = useState(false);
+  const [syncRows, setSyncRows] = useState<QueueRow[]>([]);
+  const [retrying, setRetrying] = useState(false);
   // Selection mode: enter via long-press, toggle rows via tap, auto-exit
   // when selection empties or the screen blurs.
   const [selectionMode, setSelectionMode] = useState(false);
@@ -125,7 +129,7 @@ export default function HomeScreen({ navigation }: Props) {
           {syncStatus ? (
             <SyncStatusDot
               status={syncStatus}
-              onPress={() => setSyncDialogVisible(true)}
+              onPress={() => void openSyncDetail()}
             />
           ) : null}
           <IconButton
@@ -199,6 +203,35 @@ export default function HomeScreen({ navigation }: Props) {
       unsubBlur();
     };
   }, [navigation, refresh, exitSelection]);
+
+  const openSyncDetail = useCallback(async () => {
+    setSyncDialogVisible(true);
+    try {
+      setSyncRows(await listQueueRows());
+    } catch {
+      setSyncRows([]);
+    }
+  }, []);
+
+  // "Retry now" — run a drain pass immediately instead of waiting for the
+  // next capture-screen open, then re-derive the indicator + row list.
+  const retryQueue = useCallback(async () => {
+    setRetrying(true);
+    try {
+      await drainQueue();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[Home] queue drain failed:", msg);
+    } finally {
+      setRetrying(false);
+      try {
+        setSyncRows(await listQueueRows());
+        setSyncStatus(await getSyncStatus());
+      } catch {
+        // The dialog keeps its previous contents on a re-read failure.
+      }
+    }
+  }, []);
 
   const onCapture = useCallback(
     (target: CaptureTarget) => {
@@ -315,12 +348,39 @@ export default function HomeScreen({ navigation }: Props) {
           style={{ borderRadius: theme.carnet.radius.sheet }}
         >
           <Dialog.Title>Sync</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Content style={{ gap: theme.carnet.spacing.sm }}>
             <Text variant="bodyMedium">
               {syncStatus?.detail ?? ""}
             </Text>
+            {syncRows.map((row) => (
+              <View key={row.id} style={styles.syncRow}>
+                <Text variant="bodySmall">
+                  {`${modeStamp(row.mode).label} · ${formatRelative(row.created_at)}`}
+                </Text>
+                <Text
+                  variant="labelSmall"
+                  style={{
+                    color:
+                      row.attempts >= 10
+                        ? theme.colors.error
+                        : theme.colors.onSurfaceVariant,
+                  }}
+                >
+                  {row.attempts >= 10
+                    ? "needs attention"
+                    : row.attempts > 0
+                      ? `retried ${row.attempts}×`
+                      : "waiting"}
+                </Text>
+              </View>
+            ))}
           </Dialog.Content>
           <Dialog.Actions>
+            {syncStatus && syncStatus.pending > 0 ? (
+              <Button onPress={() => void retryQueue()} loading={retrying}>
+                Retry now
+              </Button>
+            ) : null}
             {syncStatus?.state === "error" ? (
               <Button
                 onPress={() => {
@@ -372,4 +432,9 @@ const styles = StyleSheet.create({
   selectionTitle: { flex: 1, marginLeft: 4 },
   skeletonCard: { height: 96 },
   empty: { alignItems: "center", paddingVertical: 48 },
+  syncRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
 });

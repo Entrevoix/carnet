@@ -33,48 +33,14 @@ import {
   type Settings,
 } from "../lib/settings";
 import { listModels } from "../lib/omniroute";
-import { spacing } from "../lib/theme";
+import { PromptOverridesSection } from "../components/PromptOverridesSection";
+import { spacing, useCarnetTheme } from "../lib/theme";
 import {
   useThemePreference,
   type ThemePreference,
 } from "../lib/themePreference";
 import * as captureNotification from "../lib/captureNotification";
 import { VoiceSetupCheck } from "../voice/VoiceSetupCheck";
-import {
-  buildIdeaPrompt,
-  buildJournalPrompt,
-  buildPersonPrompt,
-  buildSharedImagePrompt,
-  buildSharedLinkPrompt,
-} from "../lib/prompts";
-
-const PROMPT_MODES = [
-  { key: "idea", label: "Idea", icon: "lightbulb-on" },
-  { key: "journal", label: "Journal", icon: "microphone" },
-  { key: "person", label: "Contact", icon: "account" },
-  { key: "sharedImage", label: "Photo + Image", icon: "camera" },
-  { key: "sharedLink", label: "Link + Text", icon: "link" },
-] as const;
-
-type PromptModeKey = (typeof PROMPT_MODES)[number]["key"];
-
-/** Render the default system prompt for a mode by invoking the builder
- * with placeholder args. Used to populate the "Copy default" button so
- * the user has a starting point for tweaking. */
-function defaultPromptFor(mode: PromptModeKey): string {
-  switch (mode) {
-    case "idea":
-      return buildIdeaPrompt("placeholder").system;
-    case "journal":
-      return buildJournalPrompt("placeholder", "").system;
-    case "person":
-      return buildPersonPrompt("placeholder", "").system;
-    case "sharedImage":
-      return buildSharedImagePrompt("").system;
-    case "sharedLink":
-      return buildSharedLinkPrompt("", "", "", null).system;
-  }
-}
 
 interface FormState {
   omniRouteUrl: string;
@@ -103,6 +69,7 @@ const RECOMMENDED_MODELS = [
 ] as const;
 
 export default function SettingsScreen() {
+  const theme = useCarnetTheme();
   const themePreference = useThemePreference();
   const [form, setForm] = useState<FormState | null>(null);
   const [keyConfigured, setKeyConfigured] = useState<boolean>(false);
@@ -120,11 +87,6 @@ export default function SettingsScreen() {
    * behavior wrote "error: ..." into the path field, which then got
    * persisted on Save as a broken capture folder. */
   const [pickerError, setPickerError] = useState<string | null>(null);
-
-  // Prompt-override editor: which row is open. Null = all collapsed.
-  // Selection is screen-local; nothing is persisted about UI state.
-  const [expandedPromptMode, setExpandedPromptMode] =
-    useState<PromptModeKey | null>(null);
 
   // Model browser state — opens a modal that lists available models from
   // GET /v1/models so the user can pick from the actual catalog instead of
@@ -439,6 +401,12 @@ export default function SettingsScreen() {
         style={{ marginBottom: spacing.sm }}
       />
 
+      <Text variant="titleMedium" style={styles.sectionTitle}>
+        Connection
+      </Text>
+      <HelperText type="info" visible>
+        Where AI enrichment runs — your self-hosted OmniRoute endpoint.
+      </HelperText>
       <TextInput
         label="OmniRoute URL"
         mode="outlined"
@@ -520,6 +488,13 @@ export default function SettingsScreen() {
         Browse available models
       </Button>
 
+      <Text variant="titleMedium" style={styles.sectionTitle}>
+        Storage
+      </Text>
+      <HelperText type="info" visible>
+        Where notes are saved — point this at your Syncthing-watched vault
+        folder so captures sync to your workstation.
+      </HelperText>
       <TextInput
         label="Capture folder"
         mode="outlined"
@@ -700,93 +675,10 @@ export default function SettingsScreen() {
         ) : null}
       </View>
 
-      <View style={styles.promptSection}>
-        <Text variant="titleMedium" style={styles.promptSectionTitle}>
-          Prompt overrides
-        </Text>
-        <HelperText type="info" visible>
-          Override how OmniRoute structures each capture mode. Leave a section
-          empty to use the default. Removing the frontmatter format or
-          injection guard can drop captures to a stub note — use "Reset to
-          default" to recover.
-        </HelperText>
-        {PROMPT_MODES.map(({ key, label, icon }) => {
-          const isExpanded = expandedPromptMode === key;
-          const value = form.promptOverrides[key] ?? "";
-          const isCustomized = value.trim().length > 0;
-          return (
-            <View key={key}>
-              <List.Item
-                title={label}
-                description={isCustomized ? "customized" : "using default"}
-                left={(p) => <List.Icon {...p} icon={icon} />}
-                right={(p) => (
-                  <List.Icon
-                    {...p}
-                    icon={isExpanded ? "chevron-up" : "chevron-down"}
-                  />
-                )}
-                onPress={() =>
-                  setExpandedPromptMode(isExpanded ? null : key)
-                }
-                style={styles.promptRow}
-              />
-              {isExpanded ? (
-                <View style={styles.promptEditor}>
-                  <TextInput
-                    mode="outlined"
-                    multiline
-                    numberOfLines={10}
-                    value={value}
-                    onChangeText={(v) =>
-                      update({
-                        promptOverrides: {
-                          ...form.promptOverrides,
-                          [key]: v,
-                        },
-                      })
-                    }
-                    placeholder="(empty — using the default. Tap Copy default to start editing)"
-                    style={styles.promptInput}
-                  />
-                  <View style={styles.promptActions}>
-                    <Button
-                      mode="text"
-                      compact
-                      onPress={() =>
-                        update({
-                          promptOverrides: {
-                            ...form.promptOverrides,
-                            [key]: defaultPromptFor(key),
-                          },
-                        })
-                      }
-                    >
-                      Copy default
-                    </Button>
-                    {isCustomized ? (
-                      <Button
-                        mode="text"
-                        compact
-                        onPress={() =>
-                          update({
-                            promptOverrides: {
-                              ...form.promptOverrides,
-                              [key]: "",
-                            },
-                          })
-                        }
-                      >
-                        Reset to default
-                      </Button>
-                    ) : null}
-                  </View>
-                </View>
-              ) : null}
-            </View>
-          );
-        })}
-      </View>
+      <PromptOverridesSection
+        overrides={form.promptOverrides}
+        onChange={(next) => update({ promptOverrides: next })}
+      />
 
       <Button mode="contained" onPress={save} style={styles.save}>
         Save
@@ -812,7 +704,10 @@ export default function SettingsScreen() {
         <Modal
           visible={browseOpen}
           onDismiss={() => setBrowseOpen(false)}
-          contentContainerStyle={styles.browseModal}
+          contentContainerStyle={[
+            styles.browseModal,
+            { backgroundColor: theme.colors.surface },
+          ]}
         >
           <View style={styles.browseHeader}>
             <Text variant="titleMedium">Available models</Text>
@@ -949,10 +844,6 @@ const styles = StyleSheet.create({
   browseEmpty: { textAlign: "center", opacity: 0.6, padding: 24 },
   notificationSection: { marginTop: 16 },
   notificationRow: { paddingHorizontal: 0 },
-  promptSection: { marginTop: 16 },
+  sectionTitle: { paddingHorizontal: 0, paddingTop: 16 },
   promptSectionTitle: { paddingHorizontal: 0, paddingTop: 8 },
-  promptRow: { paddingHorizontal: 0 },
-  promptEditor: { paddingHorizontal: 0, paddingBottom: 8, gap: 4 },
-  promptInput: { fontFamily: "monospace" },
-  promptActions: { flexDirection: "row", gap: 8 },
 });
