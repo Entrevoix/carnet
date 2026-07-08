@@ -25,7 +25,7 @@ import {
   type NoteIndex,
   type NoteIndexEntry,
 } from "../lib/vault";
-import { useCarnetTheme } from "../lib/theme";
+import { MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
 import { NoteCard, modeStamp } from "../components/NoteCard";
 import { StampChip } from "../components/StampChip";
 
@@ -164,6 +164,7 @@ export default function SearchScreen({ route, navigation }: Props) {
               return (
                 <Pressable
                   key={mode}
+                  style={styles.pillHit}
                   onPress={() => {
                     setModeFilter((prev) => (prev === mode ? null : mode));
                     setFiltersOpen(false);
@@ -180,6 +181,7 @@ export default function SearchScreen({ route, navigation }: Props) {
               return (
                 <Pressable
                   key={tag}
+                  style={styles.pillHit}
                   onPress={() => {
                     toggleTag(tag);
                     setFiltersOpen(false);
@@ -199,6 +201,7 @@ export default function SearchScreen({ route, navigation }: Props) {
           <View style={[styles.pillRow, { gap: theme.carnet.spacing.sm }]}>
             {modeFilter && (
               <Pressable
+                style={styles.pillHit}
                 onPress={() => setModeFilter(null)}
                 accessibilityRole="button"
                 accessibilityLabel={`Remove ${modeStamp(modeFilter).label} filter`}
@@ -209,6 +212,7 @@ export default function SearchScreen({ route, navigation }: Props) {
             {tagFilters.map((tag) => (
               <Pressable
                 key={tag}
+                style={styles.pillHit}
                 onPress={() => toggleTag(tag)}
                 accessibilityRole="button"
                 accessibilityLabel={`Remove tag filter ${tag}`}
@@ -269,6 +273,9 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   header: {},
   pillRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center" },
+  // The stamp glyph is small by design; the touch target must not be
+  // (DESIGN.md: 48dp minimum) — pad the Pressable, not the stamp.
+  pillHit: { minHeight: MIN_TAP_TARGET, justifyContent: "center" },
   skeletonCard: { height: 96 },
   center: { flexGrow: 1, alignItems: "center", justifyContent: "center" },
 });
