@@ -195,6 +195,23 @@ export async function getQueueDepth(): Promise<number> {
   return rows.filter((r) => r.attempts < MAX_AUTO_RETRY_ATTEMPTS).length;
 }
 
+/** Pending vs permanently-failed row counts in one read — feeds the sync
+ * status indicator so it can distinguish "working through a backlog" from
+ * "something needs your attention" without two storage round-trips. */
+export async function getQueueCounts(): Promise<{
+  pending: number;
+  failed: number;
+}> {
+  const rows = await loadRows();
+  let pending = 0;
+  let failed = 0;
+  for (const r of rows) {
+    if (r.attempts < MAX_AUTO_RETRY_ATTEMPTS) pending += 1;
+    else failed += 1;
+  }
+  return { pending, failed };
+}
+
 /** Non-crypto, unique-enough row id. uuid v11 needs crypto.getRandomValues,
  * which RN/Hermes lacks without the (uninstalled) react-native-get-random-values
  * polyfill — calling it here threw and left offline captures stuck on the

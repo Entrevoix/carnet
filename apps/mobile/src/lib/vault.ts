@@ -75,6 +75,10 @@ export interface NoteIndexEntry {
   mode: CaptureMode;
   /** First ~200 chars of the stripped body (EXCERPT_MAX), whitespace-collapsed. */
   excerpt: string;
+  /** Frontmatter `status` when present (e.g. "pending-enrich" on a save-first
+   * raw note awaiting enrichment) — drives the per-note sync badge. Optional
+   * so cached v1 blobs without it stay valid; absent means no badge. */
+  status?: string;
 }
 
 export interface NoteIndex {
@@ -119,6 +123,7 @@ function makeExcerpt(markdown: string): string {
 
 /** Build a note index row from a note's ref + markdown. */
 function buildNoteEntry(uri: string, subdir: NoteSubdir, markdown: string): NoteIndexEntry {
+  const status = extractFrontmatterField(markdown, "status");
   return {
     uri,
     subdir,
@@ -127,6 +132,7 @@ function buildNoteEntry(uri: string, subdir: NoteSubdir, markdown: string): Note
     tags: tagsForNote(markdown),
     mode: inferNoteMode(uri),
     excerpt: makeExcerpt(markdown),
+    ...(status ? { status } : {}),
   };
 }
 

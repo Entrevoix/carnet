@@ -11,7 +11,7 @@ import {
   type Theme as NavTheme,
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { PaperProvider } from "react-native-paper";
+import { IconButton, PaperProvider } from "react-native-paper";
 import { StatusBar } from "expo-status-bar";
 import { ShareIntentProvider, useShareIntentContext } from "expo-share-intent";
 import { useFonts } from "expo-font";
@@ -247,7 +247,22 @@ export default function App() {
               options={({ route }) => ({ title: route.params.entry.title })}
             />
             <Stack.Screen name="TagBrowser" component={TagBrowserScreen} options={{ title: "Tags" }} />
-            <Stack.Screen name="Search" component={SearchScreen} options={{ title: "Search" }} />
+            <Stack.Screen
+              name="Search"
+              component={SearchScreen}
+              options={({ navigation }) => ({
+                title: "Search",
+                // Tags moved out of the Home header (one primary action per
+                // screen) — browsing by tag now lives with search.
+                headerRight: () => (
+                  <IconButton
+                    icon="tag-multiple-outline"
+                    onPress={() => navigation.navigate("TagBrowser")}
+                    accessibilityLabel="Browse tags"
+                  />
+                ),
+              })}
+            />
           </Stack.Navigator>
           <ShareIntentRouter navigation={navRef} />
           </NavigationContainer>
