@@ -16,7 +16,12 @@ import {
   type CaptureEntry,
 } from "../lib/storage";
 import { moveToArchive } from "../lib/writer";
-import { loadCachedNoteIndex, type NoteIndexEntry } from "../lib/vault";
+import {
+  loadCachedNoteIndex,
+  refreshNoteIndex,
+  type NoteIndex,
+  type NoteIndexEntry,
+} from "../lib/vault";
 import { getSyncStatus, type SyncStatus } from "../lib/syncStatus";
 import { useCarnetTheme } from "../lib/theme";
 import { VoiceReadinessBanner } from "../voice/VoiceReadinessBanner";
@@ -44,25 +49,43 @@ export default function HomeScreen({ navigation }: Props) {
   // Guards against fast double-tap on the bulk-delete confirm so the
   // archive loop doesn't run twice.
   const bulkDeletingRef = useRef(false);
+  // Single-flight guard for the background index rebuild below.
+  const rebuildingIndexRef = useRef(false);
+
+  const applyNoteIndex = useCallback((index: NoteIndex) => {
+    const map = new Map<string, NoteMeta>();
+    for (const note of index.notes) {
+      map.set(note.uri, {
+        excerpt: note.excerpt,
+        tags: note.tags,
+        status: note.status,
+      });
+    }
+    setNoteMeta(map);
+  }, []);
 
   const refresh = useCallback(async () => {
     const items = await getRecentCaptures();
     setRecent(items);
-    // Join excerpts/tags/pending-status from the cached vault index. Cache
-    // miss just means plainer cards — never force a full vault scan from
-    // the home screen.
+    // Join excerpts/tags/pending-status from the cached vault index. On a
+    // cache miss (e.g. an offline drain invalidated it), render plain cards
+    // now and rebuild the index in the background — never block Home on a
+    // full vault scan.
     try {
       const index = await loadCachedNoteIndex();
       if (index) {
-        const map = new Map<string, NoteMeta>();
-        for (const note of index.notes) {
-          map.set(note.uri, {
-            excerpt: note.excerpt,
-            tags: note.tags,
-            status: note.status,
+        applyNoteIndex(index);
+      } else if (!rebuildingIndexRef.current) {
+        rebuildingIndexRef.current = true;
+        refreshNoteIndex()
+          .then(applyNoteIndex)
+          .catch((e: unknown) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn("[Home] note index rebuild failed:", msg);
+          })
+          .finally(() => {
+            rebuildingIndexRef.current = false;
           });
-        }
-        setNoteMeta(map);
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -74,7 +97,7 @@ export default function HomeScreen({ navigation }: Props) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[Home] sync status read failed:", msg);
     }
-  }, []);
+  }, [applyNoteIndex]);
 
   const exitSelection = useCallback(() => {
     setSelectionMode(false);

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type Ref } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { Keyboard, ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
   Banner,
@@ -63,7 +63,7 @@ import { MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
 import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
 import { mergeUserTags } from "../lib/tags";
 import { upsertFrontmatterField } from "../lib/frontmatter";
-import { getTagIndex, invalidateTagIndex, upsertNoteInIndex } from "../lib/vault";
+import { getTagIndex, upsertNoteInIndex } from "../lib/vault";
 import {
   IDEA_STATUSES,
   deriveTitle,
@@ -358,6 +358,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
     mtime: number | null,
   ): Promise<void> => {
     if (outcome.kind === "updated") {
+      // Reflect the enriched note (final tags, pending-enrich status gone)
+      // in the cached index before landing back on Home.
+      void upsertNoteInIndex(filepath, outcome.markdown).catch(() => undefined);
       setPhase("saved");
       navigation.goBack();
       return;
@@ -467,7 +470,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           location: location ?? undefined,
           attachments: refs,
         };
-        const { filepath, mtime } = await writeRawIdea(ctx);
+        const { filepath, mtime, markdown: rawMarkdown } = await writeRawIdea(ctx);
         const title = deriveTitle(ctx.text) || "Idea";
         await recordCapture({
           id: localId(),
@@ -476,7 +479,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
           filepath,
           createdAt: Date.now(),
         });
-        void invalidateTagIndex().catch(() => undefined);
+        // Upsert (not invalidate) so Home's cards can show this note's tags
+        // and pending-enrich stamp immediately — dropping the whole cached
+        // index left cards bare until the next full vault scan.
+        void upsertNoteInIndex(filepath, rawMarkdown).catch(() => undefined);
         setSavedFilepath(filepath);
         saveFirstCtxRef.current = ctx;
         // The capture is safely persisted — clear the inputs so a back-out
@@ -727,7 +733,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
             <IconButton
               icon="plus-circle-outline"
               size={26}
-              onPress={() => setMetaOpen(true)}
+              onPress={() => {
+                // Dismiss the keyboard first: in dark mode a still-open
+                // keyboard renders over the near-black sheet and makes it
+                // look like the tap did nothing (QA finding).
+                Keyboard.dismiss();
+                setMetaOpen(true);
+              }}
               accessibilityLabel="Add tags, location, or attachments"
             />
             {metaSummary ? (
