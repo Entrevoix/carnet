@@ -127,7 +127,10 @@ function buildNoteEntry(uri: string, subdir: NoteSubdir, markdown: string): Note
   return {
     uri,
     subdir,
-    title: deriveTitle(markdown) || basenameTitle(uri),
+    // Derive from the frontmatter-stripped body: deriveTitle falls back to
+    // the first line when there's no H1, and on a raw (save-first) note the
+    // full file's first line is the literal "---" delimiter.
+    title: deriveTitle(stripFrontmatter(markdown)) || basenameTitle(uri),
     createdOrDate: frontmatterDateMs(markdown) ?? 0,
     tags: tagsForNote(markdown),
     mode: inferNoteMode(uri),
