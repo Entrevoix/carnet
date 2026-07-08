@@ -574,16 +574,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
   };
 
   const confirmSave = async () => {
-    console.log("[confirmSave] tapped", { mode, hasPending: !!(pendingIdea || pendingJournal || pendingPerson) });
     if (mode === "idea" && pendingIdea) {
       try {
-        console.log("[confirmSave] writeIdea start", { slug: pendingIdea.slug });
         const refs = await persistAttachments();
         const markdown = withLocation(
           mergeUserTags(injectAttachments(pendingIdea.markdown, refs), tags),
         );
         const { filepath } = await writeIdea(pendingIdea.slug, markdown);
-        console.log("[confirmSave] writeIdea ok", filepath);
         setPending([]);
         setTags([]);
         setLocation(null);
@@ -592,12 +589,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, markdown).catch(() => undefined);
         void clearDraft(mode).catch(() => undefined);
-        console.log("[confirmSave] recordCapture ok");
         setPhase("saved");
         navigation.goBack();
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.error("[confirmSave] idea failed:", msg, e);
+        console.warn("[confirmSave] idea failed:", msg, e);
         setError(msg);
       }
       return;
@@ -605,7 +601,6 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
     if (mode === "journal" && pendingJournal) {
       try {
-        console.log("[confirmSave] appendJournal start", { date: pendingJournal.date });
         const refs = await persistAttachments();
         const markdown = withLocation(
           mergeUserTags(injectAttachments(pendingJournal.markdown, refs), tags),
@@ -620,7 +615,6 @@ export default function CaptureScreen({ route, navigation }: Props) {
           pendingJournal.date,
           markdown,
         );
-        console.log("[confirmSave] appendJournal ok", filepath);
         setPending([]);
         setTags([]);
         setLocation(null);
@@ -633,7 +627,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         navigation.goBack();
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.error("[confirmSave] journal failed:", msg, e);
+        console.warn("[confirmSave] journal failed:", msg, e);
         setError(msg);
       }
       return;
@@ -641,14 +635,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
     if (mode === "person" && pendingPerson) {
       try {
-        console.log("[confirmSave] writePerson start");
         const markdown = withLocation(mergeUserTags(pendingPerson.markdown, tags));
         const { filepath } = await writePerson(
           pendingPerson.firstName,
           pendingPerson.lastName,
           markdown,
         );
-        console.log("[confirmSave] writePerson ok", filepath);
         setTags([]);
         setLocation(null);
         setSavedFilepath(filepath);
@@ -660,7 +652,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         navigation.goBack();
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.error("[confirmSave] person failed:", msg, e);
+        console.warn("[confirmSave] person failed:", msg, e);
         setError(msg);
       }
     }
