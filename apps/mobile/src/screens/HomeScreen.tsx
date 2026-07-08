@@ -225,7 +225,7 @@ export default function HomeScreen({ navigation }: Props) {
                 </Text>
                 <IconButton
                   icon="delete"
-                  iconColor={theme.carnet.stamp}
+                  iconColor={theme.colors.error}
                   onPress={() => setConfirmVisible(true)}
                   accessibilityLabel="Delete selected"
                 />
@@ -324,7 +324,7 @@ export default function HomeScreen({ navigation }: Props) {
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setConfirmVisible(false)}>Cancel</Button>
-            <Button onPress={handleBulkDelete} textColor={theme.carnet.stamp}>
+            <Button onPress={handleBulkDelete} textColor={theme.colors.error}>
               Delete
             </Button>
           </Dialog.Actions>

@@ -35,7 +35,7 @@ The accent is **rare and meaningful.** Most of the screen is paper/ink neutrals.
 | Token | Light | Dark |
 |---|---|---|
 | `onBackground` / `onSurface` | `#22201C` (ink) | `#E9E6DD` |
-| `onSurfaceVariant` (secondary text) | `#6B665C` (inkSoft) | `#8B887F` |
+| `onSurfaceVariant` (secondary text) | `#6B665C` (inkSoft) | `#949188` (lifted from the brief's `#8B887F`, which sat at 4.48:1 — just under WCAG AA) |
 
 ### Chips / badges
 | Token | Light | Dark | Use |
@@ -46,8 +46,9 @@ The accent is **rare and meaningful.** Most of the screen is paper/ink neutrals.
 ### Semantic
 | Token | Light | Dark | When |
 |---|---|---|---|
-| `error` / `carnet.stamp` | `#B4472E` | `#B4472E` | Destructive/reject — the stamp-red does **not** shift between modes. |
-| `errorContainer` | `#F6DFD7` | `#46231A` | Filled error backgrounds — on dark, error *text* rides `onErrorContainer` (`#F3CDC2`) because raw stamp-red on ink is a fill/badge color, not a text color. |
+| `carnet.stamp` | `#B4472E` | `#B4472E` | Destructive/reject **fills, borders, badges** — the stamp-red does not shift between modes. |
+| `error` | `#B4472E` | `#E27D5F` | What Paper uses for error **text** (HelperText etc.). Raw stamp-red is 2.9:1 on dark surfaces, so the dark text tone is brightened; the stamp itself stays fixed via `carnet.stamp`. |
+| `errorContainer` | `#F6DFD7` | `#46231A` | Filled error backgrounds; paired text rides `onErrorContainer` (`#5A2317` / `#F3CDC2`). |
 
 No `success` / `warning` / `info` tokens. The intake-only flow has no positive-confirmation moments that justify green. If a future flow needs success, add it here first.
 
@@ -107,6 +108,7 @@ Max **two weights per screen**. Note/markdown *content* renders in Inter as well
 | 2026-07-08 | Bundled fonts (Space Grotesk + Inter) | Distinctive typography now outweighs install-size; render gated on font load |
 | 2026-07-08 | Dark `primary` = brightened `#8FCABB`; deep teal exposed as `carnet.fill` | Raw `#2C6155` fails contrast as text/icon color on ink; M3 wants a bright primary in dark schemes |
 | 2026-07-08 | Stamp-red `#B4472E` fixed across modes | Destructive color must be instantly recognizable; containers carry the contrast burden on dark |
+| 2026-07-08 | Dark a11y pass (review finding) | `error` text brightened to `#E27D5F` and dark secondary text to `#949188` — both palette values failed WCAG AA as dark-mode foregrounds; fills/badges keep the true hues |
 | 2026-07-08 | No serif reading face | Captures are short skimmed notes; a third family costs APK size and weight discipline |
 
 ---

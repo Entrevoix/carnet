@@ -34,7 +34,9 @@ const LINE = "#E4DFD2"; // borders
 // Dark
 const PAPER_DARK = "#17181B";
 const INK_ON_DARK = "#E9E6DD";
-const INK_SOFT_ON_DARK = "#8B887F";
+// Lifted from the brief's #8B887F: that lands at 4.48:1 on cardDark, a hair
+// under WCAG AA (4.5:1) for secondary text. #949188 clears it with margin.
+const INK_SOFT_ON_DARK = "#949188";
 const ACCENT_BRIGHT = "#8FCABB"; // teal for text/icons on dark surfaces
 const ACCENT_SOFT_DARK = "#1E3B34";
 const CARD_DARK = "#212226";
@@ -42,6 +44,11 @@ const LINE_DARK = "#2E2F33";
 
 // Destructive / reject. Same hue in both modes — the stamp does not shift.
 const STAMP = "#B4472E";
+// Stamp red used AS TEXT on dark surfaces fails contrast (2.9:1), so MD3's
+// `error` slot — which Paper components use for error text (HelperText,
+// error labels) — gets a brightened tone in dark mode. Fills, borders, and
+// badges keep the true stamp via `carnet.stamp` / `errorContainer`.
+const STAMP_TEXT_ON_DARK = "#E27D5F";
 
 // ── Non-color tokens ─────────────────────────────────────────────────────────
 
@@ -224,8 +231,8 @@ export const carnetDark: CarnetTheme = {
     outline: LINE_DARK,
     outlineVariant: "#26282D",
 
-    error: STAMP,
-    onError: "#F5F2EA",
+    error: STAMP_TEXT_ON_DARK,
+    onError: "#22201C",
     errorContainer: "#46231A",
     onErrorContainer: "#F3CDC2",
 

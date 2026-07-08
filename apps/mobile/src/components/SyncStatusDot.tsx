@@ -19,7 +19,7 @@ export function SyncStatusDot({ status, onPress }: SyncStatusDotProps) {
   const theme = useCarnetTheme();
   const color =
     status.state === "error"
-      ? theme.carnet.stamp
+      ? theme.colors.error
       : status.state === "pending"
         ? theme.colors.primary
         : theme.colors.onSurfaceVariant;
