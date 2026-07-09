@@ -50,6 +50,9 @@ jobs:
       - name: Type check
         run: cd apps/mobile && npx tsc --noEmit
 
+      - name: Unit tests
+        run: npm -w @carnet/mobile test
+
   desktop:
     runs-on: ubuntu-latest
     needs: [shared]
@@ -91,12 +94,12 @@ jobs:
   # a clean prebuild followed by `:app:compileDebugKotlin` (Kotlin compile
   # only — no dexing, no APK packaging, no assembleDebug).
   #
-  # NOT WIRED INTO `gate` YET (intentional): this job provisions the full
-  # Android SDK/NDK toolchain and has never been observed green in this repo's
-  # CI. Keeping it out of `gate.needs` means a toolchain/setup hiccup here
-  # can't block all merges. Once it has passed on a few real PRs, add
-  # `mobile-android` to `gate.needs` below to make it a required, blocking
-  # check — that is the end state that stops this bug class from regressing.
+  # WIRED INTO `gate` since 2026-07-09, after three consecutive green runs on
+  # real PRs (#94 2m54s, #95 3m6s, #96 3m27s). This is the required, blocking
+  # check that stops the generated-Kotlin bug class from regressing. If the
+  # Android toolchain setup ever gets flaky and starts blocking unrelated
+  # merges, demote it by removing `mobile-android` from `gate.needs` below
+  # (and restore the advisory note here).
   mobile-android:
     runs-on: ubuntu-latest
     needs: [shared]
@@ -140,11 +143,8 @@ jobs:
 
   # Branch protection requires this job — do not rename without updating
   # Settings → Branches.
-  #
-  # NOTE: `mobile-android` is deliberately absent from `needs` — see its job
-  # comment above. Promote it into this list once it is proven green in CI.
   gate:
     runs-on: ubuntu-latest
-    needs: [shared, mobile, desktop]
+    needs: [shared, mobile, desktop, mobile-android]
     steps:
       - run: echo "All checks passed"
