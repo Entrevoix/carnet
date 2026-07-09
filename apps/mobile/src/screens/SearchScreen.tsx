@@ -151,6 +151,9 @@ export default function SearchScreen({ route, navigation }: Props) {
           autoCapitalize="none"
           autoCorrect={false}
           traileringIcon={filtersOpen ? "filter-variant-remove" : "filter-variant"}
+          traileringIconAccessibilityLabel={
+            filtersOpen ? "Hide filters" : "Show filters"
+          }
           onTraileringIconPress={() => setFiltersOpen((v) => !v)}
           style={{ borderRadius: theme.carnet.radius.pill }}
         />
