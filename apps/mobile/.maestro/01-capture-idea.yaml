@@ -1,0 +1,26 @@
+# Core journey 1: the fastest path in the app.
+# FAB tap → autofocused Idea editor → type → Send (save-first) → the note's
+# card appears on Home with its stamps.
+#
+# Works with OmniRoute unconfigured: save-first writes the raw note and the
+# degraded "Saved to vault" screen appears — the note is safe either way.
+# Leaves "Maestro smoke idea" in the vault; archive it from the app (or
+# delete Ideas/maestro-smoke-idea.md) to clean up.
+appId: com.ventoux.carnet
+name: Capture an idea and see its card on Home
+---
+- launchApp:
+    stopApp: true
+- tapOn: "Capture"
+- inputText: "Maestro smoke idea"
+- hideKeyboard
+- tapOn: "Send"
+# Save-first: enrichment either succeeds (screen auto-closes) or degrades
+# to the "Saved to vault" screen with a Done button. Handle both.
+- runFlow:
+    when:
+      visible: "Saved to vault"
+    commands:
+      - tapOn: "Done"
+- assertVisible: "Maestro smoke idea"
+- assertVisible: "Idea"
