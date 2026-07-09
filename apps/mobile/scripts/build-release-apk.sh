@@ -75,15 +75,28 @@ else
 fi
 
 # ── release signing (optional; falls back to the debug keystore) ────
+# Env mode is all-or-nothing: setting CARNET_KEYSTORE_FILE skips the
+# properties file entirely, so the three companion vars must be set too.
 KS_PROPS="${CARNET_KEYSTORE_PROPS:-$HOME/.config/carnet/keystore.properties}"
 if [ -z "${CARNET_KEYSTORE_FILE:-}" ] && [ -f "$KS_PROPS" ]; then
-  CARNET_KEYSTORE_FILE=$(sed -n 's/^storeFile=//p' "$KS_PROPS")
-  CARNET_KEYSTORE_PASSWORD=$(sed -n 's/^storePassword=//p' "$KS_PROPS")
-  CARNET_KEY_ALIAS=$(sed -n 's/^keyAlias=//p' "$KS_PROPS")
-  CARNET_KEY_PASSWORD=$(sed -n 's/^keyPassword=//p' "$KS_PROPS")
+  # tr strips CR so a Windows-edited properties file can't silently break
+  # the [ -f ] check or feed a \r-suffixed password to Gradle.
+  CARNET_KEYSTORE_FILE=$(sed -n 's/^storeFile=//p' "$KS_PROPS" | tr -d '\r')
+  CARNET_KEYSTORE_PASSWORD=$(sed -n 's/^storePassword=//p' "$KS_PROPS" | tr -d '\r')
+  CARNET_KEY_ALIAS=$(sed -n 's/^keyAlias=//p' "$KS_PROPS" | tr -d '\r')
+  CARNET_KEY_PASSWORD=$(sed -n 's/^keyPassword=//p' "$KS_PROPS" | tr -d '\r')
 fi
 
 SIGNING_ARGS=()
+if [ -n "${CARNET_KEYSTORE_FILE:-}" ] && [ ! -f "$CARNET_KEYSTORE_FILE" ]; then
+  echo "ERROR: CARNET_KEYSTORE_FILE is set but does not exist: $CARNET_KEYSTORE_FILE" >&2
+  exit 1
+fi
+if [ -n "${CARNET_KEYSTORE_FILE:-}" ] && { [ -z "${CARNET_KEYSTORE_PASSWORD:-}" ] || [ -z "${CARNET_KEY_ALIAS:-}" ] || [ -z "${CARNET_KEY_PASSWORD:-}" ]; }; then
+  echo "ERROR: keystore configured but password/alias incomplete — Gradle would fail cryptically." >&2
+  echo "  Provide storePassword/keyAlias/keyPassword in $KS_PROPS (or the CARNET_* env vars)." >&2
+  exit 1
+fi
 if [ -n "${CARNET_KEYSTORE_FILE:-}" ] && [ -f "$CARNET_KEYSTORE_FILE" ]; then
   echo "Signing with release keystore: $CARNET_KEYSTORE_FILE"
   # AGP's injected signing overrides the (prebuild-generated) debug config
