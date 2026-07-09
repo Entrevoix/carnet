@@ -1,7 +1,10 @@
 /**
  * Tag browser. Two modes driven by the optional `tag` route param:
- *   - no tag  → the vault's tags with note counts; tap to drill in
- *   - a tag   → the notes carrying it; tap opens RecentDetail
+ *   - no tag  → the vault's tags with note counts; tapping one opens Search
+ *               pre-filtered to that tag (the single browse surface)
+ *   - a tag   → the notes carrying it; tap opens RecentDetail. Kept for
+ *               existing deep links (e.g. from note detail), not reachable
+ *               from the top-level tag list anymore.
  *
  * The index is read cache-first (instant); pull-to-refresh forces a rebuild so
  * tags added since the last scan show up.

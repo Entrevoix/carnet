@@ -21,18 +21,26 @@ export default defineConfig({
         // react-native-paper's internal require("react-native") would hit
         // the real Flow-typed react-native and throw a SyntaxError. Inline
         // the whole react-native family so vite processes (and aliases)
-        // their imports.
+        // their imports — and @testing-library, so its react-dom import
+        // hits the version-pinning alias above.
+        // Symptom of a dual-React module sneaking in: "Cannot read
+        // properties of null (reading 'useState')" —
+        // DEBUG='vite-node:client:native' lists natively-loaded culprits.
         inline: [/react-native/],
       },
     },
   },
   resolve: {
     alias: {
-      // react is nested under apps/mobile while react-dom hoists to the repo
-      // root; two React copies = "Cannot read properties of null (reading
-      // 'useState')" the moment a component renders. Externalized react-dom
-      // natively requires the ROOT react, so pin every react import there
-      // (dedupe would pick the nested copy — the wrong one).
+      // react/react-dom exist BOTH at the repo root (19.2.x, hoisted) and
+      // nested here (19.1.0 — the Expo-pinned version the app bundles). Two
+      // copies in one render = "Cannot read properties of null (reading
+      // 'useState')". Everything must pin to the ROOT pair: RTL is CJS-only,
+      // so its require("react-dom") is a native require of the root copy
+      // that no vite alias can redirect. KNOWN TRADEOFF: screen tests
+      // render on the root React (same major, one minor ahead of the
+      // 19.1.0 the app ships); revisit if the root/nested split ever
+      // closes or RTL ships ESM.
       react: path.resolve(__dirname, "../../node_modules/react"),
       "react-dom": path.resolve(__dirname, "../../node_modules/react-dom"),
       // Screen smoke tests render the real component tree in Node: react-native
