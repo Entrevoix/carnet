@@ -73,7 +73,11 @@ certificate SHA-256 matches the known release fingerprint before publishing —
 a signingConfig misconfiguration must never ship as a silently debug-signed
 "release." Re-runs `tsc --noEmit` + `vitest run` first as a safety gate,
 since a tag can point at any commit, not necessarily one `main`'s CI already
-vetted.
+vetted. The expected cert SHA-256 is a literal in the workflow file
+(intentional — it's public, not a secret, and pinning it in a reviewed file
+means rotation is change-controlled); if the keystore is ever rotated, that
+literal must be updated in the same PR — expect it in the diff, it isn't
+tampering.
 
 ## Hard constraints (non-negotiable — from `docs/session-handoffs/`)
 - **No SQLite.** `expo-sqlite@55` is ABI-broken on Expo SDK 54. All persistence goes through

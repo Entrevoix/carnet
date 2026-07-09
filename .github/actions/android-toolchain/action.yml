@@ -1,16 +1,19 @@
 name: Android build toolchain
 description: >
-  Checkout + Node + JDK + Android SDK + Gradle + npm install + shared package
-  build + a clean Expo Android prebuild. Shared by every workflow job that
-  needs to run Gradle against the generated apps/mobile/android project
-  (mobile-android's Kotlin-compile gate, ci.yml's per-PR apk artifact, and
-  release.yml's tagged release build) — extracted here so the three stay in
-  sync instead of drifting as hand-copied step lists.
+  Node + JDK + Android SDK + Gradle + npm install + shared package build + a
+  clean Expo Android prebuild. Shared by every workflow job that needs to run
+  Gradle against the generated apps/mobile/android project (mobile-android's
+  Kotlin-compile gate, ci.yml's per-PR apk artifact, and release.yml's tagged
+  release build) — extracted here so the three stay in sync instead of
+  drifting as hand-copied step lists.
+
+  CALLERS MUST `actions/checkout@v4` BEFORE this step: a local action
+  (`uses: ./path`) is resolved from the job's already-checked-out workspace —
+  checkout can't happen *inside* the composite, since the runner needs
+  action.yml on disk before it can even start running these steps.
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v4
-
     - uses: actions/setup-node@v4
       with:
         node-version: '20'

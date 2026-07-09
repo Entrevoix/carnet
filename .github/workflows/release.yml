@@ -19,6 +19,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/android-toolchain
 
       # Safety gate: a tag can be pushed at any commit, not necessarily one
@@ -68,17 +69,24 @@ jobs:
             exit 1
           fi
 
+      # TAG is passed via env, not interpolated directly into the script —
+      # github.ref_name is an untrusted expression as far as shell scripts
+      # are concerned (git ref names permit $, (), backticks, etc.), even
+      # though reaching this workflow at all already requires push access.
       - name: Rename APK to include the tag
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           mkdir -p release-assets
           cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk \
-             "release-assets/carnet-${{ github.ref_name }}.apk"
+             "release-assets/carnet-$TAG.apk"
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            "release-assets/carnet-${{ github.ref_name }}.apk" \
-            --title "${{ github.ref_name }}" \
+          gh release create "$TAG" \
+            "release-assets/carnet-$TAG.apk" \
+            --title "$TAG" \
             --generate-notes
