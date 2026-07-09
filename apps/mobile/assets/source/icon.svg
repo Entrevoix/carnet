@@ -4,19 +4,21 @@
   1024×1024. The OS may round the corners (iOS rounded square mask, etc.)
   but the asset itself is square-filled.
 
-  Geometry:
-    - Background: solid ink-teal #2C6155 (the "Stamped Paper" accent)
-    - Glyph: rounded C in paper #F5F2EA
-    - Arc: from 30° (top-right) sweeping counter-clockwise to -30° (bottom-right)
-    - Radius 320, stroke 130, round caps — heavy enough to read at 48px launcher.
+  Geometry ("Stamped Paper" branding):
+    - Background: solid ink-teal #2C6155 (the accent)
+    - Mark: the rounded C inside a dashed stamp ring, the whole mark tilted
+      -4° like a rubber-stamp imprint (the design system's one motif; the
+      screen-level stamps tilt -1°, exaggerated here to read at 48px)
+    - Ring: r 390, stroke 44, dashed (60 on / 46 off), butt caps for crisp
+      stamp perforations
+    - C: arc from 30° (top-right) sweeping counter-clockwise to -30°
+      (bottom-right), radius 230, stroke 100, round caps
+    - Both in paper #F5F2EA
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <rect width="1024" height="1024" fill="#2C6155"/>
-  <path
-    d="M 789 352 A 320 320 0 1 0 789 672"
-    fill="none"
-    stroke="#F5F2EA"
-    stroke-width="130"
-    stroke-linecap="round"
-  />
+  <g transform="rotate(-4 512 512)" stroke="#F5F2EA" fill="none">
+    <circle cx="512" cy="512" r="390" stroke-width="44" stroke-dasharray="60 46" stroke-linecap="butt"/>
+    <path d="M 711 397 A 230 230 0 1 0 711 627" stroke-width="100" stroke-linecap="round"/>
+  </g>
 </svg>

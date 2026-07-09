@@ -5,17 +5,15 @@
   adaptiveIcon.backgroundColor (#2C6155) defined in app.json, then
   applies the user's launcher mask (circle, squircle, rounded square, etc.).
 
-  Geometry:
-    - Glyph sized to ~42% of the canvas (~432px) so it sits comfortably
-      inside the OS safe zone regardless of mask shape.
-    - Same rounded-C as icon.svg, scaled down: radius 176, stroke 80.
+  Geometry ("Stamped Paper" branding):
+    - Mark sized to the OS safe zone (~66% of canvas) so no launcher mask
+      clips the dashed ring: ring r 290 (stroke 34, dashed 46/36, butt caps),
+      C radius 170 (stroke 76, round caps), whole mark tilted -4° — the same
+      stamp motif as icon.svg, scaled down.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <path
-    d="M 664 424 A 176 176 0 1 0 664 600"
-    fill="none"
-    stroke="#F5F2EA"
-    stroke-width="80"
-    stroke-linecap="round"
-  />
+  <g transform="rotate(-4 512 512)" stroke="#F5F2EA" fill="none">
+    <circle cx="512" cy="512" r="290" stroke-width="34" stroke-dasharray="46 36" stroke-linecap="butt"/>
+    <path d="M 659 427 A 170 170 0 1 0 659 597" stroke-width="76" stroke-linecap="round"/>
+  </g>
 </svg>
