@@ -118,7 +118,10 @@ export interface QueueRow {
 }
 
 const QUEUE_KEY = "carnet:queue:v1";
-const MAX_AUTO_RETRY_ATTEMPTS = 10;
+/** Exported so UI surfaces (the sync-detail sheet) can classify a row as
+ * permanently failed with the same threshold the drain uses — a duplicated
+ * literal would silently drift if this cap changes. */
+export const MAX_AUTO_RETRY_ATTEMPTS = 10;
 /** Sentinel attempts value meaning "permanent failure — do not auto-retry".
  * Set when OmniRoute returns a 4xx (auth, bad model, malformed input). */
 const PERMANENT_FAILURE_ATTEMPTS = MAX_AUTO_RETRY_ATTEMPTS;
@@ -193,6 +196,31 @@ function bumpAttempts(
 export async function getQueueDepth(): Promise<number> {
   const rows = await loadRows();
   return rows.filter((r) => r.attempts < MAX_AUTO_RETRY_ATTEMPTS).length;
+}
+
+/** Read-only snapshot of the queue rows — feeds the sync-detail sheet so it
+ * can list what's waiting (mode, age, failure) without exposing the locked
+ * mutation paths. */
+export async function listQueueRows(): Promise<QueueRow[]> {
+  const rows = await loadRows();
+  return rows.map((r) => ({ ...r }));
+}
+
+/** Pending vs permanently-failed row counts in one read — feeds the sync
+ * status indicator so it can distinguish "working through a backlog" from
+ * "something needs your attention" without two storage round-trips. */
+export async function getQueueCounts(): Promise<{
+  pending: number;
+  failed: number;
+}> {
+  const rows = await loadRows();
+  let pending = 0;
+  let failed = 0;
+  for (const r of rows) {
+    if (r.attempts < MAX_AUTO_RETRY_ATTEMPTS) pending += 1;
+    else failed += 1;
+  }
+  return { pending, failed };
 }
 
 /** Non-crypto, unique-enough row id. uuid v11 needs crypto.getRandomValues,

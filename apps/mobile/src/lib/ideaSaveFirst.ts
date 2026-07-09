@@ -99,6 +99,9 @@ export interface WriteRawIdeaResult {
   /** mtime captured right after the raw write — the conflict-guard baseline for
    * the enriched overwrite. null when the backend can't report one (SAF). */
   mtime: number | null;
+  /** The exact markdown written to disk — lets the caller upsert the note
+   * index without re-reading the file (or rebuilding with a drifted `now`). */
+  markdown: string;
 }
 
 /**
@@ -114,7 +117,7 @@ export async function writeRawIdea(
   const markdown = buildRawIdeaMarkdown(input, now);
   const { filepath } = await writeIdea(slug, markdown);
   const mtime = await getModificationTime(filepath);
-  return { filepath, slug, mtime };
+  return { filepath, slug, mtime, markdown };
 }
 
 export interface ApplyEnrichedIdeaInput {
@@ -137,12 +140,12 @@ export interface ApplyEnrichedIdeaInput {
  */
 export async function applyEnrichedIdea(
   input: ApplyEnrichedIdeaInput,
-): Promise<{ status: "updated" | "conflict" }> {
+): Promise<{ status: "updated" | "conflict"; markdown: string }> {
   let md = injectAttachments(input.enrichedMarkdown, input.attachments ?? []);
   md = mergeUserTags(md, input.tags);
   if (input.location) md = upsertFrontmatterField(md, "location", input.location);
   const result = await updateNoteIfUnchanged(input.filepath, md, input.expectedMtime);
-  return { status: result.ok ? "updated" : "conflict" };
+  return { status: result.ok ? "updated" : "conflict", markdown: md };
 }
 
 /** Everything enrichIdeaInPlace needs — the raw text plus the target file the
@@ -166,7 +169,9 @@ export interface EnrichIdeaInPlaceInput {
  *               degraded banner). Either way the raw note is safe on disk.
  */
 export type EnrichIdeaOutcome =
-  | { kind: "updated" }
+  /** `markdown` is the final on-disk content — callers use it to upsert the
+   * note index so browse surfaces reflect the enriched note immediately. */
+  | { kind: "updated"; markdown: string }
   | { kind: "conflict" }
   | { kind: "failed"; transient: boolean; reason: string };
 
@@ -197,5 +202,7 @@ export async function enrichIdeaInPlace(
     location: input.location,
     attachments: input.attachments,
   });
-  return applied.status === "updated" ? { kind: "updated" } : { kind: "conflict" };
+  return applied.status === "updated"
+    ? { kind: "updated", markdown: applied.markdown }
+    : { kind: "conflict" };
 }

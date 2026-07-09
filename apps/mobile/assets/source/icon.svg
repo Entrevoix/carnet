@@ -5,17 +5,17 @@
   but the asset itself is square-filled.
 
   Geometry:
-    - Background: solid indigo #5E63FF (the "Ink & Mist" primary)
-    - Glyph: rounded C in paper #FAFAF7
+    - Background: solid ink-teal #2C6155 (the "Stamped Paper" accent)
+    - Glyph: rounded C in paper #F5F2EA
     - Arc: from 30° (top-right) sweeping counter-clockwise to -30° (bottom-right)
     - Radius 320, stroke 130, round caps — heavy enough to read at 48px launcher.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" fill="#5E63FF"/>
+  <rect width="1024" height="1024" fill="#2C6155"/>
   <path
     d="M 789 352 A 320 320 0 1 0 789 672"
     fill="none"
-    stroke="#FAFAF7"
+    stroke="#F5F2EA"
     stroke-width="130"
     stroke-linecap="round"
   />

@@ -1,5 +1,5 @@
 import "react-native-gesture-handler";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
 import {
   DarkTheme as NavDarkTheme,
@@ -11,9 +11,12 @@ import {
   type Theme as NavTheme,
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { PaperProvider } from "react-native-paper";
+import { IconButton, PaperProvider } from "react-native-paper";
 import { StatusBar } from "expo-status-bar";
 import { ShareIntentProvider, useShareIntentContext } from "expo-share-intent";
+import { useFonts } from "expo-font";
+import { Inter_400Regular, Inter_500Medium } from "@expo-google-fonts/inter";
+import { SpaceGrotesk_600SemiBold } from "@expo-google-fonts/space-grotesk";
 
 import HomeScreen from "./src/screens/HomeScreen";
 import CaptureScreen from "./src/screens/CaptureScreen";
@@ -25,7 +28,13 @@ import RecentDetailScreen from "./src/screens/RecentDetailScreen";
 import TagBrowserScreen from "./src/screens/TagBrowserScreen";
 import SearchScreen from "./src/screens/SearchScreen";
 import type { CaptureEntry, CaptureMode } from "./src/lib/storage";
-import { inkAndMistDark, inkAndMistLight } from "./src/lib/theme";
+import { carnetDark, carnetLight } from "./src/lib/theme";
+import {
+  getThemePreference,
+  setThemePreference,
+  ThemePreferenceContext,
+  type ThemePreference,
+} from "./src/lib/themePreference";
 
 export type RootStackParamList = {
   Home: undefined;
@@ -36,7 +45,8 @@ export type RootStackParamList = {
   AudioCapture: undefined;
   RecentDetail: { entry: CaptureEntry };
   TagBrowser: { tag?: string } | undefined;
-  Search: undefined;
+  /** `tag` pre-applies a tag filter — how "tap a tag anywhere" lands here. */
+  Search: { tag?: string } | undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -108,17 +118,44 @@ function ShareIntentRouter({
 export default function App() {
   const [ready, setReady] = useState(false);
   const navRef = useNavigationContainerRef<RootStackParamList>();
-  // Mirror the OS light/dark setting. userInterfaceStyle="automatic" in
-  // app.json lets the system flip; this hook reflects the live preference.
+  // Bundled type: Space Grotesk for headings, Inter for body/labels. The
+  // theme's font config references these families by name, so rendering is
+  // gated below until they're loaded.
+  const [fontsLoaded, fontError] = useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    SpaceGrotesk_600SemiBold,
+  });
+  // A failed font load must not strand the app on the boot spinner — the
+  // theme's families just fall back to system faces for the session.
+  const fontsReady = fontsLoaded || fontError != null;
+  // OS light/dark setting (userInterfaceStyle="automatic" in app.json lets
+  // the system flip it live), overridable by the in-app Appearance setting:
+  // "system" follows the OS, "light"/"dark" pin the theme.
   const colorScheme = useColorScheme();
-  const paperTheme = colorScheme === "dark" ? inkAndMistDark : inkAndMistLight;
+  const [preference, setPreferenceState] =
+    useState<ThemePreference>("system");
+  const resolvedScheme =
+    preference === "system" ? (colorScheme ?? "light") : preference;
+  const paperTheme = resolvedScheme === "dark" ? carnetDark : carnetLight;
+
+  const setPreference = useCallback((next: ThemePreference) => {
+    setPreferenceState(next);
+    // Persist in the background; the UI already switched. A failed write
+    // only costs the preference on next launch, and stranding the toggle
+    // on a storage error would be worse.
+    setThemePreference(next).catch((e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[App] failed to persist theme preference:", msg);
+    });
+  }, []);
   // Derive a React Navigation theme so the native-stack header bar matches
   // the Paper-themed screen body. Without this, the header would render
   // with RN Navigation's default light theme on top of our ink-dark surface.
   const navTheme: NavTheme = {
-    ...(colorScheme === "dark" ? NavDarkTheme : NavLightTheme),
+    ...(resolvedScheme === "dark" ? NavDarkTheme : NavLightTheme),
     colors: {
-      ...(colorScheme === "dark" ? NavDarkTheme : NavLightTheme).colors,
+      ...(resolvedScheme === "dark" ? NavDarkTheme : NavLightTheme).colors,
       primary: paperTheme.colors.primary,
       background: paperTheme.colors.background,
       card: paperTheme.colors.surface,
@@ -129,11 +166,22 @@ export default function App() {
   };
 
   useEffect(() => {
-    // Allow async storage to initialise before rendering navigation.
-    setReady(true);
+    // Load the persisted theme override before first paint so the app
+    // doesn't flash the wrong scheme, then render navigation.
+    let cancelled = false;
+    getThemePreference()
+      .then((stored) => {
+        if (!cancelled) setPreferenceState(stored);
+      })
+      .finally(() => {
+        if (!cancelled) setReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  if (!ready) {
+  if (!ready || !fontsReady) {
     return (
       <View
         style={{
@@ -150,9 +198,12 @@ export default function App() {
 
   return (
     <ShareIntentProvider>
-      <PaperProvider theme={paperTheme}>
-        <NavigationContainer ref={navRef} theme={navTheme} linking={linking}>
-          <StatusBar style="auto" />
+      <ThemePreferenceContext.Provider value={{ preference, setPreference }}>
+        <PaperProvider theme={paperTheme}>
+          <NavigationContainer ref={navRef} theme={navTheme} linking={linking}>
+            {/* Explicit style (not "auto") so the bar follows the manual
+                override too, not just the OS scheme. */}
+            <StatusBar style={resolvedScheme === "dark" ? "light" : "dark"} />
           <Stack.Navigator initialRouteName="Home">
             <Stack.Screen
               name="Home"
@@ -197,11 +248,27 @@ export default function App() {
               options={({ route }) => ({ title: route.params.entry.title })}
             />
             <Stack.Screen name="TagBrowser" component={TagBrowserScreen} options={{ title: "Tags" }} />
-            <Stack.Screen name="Search" component={SearchScreen} options={{ title: "Search" }} />
+            <Stack.Screen
+              name="Search"
+              component={SearchScreen}
+              options={({ navigation }) => ({
+                title: "Search",
+                // Tags moved out of the Home header (one primary action per
+                // screen) — browsing by tag now lives with search.
+                headerRight: () => (
+                  <IconButton
+                    icon="tag-multiple-outline"
+                    onPress={() => navigation.navigate("TagBrowser")}
+                    accessibilityLabel="Browse tags"
+                  />
+                ),
+              })}
+            />
           </Stack.Navigator>
           <ShareIntentRouter navigation={navRef} />
-        </NavigationContainer>
-      </PaperProvider>
+          </NavigationContainer>
+        </PaperProvider>
+      </ThemePreferenceContext.Provider>
     </ShareIntentProvider>
   );
 }

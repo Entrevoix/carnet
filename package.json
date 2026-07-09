@@ -16,5 +16,8 @@
   },
   "devDependencies": {
     "metro-runtime": "0.83.3"
+  },
+  "overrides": {
+    "react-native-worklets": "0.5.1"
   }
 }

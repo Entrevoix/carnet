@@ -22,7 +22,7 @@
       "package": "com.ventoux.carnet",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#5E63FF"
+        "backgroundColor": "#2C6155"
       },
       "permissions": [
         "android.permission.RECORD_AUDIO",
@@ -66,9 +66,15 @@
       [
         "expo-share-intent",
         {
-          "androidIntentFilters": ["text/*", "image/*", "audio/*", "*/*"]
+          "androidIntentFilters": [
+            "text/*",
+            "image/*",
+            "audio/*",
+            "*/*"
+          ]
         }
-      ]
+      ],
+      "expo-font"
     ]
   }
 }
