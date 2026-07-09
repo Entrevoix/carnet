@@ -1,0 +1,169 @@
+// @vitest-environment jsdom
+//
+// Screen smoke test for Home (pattern: see TagBrowserScreen.test.tsx).
+// Covers the redesign's load-bearing wiring: recents as cards with the
+// note-index metadata join (tags/pending stamps), card → detail navigation,
+// and the capture FAB (tap = straight to Idea; chevron sheet for the other
+// modes). The header sync dot renders via navigation.setOptions →
+// headerRight, outside this component tree — its presence is asserted via
+// the setOptions call.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { PaperProvider } from "react-native-paper";
+
+import { carnetLight } from "../lib/theme";
+import type { CaptureEntry } from "../lib/storage";
+
+const RECENTS: CaptureEntry[] = [
+  {
+    id: "r1",
+    mode: "idea",
+    title: "Jack's Baseball Team",
+    filepath: "file:///v/Ideas/jacks-baseball-team.md",
+    createdAt: Date.now() - 60_000,
+  },
+  {
+    id: "r2",
+    mode: "journal",
+    title: "A journal day",
+    filepath: "file:///v/Journal/2026-07-08.md",
+    createdAt: Date.now() - 3_600_000,
+  },
+];
+
+vi.mock("../lib/storage", () => ({
+  getRecentCaptures: vi.fn(async () => RECENTS),
+  removeManyFromHistory: vi.fn(async () => {}),
+}));
+
+// writer.ts imports expo-file-system at module scope — never load the real one.
+vi.mock("../lib/writer", () => ({
+  moveToArchive: vi.fn(async () => {}),
+}));
+
+vi.mock("../lib/vault", () => ({
+  loadCachedNoteIndex: vi.fn(async () => ({
+    builtAt: 1,
+    notes: [
+      {
+        uri: "file:///v/Ideas/jacks-baseball-team.md",
+        subdir: "Ideas",
+        title: "Jack's Baseball Team",
+        createdOrDate: 1,
+        tags: ["sports"],
+        mode: "idea",
+        excerpt: "Jack made the team",
+        status: "pending-enrich",
+      },
+    ],
+  })),
+  refreshNoteIndex: vi.fn(async () => ({ builtAt: 2, notes: [] })),
+}));
+
+vi.mock("../lib/syncStatus", () => ({
+  getSyncStatus: vi.fn(async () => ({
+    state: "idle",
+    pending: 0,
+    failed: 0,
+    detail: "All captures are written to the vault and enriched.",
+  })),
+}));
+
+vi.mock("../lib/queue", () => ({
+  drainQueue: vi.fn(async () => {}),
+  listQueueRows: vi.fn(async () => []),
+  MAX_AUTO_RETRY_ATTEMPTS: 10,
+}));
+
+// Pulls in VoiceButton's native speech stack — irrelevant to Home's layout.
+vi.mock("../voice/VoiceReadinessBanner", () => ({
+  VoiceReadinessBanner: () => null,
+}));
+
+import HomeScreen from "./HomeScreen";
+import { getRecentCaptures } from "../lib/storage";
+
+type ScreenProps = Parameters<typeof HomeScreen>[0];
+
+function makeNavigation() {
+  return {
+    setOptions: vi.fn(),
+    navigate: vi.fn(),
+    addListener: vi.fn(() => vi.fn()),
+    goBack: vi.fn(),
+  };
+}
+
+function renderScreen() {
+  const navigation = makeNavigation();
+  render(
+    <PaperProvider theme={carnetLight}>
+      <HomeScreen
+        navigation={navigation as unknown as ScreenProps["navigation"]}
+        route={{ key: "h", name: "Home" } as ScreenProps["route"]}
+      />
+    </PaperProvider>,
+  );
+  return { navigation };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+afterEach(cleanup);
+
+describe("HomeScreen", () => {
+  it("renders recents as cards with excerpt, tag and pending stamps joined from the index", async () => {
+    renderScreen();
+    expect(await screen.findByText("Jack's Baseball Team")).toBeTruthy();
+    expect(screen.getByText("A journal day")).toBeTruthy();
+    expect(screen.getByText("Jack made the team")).toBeTruthy();
+    expect(screen.getByText("#sports")).toBeTruthy();
+    expect(screen.getByText("pending")).toBeTruthy();
+    // The second note has no index row — card still renders, just plainer.
+    expect(screen.getByText("Journal")).toBeTruthy();
+  });
+
+  it("shows the empty state pointing at the FAB when nothing is captured", async () => {
+    vi.mocked(getRecentCaptures).mockResolvedValueOnce([]);
+    renderScreen();
+    expect(await screen.findByText("Nothing captured yet")).toBeTruthy();
+    expect(screen.getByText("Tap Capture below to write your first note.")).toBeTruthy();
+  });
+
+  it("opens a card into RecentDetail with its entry", async () => {
+    const { navigation } = renderScreen();
+    fireEvent.click(await screen.findByText("Jack's Baseball Team"));
+    await waitFor(() =>
+      expect(navigation.navigate).toHaveBeenCalledWith("RecentDetail", {
+        entry: expect.objectContaining({ id: "r1" }),
+      }),
+    );
+  });
+
+  it("FAB tap goes straight into Idea capture; the chevron sheet reaches the other modes", async () => {
+    const { navigation } = renderScreen();
+    await screen.findByText("Jack's Baseball Team");
+
+    fireEvent.click(
+      screen.getByLabelText("Capture an idea (long-press for more modes)"),
+    );
+    expect(navigation.navigate).toHaveBeenCalledWith("Capture", { mode: "idea" });
+
+    fireEvent.click(screen.getByLabelText("More capture modes"));
+    fireEvent.click(await screen.findByText("Photo"));
+    await waitFor(() =>
+      expect(navigation.navigate).toHaveBeenCalledWith("PhotoCapture"),
+    );
+  });
+
+  it("installs the header actions (sync dot, search, settings) once sync status loads", async () => {
+    const { navigation } = renderScreen();
+    await screen.findByText("Jack's Baseball Team");
+    await waitFor(() => {
+      const calls = navigation.setOptions.mock.calls;
+      expect(calls.some(([opts]) => typeof opts.headerRight === "function")).toBe(true);
+    });
+  });
+});
