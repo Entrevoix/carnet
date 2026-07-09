@@ -100,6 +100,18 @@ describe("buildNoteIndex titles", () => {
     expect(index.notes[0].title.length).toBeGreaterThan(0);
     expect(index.notes[0].title).not.toBe("---");
   });
+
+  it("strips embed markdown from excerpts, keeping link labels", async () => {
+    addNote(
+      "file:///v/Ideas/photo-first.md",
+      "Ideas",
+      "---\ncreated: x\n---\n# Jack's Baseball Team\n\n![](../Photos/pxl-1.jpg) Jack made the team. See [the roster](https://example.com/roster).\n",
+    );
+    const index = await buildNoteIndex();
+    expect(index.notes[0].excerpt).toBe(
+      "Jack made the team. See the roster.",
+    );
+  });
 });
 
 // ── buildTagIndex ─────────────────────────────────────────────────────────────

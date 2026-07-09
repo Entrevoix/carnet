@@ -88,7 +88,11 @@ Max **two weights per screen**. Note/markdown *content* renders in Inter as well
 - **No** scroll-driven motion, parallax, or "designed" entrance animations.
 
 ## Iconography
-- **Brand icon:** flat teal background with a rounded paper "C" stroke. SVG source at `apps/mobile/assets/source/icon.svg`. Regenerate PNGs after editing:
+- **Brand icon:** the stamp itself — a rounded paper "C" inside a dashed
+  perforated ring, the whole mark tilted −4° like a rubber-stamp imprint, on
+  flat teal. (The screen-level stamps tilt −1°; the icon exaggerates it to
+  read at 48px.) SVG source at `apps/mobile/assets/source/icon.svg`.
+  Regenerate PNGs after editing:
   ```bash
   rsvg-convert -w 1024 -h 1024 apps/mobile/assets/source/icon.svg          -o apps/mobile/assets/icon.png
   rsvg-convert -w 1024 -h 1024 apps/mobile/assets/source/adaptive-icon.svg -o apps/mobile/assets/adaptive-icon.png
@@ -110,6 +114,7 @@ Max **two weights per screen**. Note/markdown *content* renders in Inter as well
 | 2026-07-08 | Stamp-red `#B4472E` fixed across modes | Destructive color must be instantly recognizable; containers carry the contrast burden on dark |
 | 2026-07-08 | Dark a11y pass (review finding) | `error` text brightened to `#E27D5F` and dark secondary text to `#949188` — both palette values failed WCAG AA as dark-mode foregrounds; fills/badges keep the true hues |
 | 2026-07-08 | No serif reading face | Captures are short skimmed notes; a third family costs APK size and weight discipline |
+| 2026-07-08 | Icon becomes the stamp | The recolored Ink & Mist "C" predated the motif; the dashed-ring stamp mark makes the launcher icon carry the brand's one device |
 
 ---
 

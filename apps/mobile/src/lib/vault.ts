@@ -115,9 +115,15 @@ function subdirForMode(mode: CaptureMode): NoteSubdir {
 }
 
 /** First ~EXCERPT_MAX chars of the stripped body, with a leading H1 dropped
- * (it duplicates the title) and whitespace collapsed to single spaces. */
+ * (it duplicates the title), image/file embed syntax removed (a note that
+ * STARTS with a photo otherwise shows raw `![](../Photos/…)` markdown as its
+ * card excerpt), and whitespace collapsed to single spaces. */
 function makeExcerpt(markdown: string): string {
-  const body = stripFrontmatter(markdown).replace(/^\s*#\s+.*(?:\n|$)/, "");
+  const body = stripFrontmatter(markdown)
+    .replace(/^\s*#\s+.*(?:\n|$)/, "")
+    // Image embeds (`![alt](target)`) vanish; plain links keep their label.
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
   return body.replace(/\s+/g, " ").trim().slice(0, EXCERPT_MAX);
 }
 
