@@ -1,0 +1,27 @@
+# Core journey 3: browse/search — the collapsible filter pills apply +
+# dismiss, and text search finds the note captured in flow 01 (run flows in
+# order: `maestro test .maestro/` runs alphabetically). Uses the
+# always-present "Idea" mode pill so the flow never depends on personal
+# vault tags.
+#
+# Ordering note: filters are exercised BEFORE typing — Paper's Searchbar
+# swaps the trailering (filter) icon for the clear icon while the field has
+# text, so the filter icon is only reachable on an empty query.
+appId: com.ventoux.carnet
+name: Search filters expand, apply, dismiss; text search finds a note
+---
+- launchApp:
+    stopApp: true
+- tapOn: "Search notes"
+- hideKeyboard
+- tapOn: "Show filters"
+- tapOn: "Filter by Idea"
+# Row collapsed into a dismissible active stamp.
+- assertVisible: "Remove Idea filter"
+- tapOn: "Remove Idea filter"
+- assertNotVisible: "Remove Idea filter"
+# Text search (flow 01 captured this note).
+- tapOn: "Search notes"
+- inputText: "Maestro smoke idea"
+- hideKeyboard
+- assertVisible: "Maestro smoke idea"
