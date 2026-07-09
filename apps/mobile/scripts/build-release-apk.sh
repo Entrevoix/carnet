@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 #
 # Build a release APK that runs without Metro — JS is bundled inline and the
-# APK is installable on any phone. Defaults to the Android debug keystore, so
-# the output is sideloadable but NOT Play-Store-ready (different machines
-# will produce APKs with different identities and Android will treat them as
-# different apps for upgrade purposes).
+# APK is installable on any phone.
+#
+# SIGNING: if a release keystore is available (env vars CARNET_KEYSTORE_FILE /
+# CARNET_KEYSTORE_PASSWORD / CARNET_KEY_ALIAS / CARNET_KEY_PASSWORD, or a
+# properties file at ~/.config/carnet/keystore.properties — override the path
+# with CARNET_KEYSTORE_PROPS), the APK is signed with it via AGP's injected
+# signing properties, giving every machine the same app identity so sideloads
+# upgrade cleanly. Without one it falls back to the Android debug keystore
+# (machine-specific identity; upgrades only work from the same machine).
+#
+# MIGRATION NOTE: a device holding a debug-signed install can't upgrade to a
+# release-signed APK (INSTALL_FAILED_UPDATE_INCOMPATIBLE) — uninstall first.
+# App-internal data (settings, recents, queue) is lost on uninstall; vault
+# notes survive only if the capture folder points outside the app sandbox.
 #
 # Sequence:
 #   1. Verify the prebuilt android/ folder exists; tell the user to run
@@ -64,9 +74,47 @@ else
   ADB=""
 fi
 
+# ── release signing (optional; falls back to the debug keystore) ────
+# Env mode is all-or-nothing: setting CARNET_KEYSTORE_FILE skips the
+# properties file entirely, so the three companion vars must be set too.
+KS_PROPS="${CARNET_KEYSTORE_PROPS:-$HOME/.config/carnet/keystore.properties}"
+if [ -z "${CARNET_KEYSTORE_FILE:-}" ] && [ -f "$KS_PROPS" ]; then
+  # tr strips CR so a Windows-edited properties file can't silently break
+  # the [ -f ] check or feed a \r-suffixed password to Gradle.
+  CARNET_KEYSTORE_FILE=$(sed -n 's/^storeFile=//p' "$KS_PROPS" | tr -d '\r')
+  CARNET_KEYSTORE_PASSWORD=$(sed -n 's/^storePassword=//p' "$KS_PROPS" | tr -d '\r')
+  CARNET_KEY_ALIAS=$(sed -n 's/^keyAlias=//p' "$KS_PROPS" | tr -d '\r')
+  CARNET_KEY_PASSWORD=$(sed -n 's/^keyPassword=//p' "$KS_PROPS" | tr -d '\r')
+fi
+
+SIGNING_ARGS=()
+if [ -n "${CARNET_KEYSTORE_FILE:-}" ] && [ ! -f "$CARNET_KEYSTORE_FILE" ]; then
+  echo "ERROR: CARNET_KEYSTORE_FILE is set but does not exist: $CARNET_KEYSTORE_FILE" >&2
+  exit 1
+fi
+if [ -n "${CARNET_KEYSTORE_FILE:-}" ] && { [ -z "${CARNET_KEYSTORE_PASSWORD:-}" ] || [ -z "${CARNET_KEY_ALIAS:-}" ] || [ -z "${CARNET_KEY_PASSWORD:-}" ]; }; then
+  echo "ERROR: keystore configured but password/alias incomplete — Gradle would fail cryptically." >&2
+  echo "  Provide storePassword/keyAlias/keyPassword in $KS_PROPS (or the CARNET_* env vars)." >&2
+  exit 1
+fi
+if [ -n "${CARNET_KEYSTORE_FILE:-}" ] && [ -f "$CARNET_KEYSTORE_FILE" ]; then
+  echo "Signing with release keystore: $CARNET_KEYSTORE_FILE"
+  # AGP's injected signing overrides the (prebuild-generated) debug config
+  # without editing android/ — survives `expo prebuild --clean`.
+  SIGNING_ARGS=(
+    "-Pandroid.injected.signing.store.file=$CARNET_KEYSTORE_FILE"
+    "-Pandroid.injected.signing.store.password=$CARNET_KEYSTORE_PASSWORD"
+    "-Pandroid.injected.signing.key.alias=$CARNET_KEY_ALIAS"
+    "-Pandroid.injected.signing.key.password=$CARNET_KEY_PASSWORD"
+  )
+else
+  echo "WARNING: no release keystore found — signing with the debug keystore."
+  echo "  (machine-specific identity; see the header comment for setup)"
+fi
+
 # ── build ────────────────────────────────────────────────────────────
 echo "Building release APK… (this packages the JS bundle into the APK, no Metro needed)"
-( cd "$ANDROID_DIR" && ./gradlew assembleRelease )
+( cd "$ANDROID_DIR" && ./gradlew assembleRelease "${SIGNING_ARGS[@]}" )
 
 if [ ! -f "$OUTPUT_APK" ]; then
   echo "ERROR: build completed but $OUTPUT_APK is missing." >&2
