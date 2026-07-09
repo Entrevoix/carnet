@@ -1,0 +1,51 @@
+name: Android build toolchain
+description: >
+  Node + JDK + Android SDK + Gradle + npm install + shared package build + a
+  clean Expo Android prebuild. Shared by every workflow job that needs to run
+  Gradle against the generated apps/mobile/android project (mobile-android's
+  Kotlin-compile gate, ci.yml's per-PR apk artifact, and release.yml's tagged
+  release build) — extracted here so the three stay in sync instead of
+  drifting as hand-copied step lists.
+
+  CALLERS MUST `actions/checkout@v4` BEFORE this step: a local action
+  (`uses: ./path`) is resolved from the job's already-checked-out workspace —
+  checkout can't happen *inside* the composite, since the runner needs
+  action.yml on disk before it can even start running these steps.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: package-lock.json
+
+    - uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v3
+
+    # Versions come from Expo's gradle plugin (ExpoRootProject) for SDK 54:
+    # compileSdk 36 / buildTools 36.0.0 / ndk 27.1.12297006. Keep in sync if
+    # the Expo SDK bump changes them (visible in a prebuild's Gradle config log).
+    - name: Install required Android SDK packages
+      shell: bash
+      run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v4
+
+    - name: Install dependencies
+      shell: bash
+      run: npm ci
+
+    - name: Build shared package
+      shell: bash
+      run: npm run build:shared
+
+    - name: Expo prebuild (android, clean)
+      shell: bash
+      run: cd apps/mobile && npx expo prebuild --clean -p android

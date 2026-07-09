@@ -105,38 +105,7 @@ jobs:
     needs: [shared]
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      # Versions come from Expo's gradle plugin (ExpoRootProject) for SDK 54:
-      # compileSdk 36 / buildTools 36.0.0 / ndk 27.1.12297006. Keep in sync if
-      # the Expo SDK bump changes them (visible in a prebuild's Gradle config log).
-      - name: Install required Android SDK packages
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build shared package
-        run: npm run build:shared
-
-      - name: Expo prebuild (android, clean)
-        run: cd apps/mobile && npx expo prebuild --clean -p android
+      - uses: ./.github/actions/android-toolchain
 
       - name: Compile generated Kotlin
         run: cd apps/mobile/android && ./gradlew :app:compileDebugKotlin --console=plain
@@ -153,35 +122,7 @@ jobs:
     needs: [shared]
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install required Android SDK packages
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build shared package
-        run: npm run build:shared
-
-      - name: Expo prebuild (android, clean)
-        run: cd apps/mobile && npx expo prebuild --clean -p android
+      - uses: ./.github/actions/android-toolchain
 
       - name: Restore release keystore
         env:
