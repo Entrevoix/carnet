@@ -12,7 +12,8 @@ import {
 } from 'expo-speech-recognition';
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Animated, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useTheme } from 'react-native-paper';
+import { Icon } from 'react-native-paper';
+import { MIN_TAP_TARGET, useCarnetTheme } from '../lib/theme';
 import {
   type RecognizerOption,
   SYSTEM_DEFAULT_RECOGNIZER,
@@ -268,7 +269,7 @@ type ErrAction = 'none' | 'no-service' | 'permission' | 'lang-unavailable' | 'di
 
 export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   function VoiceButton({ onTranscript, disabled }, ref) {
-  const theme = useTheme();
+  const theme = useCarnetTheme();
   const [isListening, setIsListening] = useState(false);
   const [errMsg, setErrMsg] = useState('');
   const [errPersist, setErrPersist] = useState(false);
@@ -1446,16 +1447,23 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
             disabled={disabled || detecting}
             style={({ pressed }: { pressed: boolean }) => [
               styles.btn,
-              { borderColor: theme.colors.outlineVariant, backgroundColor: theme.colors.surface },
+              { borderColor: theme.colors.outline, backgroundColor: theme.colors.surface },
               pressed && { backgroundColor: theme.colors.surfaceVariant },
-              isListening && { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+              // Solid-fill CTA while recording: the deep teal (carnet.fill),
+              // not colors.primary — on dark, primary is the brightened text
+              // tone and reads wrong as a fill (DESIGN.md).
+              isListening && { backgroundColor: theme.carnet.fill, borderColor: theme.carnet.fill },
               (disabled || detecting) && styles.btnDisabled,
             ]}
             hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={isListening ? 'Stop dictation' : 'Start dictation'}
           >
-            <Text style={[styles.icon, { color: theme.colors.onSurface }, isListening && { color: theme.colors.onPrimary }]}>
-              {detecting ? '…' : isListening ? '⏹' : '⏺'}
-            </Text>
+            <Icon
+              source={detecting ? 'dots-horizontal' : isListening ? 'stop' : 'microphone'}
+              size={22}
+              color={isListening ? theme.carnet.onFill : theme.colors.primary}
+            />
           </Pressable>
         </Animated.View>
       </View>
@@ -1467,22 +1475,22 @@ VoiceButton.displayName = 'VoiceButton';
 
 const styles = StyleSheet.create({
   btn: {
-    width: 44, height: 44, borderRadius: 22,
-    borderWidth: 1.5,
+    width: MIN_TAP_TARGET, height: MIN_TAP_TARGET,
+    borderRadius: MIN_TAP_TARGET / 2,
+    borderWidth: 1,
     alignItems: 'center', justifyContent: 'center',
   },
   btnDisabled: { opacity: 0.35 },
   orbContainer: {
-    width: 44,
-    height: 44,
+    width: MIN_TAP_TARGET,
+    height: MIN_TAP_TARGET,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  icon: { fontSize: 20 },
   errSheetTitle: { fontSize: 17, fontWeight: '700', marginBottom: 4 },
   errSheetMsg: { fontSize: 15, lineHeight: 22 },
   diagScroll: { maxHeight: 300, borderRadius: 8, padding: 10 },
-  diagText: { fontSize: 12, fontFamily: 'Menlo', lineHeight: 17 },
+  diagText: { fontSize: 12, fontFamily: 'monospace', lineHeight: 17 },
   errSheetBtn: {
     marginTop: 16, borderRadius: 10,
     paddingVertical: 12, alignItems: 'center',
@@ -1511,7 +1519,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   sheetOptionLabel: { fontSize: 15, fontWeight: '600' },
-  sheetOptionPkg: { fontSize: 11, fontFamily: 'Menlo', marginTop: 2 },
+  sheetOptionPkg: { fontSize: 11, fontFamily: 'monospace', marginTop: 2 },
   sheetWhisper: {
     marginTop: 4, padding: 14, borderRadius: 10,
     borderWidth: 1, alignItems: 'center',
