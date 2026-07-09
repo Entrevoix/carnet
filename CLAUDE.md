@@ -42,14 +42,14 @@ exists or add one without discussing scope — it's a deliberate gap, not an ove
 silently "fix."
 
 ## CI (`.github/workflows/ci.yml`)
-Four jobs: `shared` → `mobile`, `desktop` (parallel, both `needs: [shared]`) → `gate`
-(`needs: [shared, mobile, desktop]`, required by branch protection). A fifth job,
-`mobile-android` (Expo prebuild + `gradlew :app:compileDebugKotlin`), exists to catch native
-Kotlin regressions in `apps/mobile/plugins/*.js` config plugins, but is **deliberately not**
-in `gate.needs` — its own in-file comment says it "has never been observed green" in this
-repo's CI. Treat it as advisory only; do not assume Android native code compiles just
-because `gate` is green, and don't add it to `gate.needs` yourself — that's an explicit
-human call once it's proven green a few times.
+Five jobs: `shared` → `mobile`, `desktop`, `mobile-android` (parallel, all
+`needs: [shared]`) → `gate` (`needs: [shared, mobile, desktop, mobile-android]`,
+required by branch protection). `mobile-android` (Expo prebuild +
+`gradlew :app:compileDebugKotlin`) catches native Kotlin regressions in
+`apps/mobile/plugins/*.js` config plugins; it was promoted into `gate.needs` on
+2026-07-09 after three consecutive green runs (PRs #94–#96). If its Android
+toolchain setup ever turns flaky and blocks unrelated merges, demoting it is a
+one-line revert in `gate.needs` — note it in the job's in-file comment if so.
 
 ## Hard constraints (non-negotiable — from `docs/session-handoffs/`)
 - **No SQLite.** `expo-sqlite@55` is ABI-broken on Expo SDK 54. All persistence goes through
