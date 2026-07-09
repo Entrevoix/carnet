@@ -50,6 +50,13 @@ required by branch protection). `mobile-android` (Expo prebuild +
 2026-07-09 after three consecutive green runs (PRs #94–#96). If its Android
 toolchain setup ever turns flaky and blocks unrelated merges, demoting it is a
 one-line revert in `gate.needs` — note it in the job's in-file comment if so.
+A sixth job, `apk` (advisory, not in `gate.needs`), attaches a release-signed
+installable APK to every run's Artifacts — signed with the shared release
+keystore (repo secrets `CARNET_KEYSTORE_*`; local mirror at
+`~/.config/carnet/keystore.properties`, consumed by
+`apps/mobile/scripts/build-release-apk.sh`). Debug-signed installs can't
+upgrade to release-signed ones — uninstall once to cross over (see the
+script header for the data-loss caveat).
 
 ## Hard constraints (non-negotiable — from `docs/session-handoffs/`)
 - **No SQLite.** `expo-sqlite@55` is ABI-broken on Expo SDK 54. All persistence goes through
