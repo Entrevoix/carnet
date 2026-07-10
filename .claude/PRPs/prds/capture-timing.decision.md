@@ -1,0 +1,39 @@
+# Decision memo — capture timing: blocking enrich-preview vs save-first for text captures
+
+**Status:** recommended, pending user sign-off · **Date:** 2026-07-04 · **Feeds:** `stage2-backend-and-capture.plan.md` (branches B4/B5) · **Source:** AUDIT-backend.md §2.3–2.4, Open Question 5
+
+## The question
+
+Idea/Journal/Person captures currently **block on the LLM** between Send and a preview, and the note only exists after an explicit Save tap (`CaptureScreen.tsx:271-362` enrich→preview, `:364-443` write). Photo/share save-first with a stub + degraded banner; audio saves instantly and transcribes async. Should Idea and Journal move to the save-first model — which is what unlocks notification inline reply (zero-app-open capture) and removes seconds of blocking from the two modes most sensitive to capture speed?
+
+## Facts that bound the decision (all verified in-repo)
+
+- **Most of the mechanism exists; the conflict-handling does not.** Reusable and shipped: offline queue with raw-payload drain (`lib/queue.ts`), stub + `degradedReason` banner + in-place re-enrich (`PhotoCaptureScreen.tsx:150-248`), retro-enrich on RecentDetail (`.claude/PRPs/reports/recents-retro-enrich-report.md`). **Not shipped, must be built:** any read-before-write conflict detection. There is no mtime/`modificationTime` comparison anywhere in the mobile tree — the only `getInfoAsync` calls are existence checks (`writer.ts:180,194,207`). The "promote-idea mtime race" this memo previously cited as the reuse target is itself an *unbuilt* open item (`TODO.md:33`), not proven machinery. So save-first is a UX-policy change **plus** net-new conflict handling — cost it accordingly.
+- **The preview's protective value is lowest exactly where its cost is highest.** Idea/Journal synthesis errors are cheap to fix (local vault, inline edit shipped, retro-enrich shipped). Person errors are costly (wrong email/phone from fallible OCR) and the review step earns its tap.
+- **The Syncthing reality (corrected).** A raw note written immediately can sync to the workstation before the enriched rewrite lands. Consequences: (a) Obsidian may briefly show the raw note — cosmetic; (b) a workstation edit inside the enrich window that collides with the enriched overwrite does **not** silently lose data — Syncthing keeps one version and renames the other `*.sync-conflict-*.md`. A mobile-side mtime check only helps if the workstation edit has *already synced back to the phone*; an in-flight edit during the window is invisible to it. So the honest framing is: save-first produces **more sync-conflict files to reconcile**, not data loss — acceptable, but it is a real reconciliation cost, not a closed race.
+- **Journal is append-structured, and this is where save-first is hardest.** `appendJournal` (`writer.ts:700-741`) reads the whole day-file and appends a new `## HH:MM` block; there is **no** "replace my block" primitive (`upsertSection` matches only the *first* `## heading`), and `## HH:MM` is **not unique** — two captures in the same minute collide. Worse, at the filesystem/Syncthing layer a block-scoped edit is still a whole-file replace (Syncthing replicates files, not blocks), so "touch only my block" buys nothing for cross-device conflicts — the in-process `serialize()` per-path lock (`writer.ts:664`) already covers same-device ordering. And save-first roughly **doubles day-file writes** per journal capture (raw append, then enriched rewrite), *widening* the conflict window vs. today's single blocking write. The Journal path needs a real design (see mechanics), not a block-rewrite assumption. **Idea save-first — a single fresh unique-slug file — is genuinely low-risk; Journal is the hard case.**
+
+## Recommendation
+
+**Flip Idea and Journal to save-first/async-enrich as the default. Keep Person on enrich-then-preview. Leave photo/share/audio as they are.**
+
+Mechanics:
+
+1. **Build conflict detection first (net-new).** Before overwriting an enriched note over its raw predecessor, record the raw file's `modificationTime` at write and re-check it before the enriched overwrite; if it changed, the user (or a synced workstation edit) touched it — keep their version and surface a banner instead of clobbering. This is the same guard `TODO.md:33` wants for promote-idea; building it here closes both. It only catches edits already visible on-device; cross-device races still resolve to Syncthing `*.sync-conflict-*.md` files (acceptable, see Facts).
+2. **Idea (low-risk path):** on Save, write a fresh file immediately with deterministic client-side content — user text as body, client frontmatter (`created`, user tags, location), `status: pending-enrich`. Slug derivation: because the LLM title doesn't exist yet, derive the initial slug from the raw text; on enrichment, **keep the same file and only update frontmatter/body in place** (do *not* rename to the enriched title — a rename is delete+create, which doubles Syncthing churn and reopens collision handling). Accept that the on-disk slug reflects the raw text, not the polished title; this is the price of save-first and is preferable to rename churn.
+3. **Journal (needs the real design):** do not attempt a block-scoped rewrite. Options to decide in-plan: (a) write the raw block on Save, then on enrichment re-read the day-file and replace *that specific block* identified by a unique marker injected into the block (e.g. a capture-id in an HTML comment or the block heading), not by `## HH:MM`; or (b) defer the journal write until enrichment settles (keep Journal on a near-blocking path, save-first only Idea) — simpler, preserves the single-write model, at the cost of Journal not getting inline-reply. Recommend starting with (b) and revisiting (a) only if Journal inline-reply proves wanted.
+4. Fire enrichment async. On success, update in place (guarded by step 1). On transient failure, fall into the existing queue; on permanent failure, keep the raw note and show the degraded banner + re-enrich affordance (identical posture to photo).
+5. Settings toggle `previewBeforeSave` (default **off**) restores the old flow for users who want to vet synthesis pre-save. Person ignores the toggle and always previews.
+
+Why flip the default rather than opt-in: the product thesis (AUDIT-backend.md Task 2 goal) is *fewest possible clicks to get data in*. A raw-but-saved note beats a polished note that was never captured because the phone was on the wrong network — and the failure modes are all recoverable in-app today.
+
+## What this unlocks / what it costs
+
+- **Unlocks:** notification inline reply (RemoteInput — zero-app-open idea capture, Stage 2 B5); one fewer tap on every Idea/Journal capture; no LLM wait on the critical path; captures work identically off-network (raw note now, enrichment on drain) instead of silently queueing into a different code path.
+- **Costs:** raw notes transiently visible in the vault; net-new conflict-detection code to build (step 1); more Syncthing `*.sync-conflict-*.md` files to reconcile in the concurrent-edit case (not data loss, but real reconciliation work); on-disk Idea slugs reflect raw text rather than the polished title; the Journal path likely ships on the simpler deferred-write model (option b) rather than true save-first; users lose the default pre-save vet for Idea/Journal (recoverable via toggle, edit, or re-enrich).
+
+## Rejected alternatives
+
+- **Opt-in quick-save (keep blocking default):** preserves status quo comfort but leaves the flagship modes slow by default and makes inline reply a second-class path gated on a buried setting.
+- **Save-first for Person too:** rejected — OCR'd contact data is the one place synthesis review demonstrably pays for its tap.
+- **Draft/staging area outside the vault until enriched:** avoids the Syncthing wrinkle but adds a second persistence layer, breaks "the vault is the source of truth," and delays sync of the raw capture — worse than the problem it solves.
