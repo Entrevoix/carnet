@@ -696,11 +696,16 @@ export async function writeIdea(
  * Read-then-write is serialized per-filepath so two captures arriving in
  * quick succession (e.g. during an offline drain pass) don't both read the
  * same baseline and clobber each other.
+ *
+ * Returns the day file's full accumulated markdown (every same-day capture
+ * merged, with this entry's tags unioned into the frontmatter) alongside its
+ * filepath — callers that maintain the note/tag index must index off this,
+ * not the just-written fragment, or earlier same-day tags are lost.
  */
 export async function appendJournal(
   date: string,
   markdown: string,
-): Promise<{ filepath: string }> {
+): Promise<{ filepath: string; markdown: string }> {
   const root = await resolveRoot();
   const journalUri = await findOrCreateSubdir(root, "Journal");
   const filename = `${date}.md`;
@@ -732,11 +737,11 @@ export async function appendJournal(
       const appended = stripFrontmatter(markdown);
       const finalMarkdown = `${base.trimEnd()}\n\n## ${hhmm}\n\n${appended.trimStart()}`;
       await writeByUri(existingUri, finalMarkdown);
-      return { filepath: existingUri };
+      return { filepath: existingUri, markdown: finalMarkdown };
     }
 
     const filepath = await writeNewFile(journalUri, filename, markdown, root.isSaf);
-    return { filepath };
+    return { filepath, markdown };
   });
 }
 
@@ -823,6 +828,64 @@ export async function readNote(filepath: string): Promise<string> {
 /** Overwrite a note file with new content. Supports both file:// and content:// URIs. */
 export async function updateNote(filepath: string, markdown: string): Promise<void> {
   await writeByUri(filepath, markdown);
+}
+
+/**
+ * Read a note file's last-modification time (epoch seconds) via getInfoAsync.
+ * Returns null when the file doesn't exist, or when the backend can't report a
+ * usable mtime — notably SAF `content://` URIs, which don't expose a reliable
+ * modification time. A null baseline means the conflict guard below cannot fire
+ * for that file: cross-device edits there resolve to Syncthing
+ * `*.sync-conflict-*.md` files instead (see the capture-timing decision memo).
+ *
+ * This is the primitive the save-first Idea path and the promote-idea race
+ * (TODO.md) both need: record it right after a write, re-check it before the
+ * next overwrite.
+ */
+export async function getModificationTime(filepath: string): Promise<number | null> {
+  if (filepath.startsWith("content://")) return null;
+  try {
+    const info = await FileSystem.getInfoAsync(filepath);
+    if (!info.exists) return null;
+    return typeof info.modificationTime === "number" ? info.modificationTime : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Result of a guarded overwrite. `reason: "conflict"` means the file changed
+ * under us and the write was deliberately skipped (the on-disk version wins). */
+export interface GuardedUpdateResult {
+  ok: boolean;
+  reason?: "conflict";
+}
+
+/**
+ * Overwrite a note ONLY if its on-disk mtime still matches `expectedMtime`.
+ *
+ * Detects a user edit (or a synced workstation edit that already reached the
+ * device) landing between when the caller recorded `expectedMtime` and this
+ * overwrite. On a mismatch the write is skipped and `{ ok: false,
+ * reason: "conflict" }` is returned so the caller can keep the existing version
+ * and surface a banner instead of clobbering it.
+ *
+ * When mtime can't be read (SAF, or a null baseline) the guard cannot fire and
+ * the overwrite proceeds — cross-device races there fall back to Syncthing
+ * conflict files, exactly as the decision memo describes.
+ */
+export async function updateNoteIfUnchanged(
+  filepath: string,
+  markdown: string,
+  expectedMtime: number | null,
+): Promise<GuardedUpdateResult> {
+  if (expectedMtime !== null) {
+    const current = await getModificationTime(filepath);
+    if (current !== null && current !== expectedMtime) {
+      return { ok: false, reason: "conflict" };
+    }
+  }
+  await writeByUri(filepath, markdown);
+  return { ok: true };
 }
 
 /** Vault subdirs that hold markdown notes. Photos/Audio/Files hold binaries

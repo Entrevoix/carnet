@@ -11,24 +11,32 @@
  * see .claude/PRPs/plans/recents-screen-preview-delete.plan.md "NOT Building".
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Linking, ScrollView, StyleSheet, View } from "react-native";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Alert, Linking, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import * as Sharing from "expo-sharing";
 import {
   ActivityIndicator,
   Banner,
   Button,
   Card,
-  Chip,
   Dialog,
+  FAB,
   IconButton,
+  List,
   type MD3Theme,
+  Modal,
   Portal,
   ProgressBar,
   Snackbar,
   Text,
   TextInput,
-  useTheme,
 } from "react-native-paper";
 import Markdown from "react-native-markdown-display";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -78,12 +86,16 @@ import { clearPushedAssets } from "../lib/karakeepAssetSync";
 import { pickAttachment } from "../lib/attachments";
 import { MAX_EDITOR_IMAGE_BASE64, toDataUri } from "../lib/editorImages";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
+import { StampChip } from "../components/StampChip";
+import { modeStamp } from "../components/NoteCard";
+import { MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
 import { makeImageRule } from "../components/markdownImageRule";
 import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
 import { TagInput } from "../components/TagInput";
 import { applyTagsToHeader } from "../lib/tags";
-import { getTagIndex, invalidateTagIndex, tagsForNote } from "../lib/vault";
-import { enrichSharedImage, transcribeAudio } from "../lib/omniroute";
+import { getTagIndex, invalidateNoteIndex, tagsForNote } from "../lib/vault";
+import { enrichSharedImage } from "../lib/dispatcher";
+import { transcribeAudio } from "../lib/omniroute";
 import {
   removeFromHistory,
   removeFromHistoryByFilepath,
@@ -95,13 +107,18 @@ import { getSettings } from "../lib/settings";
 type Props = NativeStackScreenProps<RootStackParamList, "RecentDetail">;
 
 export default function RecentDetailScreen({ route, navigation }: Props) {
-  const theme = useTheme();
+  const theme = useCarnetTheme();
   const { entry } = route.params;
 
   const [body, setBody] = useState<string>("");
   const [missing, setMissing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [confirmVisible, setConfirmVisible] = useState(false);
+  // Secondary actions live in a bottom sheet behind the header overflow;
+  // the raw file path lives in a "File info" dialog off that sheet. Edit is
+  // the screen's single primary action (the FAB).
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [fileInfoOpen, setFileInfoOpen] = useState(false);
   const [reEnriching, setReEnriching] = useState(false);
   const [reEnrichError, setReEnrichError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
@@ -175,6 +192,22 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       mountedRef.current = false;
     };
   }, []);
+
+  // Header overflow (⋮) — the entry to the secondary-actions sheet. Hidden
+  // while editing (the edit surface has its own Save/Cancel chrome).
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: editMode
+        ? undefined
+        : () => (
+            <IconButton
+              icon="dots-vertical"
+              onPress={() => setActionsOpen(true)}
+              accessibilityLabel="More actions"
+            />
+          ),
+    });
+  }, [navigation, editMode]);
 
   // Reconcile with the persisted setting once on mount (default true). Kept so a
   // future gate can flip it off again without re-plumbing the screen.
@@ -720,7 +753,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       setBody(next);
       // A tag change makes the vault index stale — drop the cache so the
       // browser counts + capture autocomplete rebuild on next read.
-      if (tagsChanged) void invalidateTagIndex().catch(() => undefined);
+      if (tagsChanged) void invalidateNoteIndex().catch(() => undefined);
     } catch (e: unknown) {
       const reason = e instanceof Error ? e.message : String(e);
       console.warn("[RecentDetail] save (rich) failed:", reason);
@@ -876,8 +909,13 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     return m;
   }, [attachments]);
   const markdownRules = useMemo(
-    () => ({ image: makeImageRule(imageUriByRel, styles.inlineImage) }),
-    [imageUriByRel],
+    () => ({
+      image: makeImageRule(imageUriByRel, [
+        styles.inlineImage,
+        { backgroundColor: theme.colors.surfaceVariant },
+      ]),
+    }),
+    [imageUriByRel, theme.colors.surfaceVariant],
   );
 
   // Open a non-image attachment via the system share sheet. shareAsync wants a
@@ -910,9 +948,29 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const showAudioPlayer = canTranscribe && !missing;
 
   if (loading) {
+    // Skeleton paragraph blocks — reads as "content coming", not a spinner.
     return (
-      <View style={styles.loading}>
-        <ActivityIndicator />
+      <View
+        style={[
+          styles.loading,
+          {
+            backgroundColor: theme.colors.background,
+            padding: theme.carnet.spacing.lg,
+            gap: theme.carnet.spacing.md,
+          },
+        ]}
+      >
+        {[64, 16, 16, 16].map((h, i) => (
+          <View
+            key={i}
+            style={{
+              height: h,
+              width: i === 0 ? "60%" : "100%",
+              backgroundColor: theme.colors.surfaceVariant,
+              borderRadius: theme.carnet.radius.sm,
+            }}
+          />
+        ))}
       </View>
     );
   }
@@ -929,6 +987,27 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     (a) => !a.mime.startsWith("image/"),
   );
   const noteLocation = extractFrontmatterField(body, "location");
+  const noteTags = tagsForNote(body);
+  const pendingEnrich = extractFrontmatterField(body, "status") === "pending-enrich";
+  // One banner slot: a failed save is the most actionable, then the export/
+  // operation errors. (The missing-file case takes over the whole screen.)
+  const activeIssue = editError
+    ? `Save failed: ${editError}`
+    : karakeepError
+      ? `Karakeep export failed: ${karakeepError}`
+      : transcribeError
+        ? `Transcribe failed: ${transcribeError}`
+        : reEnrichError
+          ? `Re-enrich failed: ${reEnrichError}`
+          : null;
+  const busyLabel = reEnriching
+    ? "Re-running vision enrichment…"
+    : transcribing
+      ? "Transcribing audio…"
+      : exportingKarakeep
+        ? "Sending to Karakeep…"
+        : null;
+  const actionsBusy = reEnriching || transcribing || exportingKarakeep;
 
   // Rich (WYSIWYG) editing takes the whole screen so TenTap's formatting toolbar
   // can dock above the keyboard. Frontmatter is split off and reattached on save,
@@ -1000,99 +1079,86 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     <>
       <ScrollView contentContainerStyle={styles.content}>
         {missing ? (
-          <Banner
-            visible
-            icon="alert"
-            actions={[
-              {
-                label: "Remove from recents",
-                onPress: handleRemoveFromHistory,
-              },
-            ]}
-          >
-            This note was edited or deleted outside carnet.
-          </Banner>
+          // Dedicated missing-file state — nothing else renders over it.
+          <View style={[styles.missingWrap, { gap: theme.carnet.spacing.md }]}>
+            <IconButton icon="file-question-outline" size={48} />
+            <Text variant="titleMedium">Note not found</Text>
+            <Text
+              variant="bodyMedium"
+              style={[styles.missingText, { color: theme.colors.onSurfaceVariant }]}
+            >
+              This note was moved or deleted outside carnet — probably in
+              Obsidian. Its history entry can be removed safely.
+            </Text>
+            <Button mode="contained-tonal" onPress={handleRemoveFromHistory}>
+              Remove from list
+            </Button>
+          </View>
         ) : null}
 
-        {reEnrichError ? (
+        {/* One banner slot — the most actionable issue wins instead of five
+            banners stacking above the note. */}
+        {!missing && activeIssue ? (
           <Banner visible icon="alert" actions={[]}>
-            {`Re-enrich failed: ${reEnrichError}`}
+            {activeIssue}
           </Banner>
         ) : null}
 
-        {transcribeError ? (
-          <Banner visible icon="alert" actions={[]}>
-            {`Transcribe failed: ${transcribeError}`}
-          </Banner>
-        ) : null}
-
-        {karakeepError ? (
-          <Banner visible icon="alert" actions={[]}>
-            {`Karakeep export failed: ${karakeepError}`}
-          </Banner>
-        ) : null}
-
-        {editError ? (
-          <Banner visible icon="alert" actions={[]}>
-            {`Save failed: ${editError}`}
-          </Banner>
-        ) : null}
-
-        {reEnriching ? (
+        {!missing && busyLabel ? (
           <View style={styles.inlineLoading}>
             <ActivityIndicator />
             <Text variant="bodySmall" style={styles.dim}>
-              Re-running vision enrichment…
+              {busyLabel}
             </Text>
           </View>
         ) : null}
 
-        {transcribing ? (
-          <View style={styles.inlineLoading}>
-            <ActivityIndicator />
-            <Text variant="bodySmall" style={styles.dim}>
-              Transcribing audio…
-            </Text>
-          </View>
-        ) : null}
-
-        {exportingKarakeep ? (
-          <View style={styles.inlineLoading}>
-            <ActivityIndicator />
-            <Text variant="bodySmall" style={styles.dim}>
-              Sending to Karakeep…
-            </Text>
-          </View>
-        ) : null}
-
-        <Card style={styles.card}>
-          <Card.Title
-            title={entry.title}
-            subtitle={`${formatMode(entry.mode)} · ${formatDate(entry.createdAt)}`}
-          />
-          <Card.Content>
-            <Text variant="bodySmall" selectable style={styles.path}>
-              {entry.filepath}
-            </Text>
+        {/* Metadata as one quiet stamp row — the reading surface starts
+            immediately below. The raw file path lives in File info. */}
+        {!missing && !editMode ? (
+          <View style={[styles.metaRow, { gap: theme.carnet.spacing.sm }]}>
+            <StampChip
+              label={modeStamp(entry.mode).label}
+              icon={modeStamp(entry.mode).icon}
+            />
+            {noteTags.map((tag) => (
+              <Pressable
+                key={tag}
+                style={styles.stampHit}
+                onPress={() => navigation.navigate("Search", { tag })}
+                accessibilityRole="button"
+                accessibilityLabel={`Search notes tagged ${tag}`}
+              >
+                <StampChip label={`#${tag}`} />
+              </Pressable>
+            ))}
             {noteLocation ? (
-              <View style={styles.metaRow}>
-                <Chip
-                  icon="map-marker"
-                  compact
-                  onPress={() =>
-                    void Linking.openURL(`geo:${noteLocation}?q=${noteLocation}`).catch(
-                      () => undefined,
-                    )
-                  }
-                >
-                  {noteLocation}
-                </Chip>
-              </View>
+              <Pressable
+                style={styles.stampHit}
+                onPress={() =>
+                  void Linking.openURL(`geo:${noteLocation}?q=${noteLocation}`).catch(
+                    () => undefined,
+                  )
+                }
+                accessibilityRole="button"
+                accessibilityLabel="Open location in maps"
+              >
+                <StampChip label="location" icon="map-marker" />
+              </Pressable>
             ) : null}
-          </Card.Content>
-        </Card>
+            {pendingEnrich ? (
+              <StampChip label="pending" icon="sync" tone="stamp" />
+            ) : null}
+            <Text
+              variant="labelSmall"
+              style={{ color: theme.colors.onSurfaceVariant }}
+            >
+              {formatDate(entry.createdAt)}
+            </Text>
+          </View>
+        ) : null}
 
-        {editMode ? (
+        {!missing && editMode ? (
           <Card style={styles.card}>
             {/* Reached only in markdown mode: the rich (WYSIWYG) editor renders
                 full-screen via the early return near the top of render(). */}
@@ -1124,7 +1190,12 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
                   autoCapitalize="none"
                 />
                 {preview ? (
-                  <View style={styles.editPreview}>
+                  <View
+                    style={[
+                      styles.editPreview,
+                      { borderTopColor: theme.colors.outlineVariant },
+                    ]}
+                  >
                     <Markdown style={markdownStyle(theme)}>
                       {stripPairedBinaryLinks(stripFrontmatter(draft))}
                     </Markdown>
@@ -1152,7 +1223,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
               </Button>
             </Card.Actions>
           </Card>
-        ) : (
+        ) : !missing ? (
           <>
             {showAudioPlayer ? (
               <Card style={styles.card}>
@@ -1181,7 +1252,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
                     </View>
                   </View>
                   {playerError ? (
-                    <Text variant="bodySmall" style={styles.playerError}>
+                    <Text
+                      variant="bodySmall"
+                      style={[styles.playerError, { color: theme.colors.error }]}
+                    >
                       {`Playback failed: ${playerError}`}
                     </Text>
                   ) : null}
@@ -1210,75 +1284,36 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
               </Card>
             ) : null}
 
-            {!missing ? (
-              <Card style={styles.card}>
-                <Card.Content>
-                  <Markdown style={markdownStyle(theme)} rules={markdownRules}>
-                    {renderBody}
-                  </Markdown>
-                </Card.Content>
-              </Card>
-            ) : null}
-
-            <Card style={styles.card}>
-              <Card.Actions>
-                <Button
-                  mode="text"
-                  icon="pencil"
-                  onPress={enterEdit}
-                  disabled={missing || reEnriching || transcribing}
-                >
-                  Edit
-                </Button>
-                {canReEnrich ? (
-                  <Button
-                    mode="text"
-                    icon="auto-fix"
-                    onPress={handleReEnrich}
-                    disabled={missing || reEnriching || transcribing}
-                  >
-                    Re-enrich
-                  </Button>
-                ) : null}
-                {canTranscribe ? (
-                  <Button
-                    mode="text"
-                    icon="text-recognition"
-                    onPress={handleTranscribe}
-                    disabled={missing || reEnriching || transcribing}
-                  >
-                    Transcribe
-                  </Button>
-                ) : null}
-                {karakeepConfigured ? (
-                  <Button
-                    mode="text"
-                    icon="bookmark-plus-outline"
-                    onPress={handleSendToKarakeep}
-                    disabled={
-                      missing ||
-                      reEnriching ||
-                      transcribing ||
-                      exportingKarakeep
-                    }
-                  >
-                    Send to Karakeep
-                  </Button>
-                ) : null}
-                <Button
-                  mode="text"
-                  icon="delete"
-                  textColor={theme.colors.error}
-                  onPress={() => setConfirmVisible(true)}
-                  disabled={missing || reEnriching || transcribing}
-                >
-                  Delete
-                </Button>
-              </Card.Actions>
-            </Card>
+            {/* The note itself — full-width on the reading surface, no card
+                box. This is what the user came for; it starts here. */}
+            <View style={styles.bodyWrap}>
+              <Markdown style={markdownStyle(theme)} rules={markdownRules}>
+                {renderBody}
+              </Markdown>
+            </View>
           </>
-        )}
+        ) : null}
       </ScrollView>
+
+      {/* Single primary action: edit. Everything else is behind the header
+          overflow sheet. */}
+      {!missing && !editMode ? (
+        <FAB
+          icon="pencil"
+          label="Edit"
+          color={theme.carnet.onFill}
+          style={[
+            styles.fab,
+            {
+              backgroundColor: theme.carnet.fill,
+              borderRadius: theme.carnet.radius.pill,
+            },
+          ]}
+          onPress={enterEdit}
+          disabled={actionsBusy}
+          accessibilityLabel="Edit note"
+        />
+      ) : null}
 
       <Snackbar
         visible={karakeepDone}
@@ -1289,6 +1324,112 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       </Snackbar>
 
       <Portal>
+        {/* Secondary actions sheet (header ⋮). Delete sits last, stamp-red,
+            separated from the rest. */}
+        <Modal
+          visible={actionsOpen}
+          onDismiss={() => setActionsOpen(false)}
+          contentContainerStyle={[
+            styles.sheet,
+            {
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.outline,
+              borderTopLeftRadius: theme.carnet.radius.sheet,
+              borderTopRightRadius: theme.carnet.radius.sheet,
+              paddingVertical: theme.carnet.spacing.md,
+            },
+          ]}
+        >
+          {canReEnrich ? (
+            <List.Item
+              title="Re-enrich"
+              description="Re-run AI enrichment on the original image"
+              left={(p) => <List.Icon {...p} icon="auto-fix" />}
+              disabled={actionsBusy}
+              onPress={() => {
+                setActionsOpen(false);
+                void handleReEnrich();
+              }}
+              style={styles.sheetRow}
+            />
+          ) : null}
+          {canTranscribe ? (
+            <List.Item
+              title="Transcribe"
+              description="Turn the audio into a text transcript"
+              left={(p) => <List.Icon {...p} icon="text-recognition" />}
+              disabled={actionsBusy}
+              onPress={() => {
+                setActionsOpen(false);
+                void handleTranscribe();
+              }}
+              style={styles.sheetRow}
+            />
+          ) : null}
+          {karakeepConfigured ? (
+            <List.Item
+              title="Send to Karakeep"
+              description="Bookmark this note on your Karakeep instance"
+              left={(p) => <List.Icon {...p} icon="bookmark-plus-outline" />}
+              disabled={actionsBusy || missing}
+              onPress={() => {
+                setActionsOpen(false);
+                handleSendToKarakeep();
+              }}
+              style={styles.sheetRow}
+            />
+          ) : null}
+          <List.Item
+            title="File info"
+            description="Where this note lives in the vault"
+            left={(p) => <List.Icon {...p} icon="file-document-outline" />}
+            onPress={() => {
+              setActionsOpen(false);
+              setFileInfoOpen(true);
+            }}
+            style={styles.sheetRow}
+          />
+          <View
+            style={[styles.sheetDivider, { backgroundColor: theme.colors.outline }]}
+          />
+          <List.Item
+            title="Delete"
+            description="Move the note to Archive/"
+            titleStyle={{ color: theme.colors.error }}
+            left={(p) => (
+              <List.Icon {...p} icon="delete" color={theme.colors.error} />
+            )}
+            disabled={actionsBusy || missing}
+            onPress={() => {
+              setActionsOpen(false);
+              setConfirmVisible(true);
+            }}
+            style={styles.sheetRow}
+          />
+        </Modal>
+
+        <Dialog
+          visible={fileInfoOpen}
+          onDismiss={() => setFileInfoOpen(false)}
+          style={{ borderRadius: theme.carnet.radius.sheet }}
+        >
+          <Dialog.Title>File info</Dialog.Title>
+          <Dialog.Content style={{ gap: theme.carnet.spacing.sm }}>
+            <Text variant="bodySmall" selectable style={styles.path}>
+              {entry.filepath}
+            </Text>
+            <Text
+              variant="bodySmall"
+              style={{ color: theme.colors.onSurfaceVariant }}
+            >
+              {`${formatMode(entry.mode)} · captured ${formatDate(entry.createdAt)}`}
+            </Text>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setFileInfoOpen(false)}>Close</Button>
+          </Dialog.Actions>
+        </Dialog>
+
         <Dialog
           visible={confirmVisible}
           onDismiss={() => setConfirmVisible(false)}
@@ -1395,12 +1536,20 @@ function markdownStyle(theme: MD3Theme) {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: 16, gap: 12 },
+  content: { padding: 16, gap: 12, paddingBottom: 96 },
   card: { marginTop: 4 },
   path: { opacity: 0.6, fontFamily: "monospace" },
-  metaRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
+  metaRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center" },
+  stampHit: { minHeight: MIN_TAP_TARGET, justifyContent: "center" },
+  bodyWrap: { paddingTop: 4 },
+  missingWrap: { alignItems: "center", paddingVertical: 48 },
+  missingText: { textAlign: "center" },
+  fab: { position: "absolute", right: 16, bottom: 24 },
+  sheet: { position: "absolute", left: 0, right: 0, bottom: 0, borderWidth: 1 },
+  sheetRow: { minHeight: MIN_TAP_TARGET },
+  sheetDivider: { height: StyleSheet.hairlineWidth, marginVertical: 4 },
   dim: { opacity: 0.6 },
-  loading: { flex: 1, alignItems: "center", justifyContent: "center" },
+  loading: { flex: 1 },
   inlineLoading: {
     paddingVertical: 16,
     alignItems: "center",
@@ -1425,32 +1574,25 @@ const styles = StyleSheet.create({
   richBarActions: { flexDirection: "row", alignItems: "center", gap: 4 },
   richTags: { paddingHorizontal: 16, paddingBottom: 4 },
   richEditor: { flex: 1 },
+  // borderTopColor comes from the theme at the usage site (outlineVariant).
   editPreview: {
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#8884",
   },
   playerRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   playerMeta: { flex: 1, gap: 4 },
   playerTime: { opacity: 0.7, fontVariant: ["tabular-nums"] },
   playerProgress: { height: 4, borderRadius: 2 },
-  playerError: { color: "#DC2626", marginTop: 8 },
+  // color comes from the theme at the usage site (colors.error).
+  playerError: { marginTop: 8 },
   attachmentList: { gap: 12 },
-  attachmentImage: {
-    width: "100%",
-    height: 240,
-    borderRadius: 8,
-    backgroundColor: "#0001",
-  },
-  // Inline image rendered in the note prose via makeImageRule. Same sizing as
-  // the (now files-only) attachment image, with vertical rhythm so it sits as
-  // its own block between paragraphs.
+  // Inline image rendered in the note prose via makeImageRule; background
+  // tint comes from the theme at the usage site (surfaceVariant).
   inlineImage: {
     width: "100%",
     height: 240,
-    borderRadius: 8,
-    backgroundColor: "#0001",
+    borderRadius: 12,
     marginVertical: 8,
   },
   attachmentFileContent: { flexDirection: "row-reverse", justifyContent: "flex-end" },

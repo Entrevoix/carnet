@@ -39,6 +39,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
 }));
 
 import {
+  buildNoteIndex,
   buildTagIndex,
   getTagIndex,
   inferNoteMode,
@@ -69,6 +70,49 @@ function reset(): void {
 }
 
 beforeEach(reset);
+
+// ── buildNoteIndex titles ─────────────────────────────────────────────────────
+
+describe("buildNoteIndex titles", () => {
+  it("derives the title from the body, not the frontmatter delimiter", async () => {
+    // A save-first raw note: frontmatter but no H1. The regression this
+    // guards: deriveTitle on the FULL file falls back to its first line,
+    // which is the literal "---" delimiter.
+    addNote(
+      "file:///v/Ideas/raw.md",
+      "Ideas",
+      "---\ncreated: 2026-07-08T00:00:00.000Z\nstatus: pending-enrich\ntags: [qa-test]\n---\ndraft survival test\n",
+    );
+    const index = await buildNoteIndex();
+    expect(index.notes[0].title).toBe("draft survival test");
+    expect(index.notes[0].status).toBe("pending-enrich");
+  });
+
+  it("prefers the H1 when present", async () => {
+    addNote("file:///v/Ideas/h1.md", "Ideas", "---\ntags: [x]\n---\n# Real Title\n\nbody\n");
+    const index = await buildNoteIndex();
+    expect(index.notes[0].title).toBe("Real Title");
+  });
+
+  it("falls back to the filename when the body is empty", async () => {
+    addNote("file:///v/Ideas/empty-note.md", "Ideas", "---\ncreated: x\n---\n");
+    const index = await buildNoteIndex();
+    expect(index.notes[0].title.length).toBeGreaterThan(0);
+    expect(index.notes[0].title).not.toBe("---");
+  });
+
+  it("strips embed markdown from excerpts, keeping link labels", async () => {
+    addNote(
+      "file:///v/Ideas/photo-first.md",
+      "Ideas",
+      "---\ncreated: x\n---\n# Jack's Baseball Team\n\n![](../Photos/pxl-1.jpg) Jack made the team. See [the roster](https://example.com/roster).\n",
+    );
+    const index = await buildNoteIndex();
+    expect(index.notes[0].excerpt).toBe(
+      "Jack made the team. See the roster.",
+    );
+  });
+});
 
 // ── buildTagIndex ─────────────────────────────────────────────────────────────
 

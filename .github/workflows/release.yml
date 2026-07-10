@@ -1,0 +1,92 @@
+name: Release
+
+# Push a tag matching v*.*.* (e.g. `git tag v0.3.0 && git push origin v0.3.0`)
+# to build a release-signed APK and publish it as a GitHub Release asset.
+#
+# Unlike ci.yml's advisory per-PR `apk` job — which falls back to debug
+# signing when the keystore secret is absent (fine for a disposable PR
+# preview) — a tagged release must be release-signed or not published at
+# all, so this workflow fails loudly if CARNET_KEYSTORE_BASE64 isn't set
+# rather than silently shipping a debug-signed "release".
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/android-toolchain
+
+      # Safety gate: a tag can be pushed at any commit, not necessarily one
+      # main's CI has already vetted. Re-run the fast checks before spending
+      # the ~15min Gradle release build on a tree that doesn't pass them.
+      - name: Type check + unit tests
+        run: |
+          cd apps/mobile
+          npx tsc --noEmit
+          npx vitest run
+
+      - name: Restore release keystore
+        env:
+          CARNET_KEYSTORE_BASE64: ${{ secrets.CARNET_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$CARNET_KEYSTORE_BASE64" ]; then
+            echo "::error::CARNET_KEYSTORE_BASE64 is not set — refusing to publish a debug-signed release." >&2
+            exit 1
+          fi
+          echo "$CARNET_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/carnet-release.keystore"
+
+      - name: Assemble release APK
+        env:
+          CARNET_KEYSTORE_PASSWORD: ${{ secrets.CARNET_KEYSTORE_PASSWORD }}
+          CARNET_KEY_ALIAS: ${{ secrets.CARNET_KEY_ALIAS }}
+          CARNET_KEY_PASSWORD: ${{ secrets.CARNET_KEY_PASSWORD }}
+        run: |
+          cd apps/mobile/android
+          ./gradlew :app:assembleRelease --console=plain \
+            "-Pandroid.injected.signing.store.file=$RUNNER_TEMP/carnet-release.keystore" \
+            "-Pandroid.injected.signing.store.password=$CARNET_KEYSTORE_PASSWORD" \
+            "-Pandroid.injected.signing.key.alias=$CARNET_KEY_ALIAS" \
+            "-Pandroid.injected.signing.key.password=$CARNET_KEY_PASSWORD"
+
+      # Verify the cert actually IS the release keystore's before publishing
+      # — a misconfigured signingConfig could otherwise fall through to the
+      # debug cert with the assemble step still exiting 0.
+      - name: Verify release signature
+        run: |
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          CERT_SHA256=$("$APKSIGNER" verify --print-certs \
+            apps/mobile/android/app/build/outputs/apk/release/app-release.apk \
+            | sed -n 's/.*SHA-256 digest: //p' | head -1)
+          echo "APK signer SHA-256: $CERT_SHA256"
+          if [ "$CERT_SHA256" != "e5f5ed37e098e0da7b09a59734845b21c986a18d1994bbdb670d01e3c7a3eaf7" ]; then
+            echo "::error::APK is not signed with the expected release certificate — refusing to publish." >&2
+            exit 1
+          fi
+
+      # TAG is passed via env, not interpolated directly into the script —
+      # github.ref_name is an untrusted expression as far as shell scripts
+      # are concerned (git ref names permit $, (), backticks, etc.), even
+      # though reaching this workflow at all already requires push access.
+      - name: Rename APK to include the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p release-assets
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk \
+             "release-assets/carnet-$TAG.apk"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            "release-assets/carnet-$TAG.apk" \
+            --title "$TAG" \
+            --generate-notes

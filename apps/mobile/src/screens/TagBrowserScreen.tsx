@@ -1,7 +1,10 @@
 /**
  * Tag browser. Two modes driven by the optional `tag` route param:
- *   - no tag  → the vault's tags with note counts; tap to drill in
- *   - a tag   → the notes carrying it; tap opens RecentDetail
+ *   - no tag  → the vault's tags with note counts; tapping one opens Search
+ *               pre-filtered to that tag (the single browse surface)
+ *   - a tag   → the notes carrying it; tap opens RecentDetail. Kept for
+ *               existing deep links (e.g. from note detail), not reachable
+ *               from the top-level tag list anymore.
  *
  * The index is read cache-first (instant); pull-to-refresh forces a rebuild so
  * tags added since the last scan show up.
@@ -101,7 +104,9 @@ export default function TagBrowserScreen({ route, navigation }: Props) {
             {index > 0 && <Divider />}
             <List.Item
               title={`#${entry.tag}`}
-              onPress={() => navigation.push("TagBrowser", { tag: entry.tag })}
+              // Land in Search pre-filtered — one browse surface for
+              // "notes carrying this tag" instead of a parallel list here.
+              onPress={() => navigation.navigate("Search", { tag: entry.tag })}
               left={(props) => <List.Icon {...props} icon="tag-outline" />}
               right={() => (
                 <Text variant="labelLarge" style={[styles.count, { color: theme.colors.primary }]}>

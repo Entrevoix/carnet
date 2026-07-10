@@ -93,7 +93,13 @@ vi.mock("@carnet/shared", () => ({
 }));
 
 // Import after all mocks are set up
-import { enqueue, getQueueDepth, drainQueue } from "./queue";
+import {
+  enqueue,
+  getQueueCounts,
+  getQueueDepth,
+  drainQueue,
+  listQueueRows,
+} from "./queue";
 
 /** Current persisted queue rows (parsed from the AsyncStorage mock). */
 function rows(): Row[] {
@@ -105,6 +111,35 @@ function rows(): Row[] {
 function seed(seedRows: Row[]): void {
   _store.set(QUEUE_KEY, JSON.stringify(seedRows));
 }
+
+describe("getQueueCounts", () => {
+  it("splits pending vs permanently-failed rows", async () => {
+    seed([
+      { id: "a", mode: "idea", payload_json: "{}", created_at: 1, attempts: 0, last_error: null },
+      { id: "b", mode: "idea", payload_json: "{}", created_at: 2, attempts: 3, last_error: "5xx" },
+      { id: "c", mode: "idea", payload_json: "{}", created_at: 3, attempts: 10, last_error: "401" },
+    ]);
+    expect(await getQueueCounts()).toEqual({ pending: 2, failed: 1 });
+  });
+
+  it("returns zeros on an empty queue", async () => {
+    _store.delete(QUEUE_KEY);
+    expect(await getQueueCounts()).toEqual({ pending: 0, failed: 0 });
+  });
+});
+
+describe("listQueueRows", () => {
+  it("returns a snapshot whose mutation doesn't touch the stored queue", async () => {
+    seed([
+      { id: "a", mode: "idea", payload_json: "{}", created_at: 1, attempts: 2, last_error: "5xx" },
+    ]);
+    const snapshot = await listQueueRows();
+    expect(snapshot).toHaveLength(1);
+    expect(snapshot[0].attempts).toBe(2);
+    snapshot[0].attempts = 99;
+    expect((await listQueueRows())[0].attempts).toBe(2);
+  });
+});
 
 beforeEach(() => {
   _store.clear();

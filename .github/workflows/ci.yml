@@ -50,6 +50,9 @@ jobs:
       - name: Type check
         run: cd apps/mobile && npx tsc --noEmit
 
+      - name: Unit tests
+        run: npm -w @carnet/mobile test
+
   desktop:
     runs-on: ubuntu-latest
     needs: [shared]
@@ -77,10 +80,88 @@ jobs:
       - name: Vite build (smoke)
         run: cd apps/desktop && npx vite build
 
+  # Android Kotlin compile smoke test.
+  #
+  # WHY THIS EXISTS: the Expo config plugins under apps/mobile/plugins/*.js
+  # emit native Kotlin as JS template strings. vitest + `tsc --noEmit` only
+  # cover JS/TS — they never see the generated Kotlin, so an invalid override
+  # signature or type error in a plugin template compiles clean in every other
+  # CI job and only blows up on a real `expo prebuild` + Gradle build. Exactly
+  # that happened with the B5 `QuickIdeaTaskService.getTaskConfig(intent: Intent)`
+  # regression, which reached main invisibly and broke every clean prebuild.
+  #
+  # This job runs the cheapest thing that reproduces that class of failure:
+  # a clean prebuild followed by `:app:compileDebugKotlin` (Kotlin compile
+  # only — no dexing, no APK packaging, no assembleDebug).
+  #
+  # WIRED INTO `gate` since 2026-07-09, after three consecutive green runs on
+  # real PRs (#94 2m54s, #95 3m6s, #96 3m27s). This is the required, blocking
+  # check that stops the generated-Kotlin bug class from regressing. If the
+  # Android toolchain setup ever gets flaky and starts blocking unrelated
+  # merges, demote it by removing `mobile-android` from `gate.needs` below
+  # (and restore the advisory note here).
+  mobile-android:
+    runs-on: ubuntu-latest
+    needs: [shared]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/android-toolchain
+
+      - name: Compile generated Kotlin
+        run: cd apps/mobile/android && ./gradlew :app:compileDebugKotlin --console=plain
+
+  # Installable release APK attached to every run — download it from the
+  # run's Artifacts. Signed with the shared release keystore (repo secrets
+  # CARNET_KEYSTORE_*, mirrored locally at ~/.config/carnet/) so a
+  # PR-artifact sideload upgrades cleanly over any other release-signed
+  # install. Fork PRs have no secrets and produce a debug-signed artifact.
+  # Deliberately NOT in gate.needs — a packaging hiccup shouldn't block
+  # merges; mobile-android already gates the native compile.
+  apk:
+    runs-on: ubuntu-latest
+    needs: [shared]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/android-toolchain
+
+      - name: Restore release keystore
+        env:
+          CARNET_KEYSTORE_BASE64: ${{ secrets.CARNET_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$CARNET_KEYSTORE_BASE64" ]; then
+            echo "$CARNET_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/carnet-release.keystore"
+            echo "Release keystore restored."
+          else
+            echo "No keystore secret (fork PR?) — the artifact will be debug-signed."
+          fi
+
+      - name: Assemble release APK
+        env:
+          CARNET_KEYSTORE_PASSWORD: ${{ secrets.CARNET_KEYSTORE_PASSWORD }}
+          CARNET_KEY_ALIAS: ${{ secrets.CARNET_KEY_ALIAS }}
+          CARNET_KEY_PASSWORD: ${{ secrets.CARNET_KEY_PASSWORD }}
+        run: |
+          cd apps/mobile/android
+          if [ -f "$RUNNER_TEMP/carnet-release.keystore" ]; then
+            ./gradlew :app:assembleRelease --console=plain \
+              "-Pandroid.injected.signing.store.file=$RUNNER_TEMP/carnet-release.keystore" \
+              "-Pandroid.injected.signing.store.password=$CARNET_KEYSTORE_PASSWORD" \
+              "-Pandroid.injected.signing.key.alias=$CARNET_KEY_ALIAS" \
+              "-Pandroid.injected.signing.key.password=$CARNET_KEY_PASSWORD"
+          else
+            ./gradlew :app:assembleRelease --console=plain
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: carnet-release-apk
+          path: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 14
+
   # Branch protection requires this job — do not rename without updating
   # Settings → Branches.
   gate:
     runs-on: ubuntu-latest
-    needs: [shared, mobile, desktop]
+    needs: [shared, mobile, desktop, mobile-android]
     steps:
       - run: echo "All checks passed"

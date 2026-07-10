@@ -30,18 +30,19 @@ import {
   enrichPerson,
   isPermanentError,
   isNotConfiguredError,
-} from "./omniroute";
+} from "./dispatcher";
 import {
   writeIdea,
   appendJournal,
   writePerson,
   slugify,
   injectAttachments,
+  updateNoteIfUnchanged,
   type AttachmentRef,
 } from "./writer";
 import { mergeUserTags } from "./tags";
 import { upsertFrontmatterField } from "./frontmatter";
-import { invalidateTagIndex } from "./vault";
+import { invalidateNoteIndex } from "./vault";
 import { deriveTitle } from "@carnet/shared";
 
 /** Inject a `location: lat,lon` frontmatter field, or a no-op when unset. */
@@ -70,6 +71,17 @@ export interface IdeaPayload {
   tags?: string[];
   /** User-selected `lat,lon`, injected into frontmatter on drain. */
   location?: string;
+  /**
+   * Save-first (B4): when set, the raw Idea note already exists on disk at this
+   * path (written immediately on Save, before a transient enrichment failure
+   * queued it). The drain then updates THIS file in place instead of creating a
+   * new one — otherwise the drain would write a duplicate note. Absent for the
+   * classic offline path where nothing was written before queuing.
+   */
+  filepath?: string;
+  /** mtime baseline captured at the raw write, guarding the in-place overwrite
+   * so a synced/user edit during the queue window isn't clobbered. */
+  baselineMtime?: number | null;
 }
 
 export interface JournalPayload {
@@ -106,7 +118,10 @@ export interface QueueRow {
 }
 
 const QUEUE_KEY = "carnet:queue:v1";
-const MAX_AUTO_RETRY_ATTEMPTS = 10;
+/** Exported so UI surfaces (the sync-detail sheet) can classify a row as
+ * permanently failed with the same threshold the drain uses — a duplicated
+ * literal would silently drift if this cap changes. */
+export const MAX_AUTO_RETRY_ATTEMPTS = 10;
 /** Sentinel attempts value meaning "permanent failure — do not auto-retry".
  * Set when OmniRoute returns a 4xx (auth, bad model, malformed input). */
 const PERMANENT_FAILURE_ATTEMPTS = MAX_AUTO_RETRY_ATTEMPTS;
@@ -181,6 +196,31 @@ function bumpAttempts(
 export async function getQueueDepth(): Promise<number> {
   const rows = await loadRows();
   return rows.filter((r) => r.attempts < MAX_AUTO_RETRY_ATTEMPTS).length;
+}
+
+/** Read-only snapshot of the queue rows — feeds the sync-detail sheet so it
+ * can list what's waiting (mode, age, failure) without exposing the locked
+ * mutation paths. */
+export async function listQueueRows(): Promise<QueueRow[]> {
+  const rows = await loadRows();
+  return rows.map((r) => ({ ...r }));
+}
+
+/** Pending vs permanently-failed row counts in one read — feeds the sync
+ * status indicator so it can distinguish "working through a backlog" from
+ * "something needs your attention" without two storage round-trips. */
+export async function getQueueCounts(): Promise<{
+  pending: number;
+  failed: number;
+}> {
+  const rows = await loadRows();
+  let pending = 0;
+  let failed = 0;
+  for (const r of rows) {
+    if (r.attempts < MAX_AUTO_RETRY_ATTEMPTS) pending += 1;
+    else failed += 1;
+  }
+  return { pending, failed };
 }
 
 /** Non-crypto, unique-enough row id. uuid v11 needs crypto.getRandomValues,
@@ -265,8 +305,6 @@ export async function drainQueue(): Promise<void> {
 async function processRow(payload: QueuePayload): Promise<void> {
   if (payload.mode === "idea") {
     const result = await enrichIdea(payload.text);
-    const title = deriveTitle(result.markdown);
-    const slug = slugify(title) || "untitled";
     // Binaries were already written to disk at enqueue; fold their rel-paths
     // back into the body so the drained note matches the online capture.
     // Tags are merged AFTER attachments so the frontmatter merge sees the final body.
@@ -274,7 +312,17 @@ async function processRow(payload: QueuePayload): Promise<void> {
       mergeUserTags(injectAttachments(result.markdown, payload.attachments ?? []), payload.tags),
       payload.location,
     );
-    await writeIdea(slug, md);
+    if (payload.filepath) {
+      // Save-first: the raw note is already on disk — update it in place,
+      // guarded so a synced/user edit during the queue window is kept rather
+      // than clobbered. A skipped write (conflict) still counts as processed;
+      // the raw note stays and the user's edit wins.
+      await updateNoteIfUnchanged(payload.filepath, md, payload.baselineMtime ?? null);
+    } else {
+      const title = deriveTitle(result.markdown);
+      const slug = slugify(title) || "untitled";
+      await writeIdea(slug, md);
+    }
   } else if (payload.mode === "journal") {
     const result = await enrichJournal({
       transcript: payload.transcript,
@@ -299,7 +347,7 @@ async function processRow(payload: QueuePayload): Promise<void> {
   }
   // A drained capture adds tags to the vault — drop the stale index cache so the
   // browser + autocomplete rebuild. Best-effort; never fail the drain on this.
-  void invalidateTagIndex().catch(() => undefined);
+  void invalidateNoteIndex().catch(() => undefined);
 }
 
 /**

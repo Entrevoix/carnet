@@ -10,6 +10,7 @@ import {
   List,
   Modal,
   Portal,
+  SegmentedButtons,
   Snackbar,
   Switch,
   Text,
@@ -17,8 +18,9 @@ import {
 } from "react-native-paper";
 
 import {
+  DEFAULT_LLM_BACKEND,
   DEFAULT_OMNIROUTE_MODEL,
-  DEFAULT_TRANSCRIPTION_MODEL,
+  DEFAULT_VISION_MODEL,
   dismissMigrationBanner,
   getSettings,
   hasKarakeepApiKey,
@@ -31,51 +33,23 @@ import {
   type Settings,
 } from "../lib/settings";
 import { listModels } from "../lib/omniroute";
+import { PromptOverridesSection } from "../components/PromptOverridesSection";
+import { spacing, useCarnetTheme } from "../lib/theme";
+import {
+  useThemePreference,
+  type ThemePreference,
+} from "../lib/themePreference";
 import * as captureNotification from "../lib/captureNotification";
 import { VoiceSetupCheck } from "../voice/VoiceSetupCheck";
-import {
-  buildIdeaPrompt,
-  buildJournalPrompt,
-  buildPersonPrompt,
-  buildSharedImagePrompt,
-  buildSharedLinkPrompt,
-} from "../lib/prompts";
-
-const PROMPT_MODES = [
-  { key: "idea", label: "Idea", icon: "lightbulb-on" },
-  { key: "journal", label: "Journal", icon: "microphone" },
-  { key: "person", label: "Contact", icon: "account" },
-  { key: "sharedImage", label: "Photo + Image", icon: "camera" },
-  { key: "sharedLink", label: "Link + Text", icon: "link" },
-] as const;
-
-type PromptModeKey = (typeof PROMPT_MODES)[number]["key"];
-
-/** Render the default system prompt for a mode by invoking the builder
- * with placeholder args. Used to populate the "Copy default" button so
- * the user has a starting point for tweaking. */
-function defaultPromptFor(mode: PromptModeKey): string {
-  switch (mode) {
-    case "idea":
-      return buildIdeaPrompt("placeholder").system;
-    case "journal":
-      return buildJournalPrompt("placeholder", "").system;
-    case "person":
-      return buildPersonPrompt("placeholder", "").system;
-    case "sharedImage":
-      return buildSharedImagePrompt("").system;
-    case "sharedLink":
-      return buildSharedLinkPrompt("", "", "", null).system;
-  }
-}
 
 interface FormState {
   omniRouteUrl: string;
   omniRouteModel: string;
-  omniRouteTranscriptionModel: string;
+  omniRouteVisionModel: string;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
+  previewBeforeSave: boolean;
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
   karakeepUrl: string;
@@ -95,6 +69,8 @@ const RECOMMENDED_MODELS = [
 ] as const;
 
 export default function SettingsScreen() {
+  const theme = useCarnetTheme();
+  const themePreference = useThemePreference();
   const [form, setForm] = useState<FormState | null>(null);
   const [keyConfigured, setKeyConfigured] = useState<boolean>(false);
   /** Holds a NEW API key the user is entering. Empty string means "no change". */
@@ -112,11 +88,6 @@ export default function SettingsScreen() {
    * persisted on Save as a broken capture folder. */
   const [pickerError, setPickerError] = useState<string | null>(null);
 
-  // Prompt-override editor: which row is open. Null = all collapsed.
-  // Selection is screen-local; nothing is persisted about UI state.
-  const [expandedPromptMode, setExpandedPromptMode] =
-    useState<PromptModeKey | null>(null);
-
   // Model browser state — opens a modal that lists available models from
   // GET /v1/models so the user can pick from the actual catalog instead of
   // guessing a model name.
@@ -125,6 +96,10 @@ export default function SettingsScreen() {
   const [browseError, setBrowseError] = useState<string | null>(null);
   const [models, setModels] = useState<string[] | null>(null);
   const [modelFilter, setModelFilter] = useState("");
+  // Which model field the browser is picking for — the same modal drives both
+  // the chat and the vision picker so the listModels catalog is fetched once
+  // per open and routed to the right form field on select.
+  const [browseTarget, setBrowseTarget] = useState<"chat" | "vision">("chat");
 
   // useMemo MUST run on every render in the same order — must live above
   // the `if (!form) return …` early return below, or hook count changes
@@ -175,10 +150,11 @@ export default function SettingsScreen() {
       setForm({
         omniRouteUrl: s.omniRouteUrl,
         omniRouteModel: s.omniRouteModel,
-        omniRouteTranscriptionModel: s.omniRouteTranscriptionModel,
+        omniRouteVisionModel: s.omniRouteVisionModel,
         persistentNotificationEnabled: initialNotificationEnabled,
         autoTranscribeOnSave: s.autoTranscribeOnSave,
         richEditorEnabled: s.richEditorEnabled,
+        previewBeforeSave: s.previewBeforeSave,
         captureFolderPath: s.captureFolderPath,
         promptOverrides: s.promptOverrides,
         karakeepUrl: s.karakeepUrl,
@@ -207,11 +183,16 @@ export default function SettingsScreen() {
     const next: Settings = {
       omniRouteUrl: form.omniRouteUrl,
       omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
-      omniRouteTranscriptionModel:
-        form.omniRouteTranscriptionModel || DEFAULT_TRANSCRIPTION_MODEL,
+      omniRouteVisionModel:
+        form.omniRouteVisionModel || DEFAULT_VISION_MODEL,
+      // Phase 1 (B7) has no backend-picker UI, and no code path can produce a
+      // non-default value, so persist the default. Phase 4 threads the selected
+      // backend through FormState when the picker lands.
+      llmBackend: DEFAULT_LLM_BACKEND,
       persistentNotificationEnabled: form.persistentNotificationEnabled,
       autoTranscribeOnSave: form.autoTranscribeOnSave,
       richEditorEnabled: form.richEditorEnabled,
+      previewBeforeSave: form.previewBeforeSave,
       // Pass an empty string here so saveSettings doesn't touch the key.
       // Then we handle the key write separately below.
       omniRouteApiKey: "",
@@ -315,8 +296,9 @@ export default function SettingsScreen() {
   /** Open the model browser. Uses the URL from form state and the API key
    * from SecureStore (via getSettings) — or the freshly-typed pendingKey
    * if the user hasn't saved it yet. */
-  const openBrowse = async () => {
+  const openBrowse = async (target: "chat" | "vision" = "chat") => {
     if (!form) return;
+    setBrowseTarget(target);
     setBrowseError(null);
     setBrowseOpen(true);
     setModelFilter("");
@@ -378,7 +360,11 @@ export default function SettingsScreen() {
 
   const pickModel = (id: string) => {
     if (!form) return;
-    setForm({ ...form, omniRouteModel: id });
+    if (browseTarget === "vision") {
+      setForm({ ...form, omniRouteVisionModel: id });
+    } else {
+      setForm({ ...form, omniRouteModel: id });
+    }
     setBrowseOpen(false);
   };
 
@@ -398,6 +384,29 @@ export default function SettingsScreen() {
         below to continue capturing.
       </Banner>
 
+      {/* Appearance — light/dark follows the OS unless pinned here. Applies
+          instantly (no Save tap); persisted via themePreference, not the
+          settings blob, so App.tsx can read it at cold start. */}
+      <Text variant="titleMedium">Appearance</Text>
+      <SegmentedButtons
+        value={themePreference.preference}
+        onValueChange={(v) =>
+          themePreference.setPreference(v as ThemePreference)
+        }
+        buttons={[
+          { value: "system", label: "System", icon: "theme-light-dark" },
+          { value: "light", label: "Light", icon: "white-balance-sunny" },
+          { value: "dark", label: "Dark", icon: "weather-night" },
+        ]}
+        style={{ marginBottom: spacing.sm }}
+      />
+
+      <Text variant="titleMedium" style={styles.sectionTitle}>
+        Connection
+      </Text>
+      <HelperText type="info" visible>
+        Where AI enrichment runs — your self-hosted OmniRoute endpoint.
+      </HelperText>
       <TextInput
         label="OmniRoute URL"
         mode="outlined"
@@ -446,7 +455,7 @@ export default function SettingsScreen() {
         mode="text"
         icon="format-list-bulleted"
         compact
-        onPress={openBrowse}
+        onPress={() => openBrowse("chat")}
         disabled={!form.omniRouteUrl.trim()}
         style={styles.browseBtn}
       >
@@ -454,20 +463,38 @@ export default function SettingsScreen() {
       </Button>
 
       <TextInput
-        label="Transcription model"
+        label="Vision model"
         mode="outlined"
         autoCapitalize="none"
         autoCorrect={false}
-        value={form.omniRouteTranscriptionModel}
-        onChangeText={(v) => update({ omniRouteTranscriptionModel: v })}
-        placeholder={DEFAULT_TRANSCRIPTION_MODEL}
+        value={form.omniRouteVisionModel}
+        onChangeText={(v) => update({ omniRouteVisionModel: v })}
+        placeholder={DEFAULT_VISION_MODEL}
       />
       <HelperText type="info" visible>
-        Model for audio note transcription. Defaults to gemini/gemini-2.5-flash-lite
-        — uses the chat-completion audio modality so any multimodal chat model
-        on your proxy works. Whisper-style endpoints are no longer required.
+        Vision-capable model used when you share a photo or image into carnet.
+        Held separate from the chat model so a text-only model can't silently
+        drop the image. Must handle image input (e.g. gpt-4o-mini, Gemini
+        Flash, Claude). Tap Browse to pick from your provider's catalog.
       </HelperText>
+      <Button
+        mode="text"
+        icon="format-list-bulleted"
+        compact
+        onPress={() => openBrowse("vision")}
+        disabled={!form.omniRouteUrl.trim()}
+        style={styles.browseBtn}
+      >
+        Browse available models
+      </Button>
 
+      <Text variant="titleMedium" style={styles.sectionTitle}>
+        Storage
+      </Text>
+      <HelperText type="info" visible>
+        Where notes are saved — point this at your Syncthing-watched vault
+        folder so captures sync to your workstation.
+      </HelperText>
       <TextInput
         label="Capture folder"
         mode="outlined"
@@ -586,6 +613,27 @@ export default function SettingsScreen() {
           Doubles the OmniRoute API spend per audio capture. Skip if you only
           transcribe occasionally.
         </HelperText>
+        <List.Item
+          title="Preview ideas before saving"
+          description={
+            form.previewBeforeSave
+              ? "Idea captures wait for enrichment, then you review + Save"
+              : "Off — ideas save instantly and enrich in the background"
+          }
+          left={(p) => <List.Icon {...p} icon="eye-check" />}
+          right={() => (
+            <Switch
+              value={form.previewBeforeSave}
+              onValueChange={(next) => update({ previewBeforeSave: next })}
+            />
+          )}
+          style={styles.notificationRow}
+        />
+        <HelperText type="info" visible>
+          Default off: an idea is written to your vault the moment you tap Save,
+          and the AI structures it afterwards. Turn on to vet the AI's version
+          before it lands. Contacts always preview regardless of this setting.
+        </HelperText>
       </View>
 
       <View style={styles.notificationSection}>
@@ -627,93 +675,10 @@ export default function SettingsScreen() {
         ) : null}
       </View>
 
-      <View style={styles.promptSection}>
-        <Text variant="titleMedium" style={styles.promptSectionTitle}>
-          Prompt overrides
-        </Text>
-        <HelperText type="info" visible>
-          Override how OmniRoute structures each capture mode. Leave a section
-          empty to use the default. Removing the frontmatter format or
-          injection guard can drop captures to a stub note — use "Reset to
-          default" to recover.
-        </HelperText>
-        {PROMPT_MODES.map(({ key, label, icon }) => {
-          const isExpanded = expandedPromptMode === key;
-          const value = form.promptOverrides[key] ?? "";
-          const isCustomized = value.trim().length > 0;
-          return (
-            <View key={key}>
-              <List.Item
-                title={label}
-                description={isCustomized ? "customized" : "using default"}
-                left={(p) => <List.Icon {...p} icon={icon} />}
-                right={(p) => (
-                  <List.Icon
-                    {...p}
-                    icon={isExpanded ? "chevron-up" : "chevron-down"}
-                  />
-                )}
-                onPress={() =>
-                  setExpandedPromptMode(isExpanded ? null : key)
-                }
-                style={styles.promptRow}
-              />
-              {isExpanded ? (
-                <View style={styles.promptEditor}>
-                  <TextInput
-                    mode="outlined"
-                    multiline
-                    numberOfLines={10}
-                    value={value}
-                    onChangeText={(v) =>
-                      update({
-                        promptOverrides: {
-                          ...form.promptOverrides,
-                          [key]: v,
-                        },
-                      })
-                    }
-                    placeholder="(empty — using the default. Tap Copy default to start editing)"
-                    style={styles.promptInput}
-                  />
-                  <View style={styles.promptActions}>
-                    <Button
-                      mode="text"
-                      compact
-                      onPress={() =>
-                        update({
-                          promptOverrides: {
-                            ...form.promptOverrides,
-                            [key]: defaultPromptFor(key),
-                          },
-                        })
-                      }
-                    >
-                      Copy default
-                    </Button>
-                    {isCustomized ? (
-                      <Button
-                        mode="text"
-                        compact
-                        onPress={() =>
-                          update({
-                            promptOverrides: {
-                              ...form.promptOverrides,
-                              [key]: "",
-                            },
-                          })
-                        }
-                      >
-                        Reset to default
-                      </Button>
-                    ) : null}
-                  </View>
-                </View>
-              ) : null}
-            </View>
-          );
-        })}
-      </View>
+      <PromptOverridesSection
+        overrides={form.promptOverrides}
+        onChange={(next) => update({ promptOverrides: next })}
+      />
 
       <Button mode="contained" onPress={save} style={styles.save}>
         Save
@@ -739,7 +704,10 @@ export default function SettingsScreen() {
         <Modal
           visible={browseOpen}
           onDismiss={() => setBrowseOpen(false)}
-          contentContainerStyle={styles.browseModal}
+          contentContainerStyle={[
+            styles.browseModal,
+            { backgroundColor: theme.colors.surface },
+          ]}
         >
           <View style={styles.browseHeader}>
             <Text variant="titleMedium">Available models</Text>
@@ -759,7 +727,10 @@ export default function SettingsScreen() {
               <HelperText type="error" visible>
                 {browseError}
               </HelperText>
-              <Button mode="contained-tonal" onPress={openBrowse}>
+              <Button
+                mode="contained-tonal"
+                onPress={() => openBrowse(browseTarget)}
+              >
                 Retry
               </Button>
             </View>
@@ -873,10 +844,6 @@ const styles = StyleSheet.create({
   browseEmpty: { textAlign: "center", opacity: 0.6, padding: 24 },
   notificationSection: { marginTop: 16 },
   notificationRow: { paddingHorizontal: 0 },
-  promptSection: { marginTop: 16 },
+  sectionTitle: { paddingHorizontal: 0, paddingTop: 16 },
   promptSectionTitle: { paddingHorizontal: 0, paddingTop: 8 },
-  promptRow: { paddingHorizontal: 0 },
-  promptEditor: { paddingHorizontal: 0, paddingBottom: 8, gap: 4 },
-  promptInput: { fontFamily: "monospace" },
-  promptActions: { flexDirection: "row", gap: 8 },
 });

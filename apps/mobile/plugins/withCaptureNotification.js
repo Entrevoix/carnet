@@ -1,3 +1,19 @@
+// ⚠️  CI DOES NOT COMPILE THE KOTLIN BELOW BY DEFAULT.
+// The Kotlin emitted from this file is generated at `expo prebuild` time into
+// the gitignored android/ tree. vitest + `tsc --noEmit` (the only checks in the
+// required `gate` CI job) never see it, so an invalid override signature or type
+// error here compiles clean in CI and only fails on a real Gradle build. This
+// exact trap shipped once: `getTaskConfig(intent: Intent)` should be
+// `getTaskConfig(intent: Intent?)` — the base HeadlessJsTaskService signature is
+// nullable — and it broke every clean prebuild until caught on-device.
+// There IS a `mobile-android` CI job (.github/workflows/ci.yml) that runs a real
+// prebuild + `:app:compileDebugKotlin`, but it is currently non-blocking (not in
+// `gate.needs`). Until it is promoted to a required check, BEFORE MERGING any
+// change to the Kotlin templates in this file you MUST manually run:
+//   cd apps/mobile && npx expo prebuild --clean -p android \
+//     && cd android && ./gradlew :app:compileDebugKotlin
+// and confirm BUILD SUCCESSFUL.
+//
 // TODO(plugin-cleanup): Kotlin templates are embedded as JS strings here
 // for expedience. Future refactor: move to plugins/templates/notification/*.kt
 // and render via __PACKAGE__ placeholder substitution. Defer until we have a
@@ -73,6 +89,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
 import ${packageName}.R
 
 /**
@@ -136,6 +153,38 @@ class CaptureForegroundService : Service() {
     return PendingIntent.getActivity(this, requestCode, intent, flags)
   }
 
+  /**
+   * "Quick idea" inline-reply action (B5). A RemoteInput lets the user type an
+   * idea directly in the notification shade — zero app open — and QuickIdeaReceiver
+   * hands it to the save-first headless task.
+   *
+   * FLAG_IMMUTABLE is CORRECT and sound here despite RemoteInput: the typed text
+   * is attached at the notification-action level and read back via
+   * RemoteInput.getResultsFromIntent(), NOT by mutating the PendingIntent. The OS
+   * fills the results in without needing a mutable PendingIntent (documented
+   * Android 12+ behavior), so the verified-sound FLAG_IMMUTABLE + setPackage
+   * pattern is preserved unchanged.
+   */
+  private fun quickIdeaAction(): NotificationCompat.Action {
+    val remoteInput = RemoteInput.Builder(QuickIdeaReceiver.KEY_QUICK_IDEA)
+      .setLabel("Quick idea")
+      .build()
+    val intent = Intent(this, QuickIdeaReceiver::class.java).apply {
+      action = QuickIdeaReceiver.ACTION_QUICK_IDEA
+      setPackage(packageName)
+    }
+    val pi = PendingIntent.getBroadcast(
+      this,
+      5,
+      intent,
+      PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    return NotificationCompat.Action.Builder(R.drawable.shortcut_idea, "Quick idea", pi)
+      .addRemoteInput(remoteInput)
+      .setAllowGeneratedReplies(false)
+      .build()
+  }
+
   private fun buildNotification(): Notification {
     val launchIntent = Intent(Intent.ACTION_VIEW, Uri.parse("carnet://")).apply {
       setPackage(packageName)
@@ -155,6 +204,7 @@ class CaptureForegroundService : Service() {
       .setOngoing(true)
       .setPriority(NotificationCompat.PRIORITY_LOW)
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+      .addAction(quickIdeaAction())
       .addAction(R.drawable.shortcut_idea, "Idea", captureIntent("carnet://capture/idea", 1))
       .addAction(R.drawable.shortcut_journal, "Journal", captureIntent("carnet://capture/journal", 2))
       .addAction(R.drawable.shortcut_photo, "Photo", captureIntent("carnet://photo", 3))
@@ -315,6 +365,89 @@ class BootReceiver : BroadcastReceiver() {
 `;
 }
 
+function quickIdeaReceiverKt(packageName) {
+  return `package ${packageName}.notification
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import androidx.core.app.RemoteInput
+import com.facebook.react.HeadlessJsTaskService
+
+/**
+ * Receives the "Quick idea" inline-reply (RemoteInput) from the capture
+ * notification and hands the typed text to the save-first headless JS task —
+ * WITHOUT opening the app (B5).
+ *
+ * Blank / whitespace-only submissions are dropped here (the JS handler guards
+ * this too, defense-in-depth) so an empty reply never spins up a task or writes
+ * an empty note.
+ *
+ * The task is started via QuickIdeaTaskService (a HeadlessJsTaskService).
+ * acquireWakeLockNow keeps the CPU awake while the short-lived JS write + async
+ * enrichment runs. Starting the service from a notification-action broadcast is
+ * within Android's temporary background-start allowlist that a user action on a
+ * notification grants.
+ */
+class QuickIdeaReceiver : BroadcastReceiver() {
+  companion object {
+    const val KEY_QUICK_IDEA = "quick_idea_text"
+    const val ACTION_QUICK_IDEA = "${packageName}.QUICK_IDEA"
+    const val EXTRA_TEXT = "text"
+  }
+
+  override fun onReceive(context: Context, intent: Intent) {
+    val results = RemoteInput.getResultsFromIntent(intent) ?: return
+    val text = results.getCharSequence(KEY_QUICK_IDEA)?.toString()?.trim().orEmpty()
+    if (text.isEmpty()) return
+
+    val serviceIntent = Intent(context, QuickIdeaTaskService::class.java).apply {
+      putExtra(EXTRA_TEXT, text)
+    }
+    try {
+      context.startService(serviceIntent)
+      HeadlessJsTaskService.acquireWakeLockNow(context)
+    } catch (e: Exception) {
+      android.util.Log.w("CarnetQuickIdea", "Failed to start quick-idea task: \${e.message}")
+    }
+  }
+}
+`;
+}
+
+function quickIdeaTaskServiceKt(packageName) {
+  return `package ${packageName}.notification
+
+import android.content.Intent
+import android.os.Bundle
+import com.facebook.react.HeadlessJsTaskService
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.jstasks.HeadlessJsTaskConfig
+
+/**
+ * HeadlessJsTaskService that runs the "CarnetQuickIdea" JS task (registered in
+ * index.js via registerQuickIdeaTask.ts) with the app closed. The task name here
+ * MUST match QUICK_IDEA_TASK_NAME on the JS side — the two ends of the bridge.
+ *
+ * The 2-minute timeout covers a cold JS-runtime start plus the save-first write
+ * and one async enrichment attempt; the raw note lands well before the LLM call,
+ * so even a timeout can't lose the capture. allowedInForeground=true so it still
+ * runs if the app happens to be foregrounded when the reply is sent.
+ */
+class QuickIdeaTaskService : HeadlessJsTaskService() {
+  override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig? {
+    val extras: Bundle = intent?.extras ?: return null
+    return HeadlessJsTaskConfig(
+      "CarnetQuickIdea",
+      Arguments.fromBundle(extras),
+      120000L,
+      true,
+    )
+  }
+}
+`;
+}
+
 function escapeXml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -408,6 +541,36 @@ module.exports = function withCaptureNotification(config) {
             ],
           },
         ],
+      });
+    }
+
+    // Quick-idea inline-reply receiver (B5). exported=false — only ever fired by
+    // this app's own notification PendingIntent (explicit component + setPackage).
+    const quickReceiverName = `${packageName}.notification.QuickIdeaReceiver`;
+    const hasQuickReceiver = application.receiver.some(
+      (r) => r?.$?.['android:name'] === quickReceiverName,
+    );
+    if (!hasQuickReceiver) {
+      application.receiver.push({
+        $: {
+          'android:name': quickReceiverName,
+          'android:exported': 'false',
+        },
+      });
+    }
+
+    // Headless JS task service that runs the save-first capture with the app
+    // closed. exported=false — started only by QuickIdeaReceiver.
+    const quickServiceName = `${packageName}.notification.QuickIdeaTaskService`;
+    const hasQuickService = application.service.some(
+      (s) => s?.$?.['android:name'] === quickServiceName,
+    );
+    if (!hasQuickService) {
+      application.service.push({
+        $: {
+          'android:name': quickServiceName,
+          'android:exported': 'false',
+        },
       });
     }
 
@@ -526,6 +689,16 @@ module.exports = function withCaptureNotification(config) {
       fs.writeFileSync(
         path.join(javaDir, 'BootReceiver.kt'),
         bootReceiverKt(packageName),
+        'utf8',
+      );
+      fs.writeFileSync(
+        path.join(javaDir, 'QuickIdeaReceiver.kt'),
+        quickIdeaReceiverKt(packageName),
+        'utf8',
+      );
+      fs.writeFileSync(
+        path.join(javaDir, 'QuickIdeaTaskService.kt'),
+        quickIdeaTaskServiceKt(packageName),
         'utf8',
       );
 

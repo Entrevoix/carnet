@@ -1,16 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { FlatList, StyleSheet, View } from "react-native";
 import {
   Button,
-  Card,
-  Checkbox,
   Dialog,
-  Divider,
   IconButton,
-  List,
   Portal,
   Text,
-  useTheme,
 } from "react-native-paper";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 
@@ -21,13 +16,40 @@ import {
   type CaptureEntry,
 } from "../lib/storage";
 import { moveToArchive } from "../lib/writer";
+import {
+  loadCachedNoteIndex,
+  refreshNoteIndex,
+  type NoteIndex,
+  type NoteIndexEntry,
+} from "../lib/vault";
+import { getSyncStatus, type SyncStatus } from "../lib/syncStatus";
+import {
+  drainQueue,
+  listQueueRows,
+  MAX_AUTO_RETRY_ATTEMPTS,
+  type QueueRow,
+} from "../lib/queue";
+import { formatRelative, modeStamp } from "../components/NoteCard";
+import { useCarnetTheme } from "../lib/theme";
 import { VoiceReadinessBanner } from "../voice/VoiceReadinessBanner";
+import { CaptureFab, type CaptureTarget } from "../components/CaptureFab";
+import { NoteCard } from "../components/NoteCard";
+import { SyncStatusDot } from "../components/SyncStatusDot";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
 
+/** Per-note metadata joined from the vault note index, keyed by note URI. */
+type NoteMeta = Pick<NoteIndexEntry, "excerpt" | "tags" | "status">;
+
 export default function HomeScreen({ navigation }: Props) {
-  const theme = useTheme();
-  const [recent, setRecent] = useState<CaptureEntry[]>([]);
+  const theme = useCarnetTheme();
+  // null = first load in flight → skeleton cards, not a spinner.
+  const [recent, setRecent] = useState<CaptureEntry[] | null>(null);
+  const [noteMeta, setNoteMeta] = useState<Map<string, NoteMeta>>(new Map());
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncDialogVisible, setSyncDialogVisible] = useState(false);
+  const [syncRows, setSyncRows] = useState<QueueRow[]>([]);
+  const [retrying, setRetrying] = useState(false);
   // Selection mode: enter via long-press, toggle rows via tap, auto-exit
   // when selection empties or the screen blurs.
   const [selectionMode, setSelectionMode] = useState(false);
@@ -36,25 +58,55 @@ export default function HomeScreen({ navigation }: Props) {
   // Guards against fast double-tap on the bulk-delete confirm so the
   // archive loop doesn't run twice.
   const bulkDeletingRef = useRef(false);
+  // Single-flight guard for the background index rebuild below.
+  const rebuildingIndexRef = useRef(false);
 
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        <View style={styles.headerActions}>
-          <IconButton
-            icon="tag-multiple-outline"
-            onPress={() => navigation.navigate("TagBrowser")}
-          />
-          <IconButton icon="cog" onPress={() => navigation.navigate("Settings")} />
-        </View>
-      ),
-    });
-  }, [navigation]);
+  const applyNoteIndex = useCallback((index: NoteIndex) => {
+    const map = new Map<string, NoteMeta>();
+    for (const note of index.notes) {
+      map.set(note.uri, {
+        excerpt: note.excerpt,
+        tags: note.tags,
+        status: note.status,
+      });
+    }
+    setNoteMeta(map);
+  }, []);
 
   const refresh = useCallback(async () => {
     const items = await getRecentCaptures();
     setRecent(items);
-  }, []);
+    // Join excerpts/tags/pending-status from the cached vault index. On a
+    // cache miss (e.g. an offline drain invalidated it), render plain cards
+    // now and rebuild the index in the background — never block Home on a
+    // full vault scan.
+    try {
+      const index = await loadCachedNoteIndex();
+      if (index) {
+        applyNoteIndex(index);
+      } else if (!rebuildingIndexRef.current) {
+        rebuildingIndexRef.current = true;
+        refreshNoteIndex()
+          .then(applyNoteIndex)
+          .catch((e: unknown) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn("[Home] note index rebuild failed:", msg);
+          })
+          .finally(() => {
+            rebuildingIndexRef.current = false;
+          });
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[Home] note index read failed:", msg);
+    }
+    try {
+      setSyncStatus(await getSyncStatus());
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[Home] sync status read failed:", msg);
+    }
+  }, [applyNoteIndex]);
 
   const exitSelection = useCallback(() => {
     setSelectionMode(false);
@@ -75,6 +127,31 @@ export default function HomeScreen({ navigation }: Props) {
     });
   }, []);
 
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <View style={styles.headerActions}>
+          {syncStatus ? (
+            <SyncStatusDot
+              status={syncStatus}
+              onPress={() => void openSyncDetail()}
+            />
+          ) : null}
+          <IconButton
+            icon="magnify"
+            onPress={() => navigation.navigate("Search")}
+            accessibilityLabel="Search notes"
+          />
+          <IconButton
+            icon="cog"
+            onPress={() => navigation.navigate("Settings")}
+            accessibilityLabel="Settings"
+          />
+        </View>
+      ),
+    });
+  }, [navigation, syncStatus]);
+
   // Auto-exit selection mode when the user deselects the last row.
   // Kept as an effect (rather than inside the updater above) so the side
   // effect doesn't fire twice in React 18+ StrictMode's double-invoke.
@@ -89,7 +166,7 @@ export default function HomeScreen({ navigation }: Props) {
     bulkDeletingRef.current = true;
     setConfirmVisible(false);
     const ids = Array.from(selectedIds);
-    const entries = recent.filter((e) => selectedIds.has(e.id));
+    const entries = (recent ?? []).filter((e) => selectedIds.has(e.id));
     try {
       // Best-effort per item — one SAF revocation shouldn't abort the rest.
       // The intent of bulk delete is "clean up as much as you can."
@@ -104,15 +181,11 @@ export default function HomeScreen({ navigation }: Props) {
       });
       await removeManyFromHistory(ids);
     } catch (e: unknown) {
-      // removeManyFromHistory shouldn't throw under normal conditions, but
-      // log if AsyncStorage rejects so the failure isn't silent.
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[Home] bulk delete failed:", msg);
     } finally {
       bulkDeletingRef.current = false;
       exitSelection();
-      // Fire-and-forget so a rare AsyncStorage rejection doesn't bubble
-      // up to the unawaited Button.onPress as an unhandled rejection.
       refresh().catch((re: unknown) => {
         const reason = re instanceof Error ? re.message : String(re);
         console.warn("[Home] refresh after bulk delete failed:", reason);
@@ -136,142 +209,201 @@ export default function HomeScreen({ navigation }: Props) {
     };
   }, [navigation, refresh, exitSelection]);
 
+  const openSyncDetail = useCallback(async () => {
+    setSyncDialogVisible(true);
+    try {
+      setSyncRows(await listQueueRows());
+    } catch {
+      setSyncRows([]);
+    }
+  }, []);
+
+  // "Retry now" — run a drain pass immediately instead of waiting for the
+  // next capture-screen open, then re-derive the indicator + row list.
+  const retryQueue = useCallback(async () => {
+    setRetrying(true);
+    try {
+      await drainQueue();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[Home] queue drain failed:", msg);
+    } finally {
+      setRetrying(false);
+      try {
+        setSyncRows(await listQueueRows());
+        setSyncStatus(await getSyncStatus());
+      } catch {
+        // The dialog keeps its previous contents on a re-read failure.
+      }
+    }
+  }, []);
+
+  const onCapture = useCallback(
+    (target: CaptureTarget) => {
+      if (target.kind === "photo") navigation.navigate("PhotoCapture");
+      else if (target.kind === "audio") navigation.navigate("AudioCapture");
+      else navigation.navigate("Capture", { mode: target.mode });
+    },
+    [navigation],
+  );
+
+  const skeleton = recent === null;
+
   return (
-    <ScrollView
-      style={[styles.root, { backgroundColor: theme.colors.background }]}
-      contentContainerStyle={styles.content}
-    >
-      <VoiceReadinessBanner />
-      <Button
-        mode="contained"
-        icon="lightbulb-on"
-        onPress={() => navigation.navigate("Capture", { mode: "idea" })}
-        style={styles.button}
-        contentStyle={styles.buttonContent}
-        labelStyle={styles.buttonLabel}
-      >
-        Idea
-      </Button>
-      <Button
-        mode="contained-tonal"
-        icon="microphone"
-        onPress={() => navigation.navigate("Capture", { mode: "journal" })}
-        style={styles.button}
-        contentStyle={styles.buttonContent}
-        labelStyle={styles.buttonLabel}
-      >
-        Journal
-      </Button>
-      <Button
-        mode="outlined"
-        icon="account-plus"
-        onPress={() => navigation.navigate("Capture", { mode: "person" })}
-        style={styles.button}
-        contentStyle={styles.buttonContent}
-        labelStyle={styles.buttonLabel}
-      >
-        Contact
-      </Button>
-      <Button
-        mode="outlined"
-        icon="camera"
-        onPress={() => navigation.navigate("PhotoCapture")}
-        style={styles.button}
-        contentStyle={styles.buttonContent}
-        labelStyle={styles.buttonLabel}
-      >
-        Photo
-      </Button>
-      <Button
-        mode="outlined"
-        icon="microphone-outline"
-        onPress={() => navigation.navigate("AudioCapture")}
-        style={styles.button}
-        contentStyle={styles.buttonContent}
-        labelStyle={styles.buttonLabel}
-      >
-        Audio
-      </Button>
-
-      {/* "Continue today's journal" shortcut — skips mode selection */}
-      <Button
-        mode="text"
-        icon="book-open-variant"
-        onPress={() => navigation.navigate("Capture", { mode: "journal" })}
-        style={styles.journalShortcut}
-        compact
-      >
-        Continue today's journal
-      </Button>
-
-      <Divider style={styles.divider} />
-
-      {/* Recents card — supports long-press multi-select bulk delete */}
-      <Card style={styles.recentCard}>
-        {selectionMode ? (
-          <View style={styles.selectionHeader}>
-            <IconButton
-              icon="close"
-              onPress={exitSelection}
-              accessibilityLabel="Cancel selection"
-            />
-            <Text variant="titleMedium" style={styles.selectionTitle}>
-              {`${selectedIds.size} selected`}
-            </Text>
-            <IconButton
-              icon="delete"
-              iconColor={theme.colors.error}
-              onPress={() => setConfirmVisible(true)}
-              accessibilityLabel="Delete selected"
-            />
+    <View style={[styles.root, { backgroundColor: theme.colors.background }]}>
+      <FlatList
+        data={skeleton ? [] : recent}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={[
+          styles.content,
+          {
+            padding: theme.carnet.spacing.lg,
+            gap: theme.carnet.spacing.md,
+            // Keep the last card clear of the FAB stack.
+            paddingBottom: theme.carnet.spacing.xxxl * 2,
+          },
+        ]}
+        ListHeaderComponent={
+          <View style={{ gap: theme.carnet.spacing.md }}>
+            <VoiceReadinessBanner />
+            {selectionMode ? (
+              <View
+                style={[
+                  styles.selectionHeader,
+                  {
+                    backgroundColor: theme.colors.secondaryContainer,
+                    borderRadius: theme.carnet.radius.md,
+                  },
+                ]}
+              >
+                <IconButton
+                  icon="close"
+                  onPress={exitSelection}
+                  accessibilityLabel="Cancel selection"
+                />
+                <Text variant="titleMedium" style={styles.selectionTitle}>
+                  {`${selectedIds.size} selected`}
+                </Text>
+                <IconButton
+                  icon="delete"
+                  iconColor={theme.colors.error}
+                  onPress={() => setConfirmVisible(true)}
+                  accessibilityLabel="Delete selected"
+                />
+              </View>
+            ) : null}
           </View>
-        ) : (
-          <Card.Title title="Recent" />
-        )}
-        <Card.Content>
-          {recent.length === 0 ? (
-            <Text variant="bodyMedium" style={styles.emptyHint}>
-              No captures yet.
-            </Text>
-          ) : (
-            <View>
-              {recent.map((item) => {
-                const selected = selectedIds.has(item.id);
-                return (
-                  <List.Item
-                    key={item.id}
-                    title={item.title}
-                    description={`${formatMode(item.mode)} • ${formatDate(item.createdAt)}`}
-                    left={(p) =>
-                      selectionMode ? (
-                        // Decorative-only — the row's onPress owns the toggle,
-                        // so the checkbox tap bubbles to TouchableRipple
-                        // instead of risking a double-fire.
-                        <Checkbox.Android
-                          status={selected ? "checked" : "unchecked"}
-                        />
-                      ) : (
-                        <List.Icon {...p} icon={modeIcon(item.mode)} />
-                      )
-                    }
-                    onPress={() => {
-                      if (selectionMode) toggleSelection(item.id);
-                      else navigation.navigate("RecentDetail", { entry: item });
-                    }}
-                    onLongPress={() => enterSelection(item.id)}
-                    style={styles.listItem}
-                  />
-                );
-              })}
+        }
+        renderItem={({ item }) => {
+          const meta = noteMeta.get(item.filepath);
+          return (
+            <NoteCard
+              title={item.title}
+              mode={item.mode}
+              createdAt={item.createdAt}
+              excerpt={meta?.excerpt}
+              tags={meta?.tags}
+              pendingEnrich={meta?.status === "pending-enrich"}
+              selectionMode={selectionMode}
+              selected={selectedIds.has(item.id)}
+              onPress={() => {
+                if (selectionMode) toggleSelection(item.id);
+                else navigation.navigate("RecentDetail", { entry: item });
+              }}
+              onLongPress={() => enterSelection(item.id)}
+            />
+          );
+        }}
+        ListEmptyComponent={
+          skeleton ? (
+            <View style={{ gap: theme.carnet.spacing.md }}>
+              {[0, 1, 2].map((i) => (
+                <View
+                  key={i}
+                  style={[
+                    styles.skeletonCard,
+                    {
+                      backgroundColor: theme.colors.surfaceVariant,
+                      borderRadius: theme.carnet.radius.card,
+                    },
+                  ]}
+                />
+              ))}
             </View>
-          )}
-        </Card.Content>
-      </Card>
+          ) : (
+            <View style={[styles.empty, { gap: theme.carnet.spacing.sm }]}>
+              <Text variant="titleMedium">Nothing captured yet</Text>
+              <Text
+                variant="bodyMedium"
+                style={{ color: theme.colors.onSurfaceVariant }}
+              >
+                Tap Capture below to write your first note.
+              </Text>
+            </View>
+          )
+        }
+      />
+
+      <CaptureFab onCapture={onCapture} />
 
       <Portal>
         <Dialog
+          visible={syncDialogVisible}
+          onDismiss={() => setSyncDialogVisible(false)}
+          style={{ borderRadius: theme.carnet.radius.sheet }}
+        >
+          <Dialog.Title>Sync</Dialog.Title>
+          <Dialog.Content style={{ gap: theme.carnet.spacing.sm }}>
+            <Text variant="bodyMedium">
+              {syncStatus?.detail ?? ""}
+            </Text>
+            {syncRows.map((row) => (
+              <View key={row.id} style={styles.syncRow}>
+                <Text variant="bodySmall">
+                  {`${modeStamp(row.mode).label} · ${formatRelative(row.created_at)}`}
+                </Text>
+                <Text
+                  variant="labelSmall"
+                  style={{
+                    color:
+                      row.attempts >= MAX_AUTO_RETRY_ATTEMPTS
+                        ? theme.colors.error
+                        : theme.colors.onSurfaceVariant,
+                  }}
+                >
+                  {row.attempts >= MAX_AUTO_RETRY_ATTEMPTS
+                    ? "needs attention"
+                    : row.attempts > 0
+                      ? `retried ${row.attempts}×`
+                      : "waiting"}
+                </Text>
+              </View>
+            ))}
+          </Dialog.Content>
+          <Dialog.Actions>
+            {syncStatus && syncStatus.pending > 0 ? (
+              <Button onPress={() => void retryQueue()} loading={retrying}>
+                Retry now
+              </Button>
+            ) : null}
+            {syncStatus?.state === "error" ? (
+              <Button
+                onPress={() => {
+                  setSyncDialogVisible(false);
+                  navigation.navigate("Settings");
+                }}
+              >
+                Open Settings
+              </Button>
+            ) : null}
+            <Button onPress={() => setSyncDialogVisible(false)}>Close</Button>
+          </Dialog.Actions>
+        </Dialog>
+
+        <Dialog
           visible={confirmVisible}
           onDismiss={() => setConfirmVisible(false)}
+          style={{ borderRadius: theme.carnet.radius.sheet }}
         >
           <Dialog.Title>{`Move ${selectedIds.size} to Archive?`}</Dialog.Title>
           <Dialog.Content>
@@ -288,56 +420,14 @@ export default function HomeScreen({ navigation }: Props) {
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </ScrollView>
+    </View>
   );
-}
-
-function formatMode(mode: CaptureEntry["mode"]): string {
-  switch (mode) {
-    case "idea":
-      return "Idea";
-    case "journal":
-      return "Journal";
-    case "person":
-      return "Contact";
-    case "photo":
-      return "Photo";
-    case "audio":
-      return "Audio";
-  }
-}
-
-function modeIcon(mode: CaptureEntry["mode"]): string {
-  switch (mode) {
-    case "idea":
-      return "lightbulb-on";
-    case "journal":
-      return "microphone";
-    case "person":
-      return "account";
-    case "photo":
-      return "camera";
-    case "audio":
-      return "microphone-outline";
-  }
-}
-
-function formatDate(unix: number): string {
-  const d = new Date(unix);
-  return d.toLocaleString();
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  content: { padding: 24, gap: 12 },
-  button: { borderRadius: 12 },
-  buttonContent: { paddingVertical: 16 },
-  buttonLabel: { fontSize: 18 },
-  journalShortcut: { alignSelf: "flex-start" },
-  divider: { marginVertical: 8 },
-  recentCard: { marginTop: 4 },
-  emptyHint: { opacity: 0.6, paddingVertical: 8 },
-  listItem: { paddingHorizontal: 0 },
+  content: { flexGrow: 1 },
+  headerActions: { flexDirection: "row", alignItems: "center" },
   selectionHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -345,5 +435,11 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   selectionTitle: { flex: 1, marginLeft: 4 },
-  headerActions: { flexDirection: "row", alignItems: "center" },
+  skeletonCard: { height: 96 },
+  empty: { alignItems: "center", paddingVertical: 48 },
+  syncRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
 });
