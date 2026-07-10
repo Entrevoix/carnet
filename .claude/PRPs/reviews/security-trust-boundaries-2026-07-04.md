@@ -1,6 +1,6 @@
 # Security review — trust boundaries (2026-07-04)
 
-**Scope:** read-only review of the seven trust boundaries surfaced by AUDIT.md. **Method:** targeted code review with file:line evidence; every "sound" item was verified, not assumed. **Threat model:** single-developer personal device today — but findings are graded for the moment carnet reaches *non-developer dogfooders*, since that's the point at which the vault-as-code-execution surface (H1) acquires real victims (dogfooders are the ones likely to run Obsidian Dataview).
+**Scope:** read-only review of the seven trust boundaries surfaced by AUDIT-backend.md. **Method:** targeted code review with file:line evidence; every "sound" item was verified, not assumed. **Threat model:** single-developer personal device today — but findings are graded for the moment carnet reaches *non-developer dogfooders*, since that's the point at which the vault-as-code-execution surface (H1) acquires real victims (dogfooders are the ones likely to run Obsidian Dataview).
 
 **Bottom line:** the core hardening is genuinely solid (filename allowlists, size caps, secret storage, Bearer redaction, deep-link passivity — all verified). One HIGH should gate non-developer dogfooding; two MEDIUM are cheap fixes to controls that already exist but are bypassable; one MEDIUM is the known plaintext-queue TODO, now more sensitive because it carries GPS.
 
@@ -11,7 +11,7 @@
 - **Where:** `omniroute.ts:299-311` (only `stripCodeFences` + empty-check) → verbatim to disk via `writer.ts` `writeIdea`/`appendJournal`/`writePerson`. No content validator anywhere.
 - **Chain:** hostile inputs cross into the model — web-page metadata (`urlpreview.ts` → `buildSharedLinkPrompt`), attacker-printed business-card OCR (`buildPersonPrompt`), shared text from any app. `INJECTION_GUARD` (`prompts.ts:29-31`) is a soft mitigation, not a control: a successful injection makes the model emit arbitrary markdown, written unchanged into a vault Syncthing replicates to a full Obsidian workstation. Obsidian + Dataview (near-ubiquitous) executes ` ```dataviewjs ` blocks; raw `<script>`/`<img onerror>` HTML and `[x](javascript:…)` links are also live there.
 - **Impact:** stored-content → code execution on the workstation, or silent data-exfil links, planted by a page the user merely shared.
-- **Fix direction:** sanitize the model's markdown before write — strip fenced `dataviewjs`/`js`/`html` blocks, neutralize raw HTML and `javascript:`/`data:` link targets, assert frontmatter parses to the expected key set. One denylist pass in `omniroute.ts` before returning `markdown` covers all capture modes. This is also the natural home for the frontmatter normalizer (AUDIT.md §1.5 / Stage 2 B3) — do them together.
+- **Fix direction:** sanitize the model's markdown before write — strip fenced `dataviewjs`/`js`/`html` blocks, neutralize raw HTML and `javascript:`/`data:` link targets, assert frontmatter parses to the expected key set. One denylist pass in `omniroute.ts` before returning `markdown` covers all capture modes. This is also the natural home for the frontmatter normalizer (AUDIT-backend.md §1.5 / Stage 2 B3) — do them together.
 
 ### M2 (MEDIUM) — SSRF guard in URL preview is bypassable via redirect
 
@@ -22,7 +22,7 @@
 ### M3 (MEDIUM) — HTTPS-enforcement regex prefix-matches, allowing cleartext API-key transmission
 
 - **Where:** `omniroute.ts:181` and identical `karakeep.ts:105`: `/^http:\/\/(localhost|127\.0\.0\.1|10\.)/i` — unanchored on the right.
-- **Impact:** `http://10.evil.com`, `http://localhost.attacker.com`, `http://127.0.0.1.attacker.com` all satisfy it; the Bearer key goes over plain HTTP to an attacker host. Requires the user to configure a crafted/typo'd/hijacked URL (hence Medium), but it defeats the exact control meant to protect the key. (Also relevant to AUDIT.md Open Question 1: the allowlist covers `localhost`/`127.*`/`10.*` but **not** `192.168.*`, so a plain-HTTP `192.168.x` OmniRoute URL is rejected outright — the real endpoint must be HTTPS.)
+- **Impact:** `http://10.evil.com`, `http://localhost.attacker.com`, `http://127.0.0.1.attacker.com` all satisfy it; the Bearer key goes over plain HTTP to an attacker host. Requires the user to configure a crafted/typo'd/hijacked URL (hence Medium), but it defeats the exact control meant to protect the key. (Also relevant to AUDIT-backend.md Open Question 1: the allowlist covers `localhost`/`127.*`/`10.*` but **not** `192.168.*`, so a plain-HTTP `192.168.x` OmniRoute URL is rejected outright — the real endpoint must be HTTPS.)
 - **Fix direction:** parse with `new URL()` and match the exact hostname (`=== "localhost"`, `=== "127.0.0.1"`, or a numeric `10.0.0.0/8` check) instead of a prefix regex.
 
 ### M4 (MEDIUM) — Offline queue persists sensitive content + geolocation in plaintext
@@ -56,7 +56,7 @@
 
 ## Recommended sequencing
 
-1. **H1 before any non-developer dogfooding** — it converts the vault into a remote-code-execution surface. Land it with the AUDIT.md §1.5 frontmatter normalizer (same code path).
+1. **H1 before any non-developer dogfooding** — it converts the vault into a remote-code-execution surface. Land it with the AUDIT-backend.md §1.5 frontmatter normalizer (same code path).
 2. **M2 + M3 together** — both small, self-contained fixes to existing controls (redirect handling; `new URL()` host check).
 3. **M4 before dogfooding** — now carries GPS; encrypt-payload path (SQLCipher is blocked).
 4. **L5/L6** — L6 falls out of H1; L5 is optional polish.

@@ -1,6 +1,6 @@
 # Decision memo — capture timing: blocking enrich-preview vs save-first for text captures
 
-**Status:** recommended, pending user sign-off · **Date:** 2026-07-04 · **Feeds:** `stage2-backend-and-capture.plan.md` (branches B4/B5) · **Source:** AUDIT.md §2.3–2.4, Open Question 5
+**Status:** recommended, pending user sign-off · **Date:** 2026-07-04 · **Feeds:** `stage2-backend-and-capture.plan.md` (branches B4/B5) · **Source:** AUDIT-backend.md §2.3–2.4, Open Question 5
 
 ## The question
 
@@ -25,7 +25,7 @@ Mechanics:
 4. Fire enrichment async. On success, update in place (guarded by step 1). On transient failure, fall into the existing queue; on permanent failure, keep the raw note and show the degraded banner + re-enrich affordance (identical posture to photo).
 5. Settings toggle `previewBeforeSave` (default **off**) restores the old flow for users who want to vet synthesis pre-save. Person ignores the toggle and always previews.
 
-Why flip the default rather than opt-in: the product thesis (AUDIT.md Task 2 goal) is *fewest possible clicks to get data in*. A raw-but-saved note beats a polished note that was never captured because the phone was on the wrong network — and the failure modes are all recoverable in-app today.
+Why flip the default rather than opt-in: the product thesis (AUDIT-backend.md Task 2 goal) is *fewest possible clicks to get data in*. A raw-but-saved note beats a polished note that was never captured because the phone was on the wrong network — and the failure modes are all recoverable in-app today.
 
 ## What this unlocks / what it costs
 

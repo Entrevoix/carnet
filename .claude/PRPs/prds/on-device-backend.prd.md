@@ -1,6 +1,6 @@
 # PRD: pluggable on-device LLM backend
 
-**Status:** design, gated on the model-split branch · **Date:** 2026-07-04 · **Source:** `TODO.md:25` (on-device Gemma), AUDIT.md §1.2/§1.4, backend-interface fact pass. **Hard prerequisite:** the per-task model split (`chatModel`/`visionModel`, Stage 2 branch B1) must land first — a text-only local backend must never silently receive image parts.
+**Status:** design, gated on the model-split branch · **Date:** 2026-07-04 · **Source:** `TODO.md:25` (on-device Gemma), AUDIT-backend.md §1.2/§1.4, backend-interface fact pass. **Hard prerequisite:** the per-task model split (`chatModel`/`visionModel`, Stage 2 branch B1) must land first — a text-only local backend must never silently receive image parts.
 
 ## Theme
 
@@ -58,4 +58,4 @@ The interface is easy; the native inference module and the model file are not. V
 
 - **Hybrid vision routing:** when `llmBackend="on-device"`, route `enrichSharedImage`/`enrichSharedLink`-with-image to OmniRoute anyway (best UX, needs network for vision only) vs. hard-fail vision offline (purest offline story). Recommend hybrid — the dispatcher already has both backends in hand.
 - **Runtime choice:** MediaPipe LLM Inference (Google, Gemma-tuned, simplest Android path) vs llama.cpp (most flexible, most build work) vs ExecuTorch. Decide in the Phase 2 spike against real device numbers.
-- **Whether to build this at all vs. accept per-call cost.** Ties to AUDIT.md Open Question 2 — if OmniRoute spend never becomes material, this is a privacy/offline feature, not a cost feature, and should be prioritized as such.
+- **Whether to build this at all vs. accept per-call cost.** Ties to AUDIT-backend.md Open Question 2 — if OmniRoute spend never becomes material, this is a privacy/offline feature, not a cost feature, and should be prioritized as such.

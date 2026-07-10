@@ -1,12 +1,12 @@
 # Stage 2 plan — backend generalization + capture-surface follow-through
 
 **Status:** ready for execution (Opus / Claude Code, one branch at a time) · **Date:** 2026-07-04
-**Inputs:** `AUDIT.md` (root), `capture-timing.decision.md`, `security-trust-boundaries-2026-07-04.md`, `v0.5-browse-search.prd.md`, `on-device-backend.prd.md`.
-**Constraints (verified, non-negotiable):** vitest + `tsc --noEmit` are the only CI gates (no lint script) — every branch keeps 600/600 green and adds tests. No SQLite (expo-sqlite@55 ABI-broken on SDK 54, `queue.ts:16`). Frontmatter conventions in `AUDIT.md §1.5` must stay byte-compatible. Attribution disabled in commits. Branch from `main`, one PR per branch, TDD.
+**Inputs:** `AUDIT-backend.md` (root), `capture-timing.decision.md`, `security-trust-boundaries-2026-07-04.md`, `v0.5-browse-search.prd.md`, `on-device-backend.prd.md`.
+**Constraints (verified, non-negotiable):** vitest + `tsc --noEmit` are the only CI gates (no lint script) — every branch keeps 600/600 green and adds tests. No SQLite (expo-sqlite@55 ABI-broken on SDK 54, `queue.ts:16`). Frontmatter conventions in `AUDIT-backend.md §1.5` must stay byte-compatible. Attribution disabled in commits. Branch from `main`, one PR per branch, TDD.
 
 ## Framing
 
-The backend generalization this stage was originally scoped around **already shipped in v0.2** (navetted/claude-CLI retired; text + vision already unified on one OmniRoute `/v1/chat/completions` endpoint — see AUDIT.md §1.1). So Stage 2 is not a re-architecture; it's closing the real gaps the audit found and adding the two follow-through features. Branches are ordered by dependency: the security/correctness fixes (B1–B3) are prerequisites for the feature work (B4–B7).
+The backend generalization this stage was originally scoped around **already shipped in v0.2** (navetted/claude-CLI retired; text + vision already unified on one OmniRoute `/v1/chat/completions` endpoint — see AUDIT-backend.md §1.1). So Stage 2 is not a re-architecture; it's closing the real gaps the audit found and adding the two follow-through features. Branches are ordered by dependency: the security/correctness fixes (B1–B3) are prerequisites for the feature work (B4–B7).
 
 ## Dependency graph
 
@@ -42,24 +42,24 @@ Recommended merge order: **B3 → B0 → B1 → B2 → B4 → B5 → B6 → B7.*
 **Changes:** new `lib/enrichSanitize.ts`, applied in `omniroute.ts` before returning `markdown` (covers every mode at once), implementing the neutralize policy above.
 - **Normalizer:** parse frontmatter, assert the required key set per note type (verified against prompts.ts: idea `created/status/tags` `prompts.ts:46-48`, journal `date/tags/people` `:75-78`, person `name`+contact `:105-113`, shared `kind` `:157,220`), re-serialize in canonical order. On parse failure or missing required keys → treat as enrichment failure so the caller falls into its existing degraded path (stub+banner for photo/share; queue/keep-raw for text) rather than writing a malformed note.
 - Preserve byte-exact conventions: `location: lat,lon`, `[[Name]]` wikilinks, journal `## HH:MM` + separators, `karakeepId`.
-**Tests:** injected dataviewjs/Templater/script/js-link neutralized; a legit user-authored ` ```js ` snippet SURVIVES (explicit false-positive test, not just happy-path golden samples); a note with a `data:` inline image still renders (no #60 regression); valid notes pass byte-for-byte per mode; malformed frontmatter → degraded path, no file written; the AUDIT.md must-not-drift list asserted per mode.
+**Tests:** injected dataviewjs/Templater/script/js-link neutralized; a legit user-authored ` ```js ` snippet SURVIVES (explicit false-positive test, not just happy-path golden samples); a note with a `data:` inline image still renders (no #60 regression); valid notes pass byte-for-byte per mode; malformed frontmatter → degraded path, no file written; the AUDIT-backend.md must-not-drift list asserted per mode.
 **Risk:** medium — over-aggressive handling could damage legit notes or break #60. The neutralize-not-delete policy + the false-positive and #60-regression tests are the guard.
 
 ## B1 — per-task model split (`chatModel` / `visionModel`) (AUDIT §1.4)
 
 **Why:** one `omniRouteModel` serves text and vision today; nothing guarantees image parts reach a vision-capable model, and a silent drop yields confidently-wrong "enrichment" with no banner. **Hard prerequisite for B7** (a text-only local backend must never silently eat image parts). **Soft prerequisite for B2** — B2 could call `enrichSharedImage` with the single existing model, but B1 is what makes it *correct* (routes card images to a vision model); ship B1 first, but it's not strictly blocking B2.
 **Changes:**
-- `settings.ts`: add `omniRouteVisionModel` to `Settings`/`PersistedSettings` (non-secret; default a known vision-capable model). Keep `omniRouteModel` as the chat/text model. Backward-compat via the existing `{...DEFAULT_PERSISTED, ...parsed}` spread. Retire or repurpose the vestigial `omniRouteTranscriptionModel` (transcription is on-device — AUDIT.md §1.6.5; coordinate with the `TODO.md:24` Whisper-consolidation decision — Open Question 6).
+- `settings.ts`: add `omniRouteVisionModel` to `Settings`/`PersistedSettings` (non-secret; default a known vision-capable model). Keep `omniRouteModel` as the chat/text model. Backward-compat via the existing `{...DEFAULT_PERSISTED, ...parsed}` spread. Retire or repurpose the vestigial `omniRouteTranscriptionModel` (transcription is on-device — AUDIT-backend.md §1.6.5; coordinate with the `TODO.md:24` Whisper-consolidation decision — Open Question 6).
 - `omniroute.ts`: `enrichSharedImage` (and any image-bearing `enrichSharedLink`) uses `visionModel`; text paths use `chatModel`.
 - Settings UI: second model picker (reuse the `listModels` picker at `SettingsScreen.tsx:135`).
 - Optional (folds in `TODO.md:32`): a "test connection" that verifies the configured vision model is served.
 **Tests:** vision calls request `visionModel`; text calls request `chatModel`; missing vision model → notConfigured → degraded path; old settings blob defaults cleanly.
-**Risk:** low-medium. **Decision to confirm:** keep model selection explicit per task (recommended) vs. rely on server-side OmniRoute routing (AUDIT.md Open Question 3).
+**Risk:** low-medium. **Decision to confirm:** keep model selection explicit per task (recommended) vs. rely on server-side OmniRoute routing (AUDIT-backend.md Open Question 3).
 
 ## B2 — fold business-card OCR into chat vision (AUDIT §1.6.2)
 
 **Why:** the bespoke `POST /ocr` endpoint (`ocr.ts:14-37`) is the last non-OpenAI-compatible path and a second invisible server-side model commitment. Folding it into `enrichSharedImage`-style `image_url` chat calls (using B1's `visionModel`) removes it.
-**Gate:** **conditional on a quality check** — VLM OCR on real business cards must match the dedicated endpoint (AUDIT.md Open Question 4). Do the side-by-side on-device first; if the VLM underperforms on real cards, keep `/ocr` and close the branch as "evaluated, deferred."
+**Gate:** **conditional on a quality check** — VLM OCR on real business cards must match the dedicated endpoint (AUDIT-backend.md Open Question 4). Do the side-by-side on-device first; if the VLM underperforms on real cards, keep `/ocr` and close the branch as "evaluated, deferred."
 **Changes (if it passes):** `CardScannerModal.tsx:42` calls a vision path instead of `ocrBusinessCard`; retire `ocr.ts`; person enrichment still runs text-only on the extracted text (or one-shot card→PersonNote — decide in plan).
 **Tests:** card image → structured contact text; failure → existing person degraded path.
 **Risk:** medium (quality-dependent) — hence the explicit gate.
@@ -75,7 +75,7 @@ Recommended merge order: **B3 → B0 → B1 → B2 → B4 → B5 → B6 → B7.*
 - `Settings.previewBeforeSave` (default **off**) restores the old flow. Person ignores it.
 - Reuse the shipped stub+banner + retro-enrich machinery (`PhotoCaptureScreen.tsx:150-248`; `recents-retro-enrich`).
 **Tests:** raw Idea note lands before enrichment; in-place enriched update preserves user tags/location and keeps the same filename; mtime-conflict keeps the user's version + banner (no clobber); `previewBeforeSave=on` reproduces old flow; Person unaffected; if Journal targeted-rewrite is built, sibling blocks stay byte-identical and same-minute captures don't collide.
-**Risk:** medium-high — the conflict handling is net-new and the Journal path is the sharp edge; concurrent cross-device edits resolve to Syncthing `*.sync-conflict-*.md` (recoverable, not loss) rather than being fully prevented. **Decision to confirm:** flip default to save-first (recommended) vs. opt-in (AUDIT.md Open Question 5); Journal deferred-write vs. true save-first.
+**Risk:** medium-high — the conflict handling is net-new and the Journal path is the sharp edge; concurrent cross-device edits resolve to Syncthing `*.sync-conflict-*.md` (recoverable, not loss) rather than being fully prevented. **Decision to confirm:** flip default to save-first (recommended) vs. opt-in (AUDIT-backend.md Open Question 5); Journal deferred-write vs. true save-first.
 
 ## B5 — notification inline reply (RemoteInput) (AUDIT §2.2)
 
@@ -102,12 +102,12 @@ Recommended merge order: **B3 → B0 → B1 → B2 → B4 → B5 → B6 → B7.*
 
 ## Cross-cutting housekeeping (fold into whichever branch touches the file)
 
-- Retire `navetted`-named desktop keychain commands (`apps/desktop/src-tauri/src/lib.rs:20`) and the "OmniRoute / navetted" line in `docs/CODEMAPS/architecture.md` (AUDIT.md §1.6.5).
+- Retire `navetted`-named desktop keychain commands (`apps/desktop/src-tauri/src/lib.rs:20`) and the "OmniRoute / navetted" line in `docs/CODEMAPS/architecture.md` (AUDIT-backend.md §1.6.5).
 - The remaining `navetted` surface is a migration path, **not** dead code — a `navettedUrl?` field (`settings.ts:86`) and a live legacy-migration banner (`SettingsScreen.tsx:397`). Leave the migration UX intact; only remove it once you're confident no device still holds a legacy token/URL to migrate. Fold the decision into this sweep rather than deleting blindly.
 - Fix the stale `RecentDetailScreen.tsx:4-10` "read-only this iteration" header (edit mode is shipped).
 - `gitignore` the untracked `.reports/` scan artifact (noted across session handoffs).
 
-## Open decisions to resolve before starting (from AUDIT.md)
+## Open decisions to resolve before starting (from AUDIT-backend.md)
 
 Carry these into execution; several gate branch shape:
 1. OmniRoute transport (HTTPS hostname vs LAN) — informs B0/M3 messaging.
