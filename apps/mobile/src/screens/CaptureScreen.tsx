@@ -1,17 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type Ref } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Keyboard, ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
-  Banner,
   Button,
-  Card,
-  Chip,
   HelperText,
   IconButton,
-  Modal,
-  Portal,
   Text,
-  TextInput,
 } from "react-native-paper";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 // Non-crypto local ID — only used as a key for the recents history list,
@@ -22,18 +16,19 @@ const localId = (): string =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 import type { RootStackParamList } from "../../App";
-import { VoiceButton, type VoiceButtonHandle } from "../voice/VoiceButton";
-import { CardScannerModal } from "../components/CardScannerModal";
-import { TagInput } from "../components/TagInput";
-import { LocationChip } from "../components/LocationChip";
+import type { VoiceButtonHandle } from "../voice/VoiceButton";
+import { ModeInput } from "../components/CaptureModeInput";
+import {
+  CaptureMetaSheet,
+  CapturePreviewCard,
+  CaptureSavedCard,
+} from "../components/CaptureViews";
 import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
 import {
   enrichIdea,
   enrichJournal,
   enrichPerson,
-  isPermanentError,
-  isNotConfiguredError,
   promoteIdea as omniPromoteIdea,
 } from "../lib/dispatcher";
 import {
@@ -41,13 +36,8 @@ import {
   writeIdea,
   appendJournal,
   writePerson,
-  writeBinary,
   injectAttachments,
-  extFromMime,
-  readNote,
-  updateNoteIfUnchanged,
   getModificationTime,
-  rewriteFrontmatterField,
   extractNameFromMarkdown,
   type AttachmentRef,
 } from "../lib/writer";
@@ -57,6 +47,10 @@ import {
   type EnrichIdeaOutcome,
   type RawIdeaInput,
 } from "../lib/ideaSaveFirst";
+import { classifyCaptureError } from "../lib/captureErrorDecision";
+import { planSaveFirstOutcome } from "../lib/saveFirstOutcome";
+import { persistAttachments as persistAttachmentsToVault } from "../lib/attachmentPersistence";
+import { promoteIdeaOnDisk } from "../lib/promoteIdeaOnDisk";
 import { pickAttachment, type PickedAttachment } from "../lib/attachments";
 import { clearDraft, loadDraft, saveDraft } from "../lib/captureDraft";
 import { MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
@@ -65,7 +59,6 @@ import { mergeUserTags } from "../lib/tags";
 import { upsertFrontmatterField } from "../lib/frontmatter";
 import { getTagIndex, upsertNoteInIndex } from "../lib/vault";
 import {
-  IDEA_STATUSES,
   deriveTitle,
   parseStatusFromMarkdown,
   type CaptureResponse,
@@ -214,6 +207,20 @@ export default function CaptureScreen({ route, navigation }: Props) {
     [response?.preview_markdown],
   );
 
+  // Preview-card subtitle: the target filename for this mode + the enriching
+  // model. Computed here so the presentational card stays mode-agnostic.
+  const previewSubtitle = useMemo(() => {
+    const filename =
+      mode === "idea" && pendingIdea
+        ? `Ideas/${pendingIdea.slug}.md`
+        : mode === "journal" && pendingJournal
+          ? `Journal/${pendingJournal.date}.md`
+          : mode === "person" && pendingPerson
+            ? `People/${pendingPerson.firstName}-${pendingPerson.lastName}.md`
+            : "";
+    return `${filename}${omniModel ? ` • ${omniModel}` : ""}`;
+  }, [mode, pendingIdea, pendingJournal, pendingPerson, omniModel]);
+
   // One quiet line summarizing what's staged behind the "+" sheet, so the
   // user can see filing state without opening it.
   const metaSummary = useMemo(() => {
@@ -269,36 +276,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const persistedRefs = useRef(new WeakMap<PickedAttachment, AttachmentRef>());
 
   /** Write every staged attachment to the vault (once each) and return the
-   * rel-path references to embed/queue. Called at the commit moment
-   * (confirmSave or enqueue) so a cancel at preview never strands binaries.
-   * Uses the collision-bumped `finalName` for the link so it stays paired. */
-  const persistAttachments = async (): Promise<AttachmentRef[]> => {
-    const refs: AttachmentRef[] = [];
-    for (const p of pending) {
-      const cached = persistedRefs.current.get(p);
-      if (cached) {
-        refs.push(cached);
-        continue;
-      }
-      const subdir = p.kind === "image" ? "Photos" : "Files";
-      const ext = extFromMime(p.mime);
-      const base = slugify(p.filename.replace(/\.[^.]+$/, "")) || "attachment";
-      const { finalName } = await writeBinary(
-        subdir,
-        `${base}.${ext}`,
-        p.base64,
-        p.mime,
-      );
-      const ref: AttachmentRef = {
-        kind: p.kind,
-        rel: `../${subdir}/${finalName}`,
-        filename: finalName,
-      };
-      persistedRefs.current.set(p, ref);
-      refs.push(ref);
-    }
-    return refs;
-  };
+   * rel-path references to embed/queue. Thin closure over the current staged
+   * set + the dedup cache; the write/dedup logic lives in
+   * lib/attachmentPersistence so it's unit-testable without a renderer. */
+  const persistAttachments = (): Promise<AttachmentRef[]> =>
+    persistAttachmentsToVault(pending, persistedRefs.current);
 
   /** Build an offline-or-error handler. Permanent errors (4xx) surface to
    * the user with the actual message; transient errors (network / 5xx)
@@ -307,17 +289,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
     e: unknown,
     enqueueFn: () => Promise<void>,
   ): Promise<void> => {
-    // A blank OmniRoute URL is a configuration problem, not an offline blip.
-    // Queuing it would "succeed" silently and retry forever against a
-    // nonexistent endpoint — so surface it and keep the text for resend.
-    if (isNotConfiguredError(e)) {
-      setError("OmniRoute URL not configured — set it in Settings.");
-      setPhase("input");
-      return;
-    }
-    if (isPermanentError(e)) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
+    // A blank OmniRoute URL is a config problem (not an offline blip) and a 4xx
+    // is permanent — both surface the message and keep the text for a resend.
+    // Only transient (network / 5xx) errors fall through to the offline queue.
+    const decision = classifyCaptureError(e);
+    if (decision.kind !== "transient") {
+      setError(decision.message);
       setPhase("input");
       return;
     }
@@ -357,23 +334,21 @@ export default function CaptureScreen({ route, navigation }: Props) {
     filepath: string,
     mtime: number | null,
   ): Promise<void> => {
-    if (outcome.kind === "updated") {
+    const plan = planSaveFirstOutcome(outcome);
+    if (plan.kind === "close") {
       // Reflect the enriched note (final tags, pending-enrich status gone)
       // in the cached index before landing back on Home.
-      void upsertNoteInIndex(filepath, outcome.markdown).catch(() => undefined);
+      void upsertNoteInIndex(filepath, plan.markdown).catch(() => undefined);
       setPhase("saved");
       navigation.goBack();
       return;
     }
-    if (outcome.kind === "conflict") {
-      setEnrichNotice(
-        "This note changed on disk during enrichment — your version was kept.",
-      );
+    if (plan.kind === "conflict") {
+      setEnrichNotice(plan.notice);
       setPhase("saved");
       return;
     }
-    // outcome.kind === "failed"
-    if (outcome.transient) {
+    if (plan.kind === "queue") {
       try {
         await enqueue({
           mode: "idea",
@@ -387,17 +362,15 @@ export default function CaptureScreen({ route, navigation }: Props) {
           baselineMtime: mtime,
         });
         setQueueDepth(await getQueueDepth());
-        setEnrichNotice(
-          "Saved as a raw note — enrichment queued and will finish when OmniRoute is reachable.",
-        );
+        setEnrichNotice(plan.notice);
       } catch {
-        setEnrichNotice(
-          "Saved as a raw note — enrichment will retry next time you open carnet.",
-        );
+        setEnrichNotice(plan.fallbackNotice);
       }
-    } else {
-      setDegradedReason(outcome.reason);
+      setPhase("saved");
+      return;
     }
+    // plan.kind === "degraded"
+    setDegradedReason(plan.reason);
     setPhase("saved");
   };
 
@@ -680,17 +653,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       // check so a workstation edit synced in between our read and write is kept
       // rather than clobbered (closes the promote-idea race, TODO.md).
       if (savedFilepath) {
-        const baseline = await getModificationTime(savedFilepath);
-        let conflict = false;
-        try {
-          const existing = await readNote(savedFilepath);
-          const patched = rewriteFrontmatterField(existing, "status", next);
-          const res = await updateNoteIfUnchanged(savedFilepath, patched, baseline);
-          conflict = !res.ok;
-        } catch {
-          const res = await updateNoteIfUnchanged(savedFilepath, result.markdown, baseline);
-          conflict = !res.ok;
-        }
+        const { conflict } = await promoteIdeaOnDisk(savedFilepath, next, result.markdown);
         if (conflict) {
           setError(
             "This note changed on disk — reopen it before promoting so your edits aren't lost.",
@@ -767,66 +730,19 @@ export default function CaptureScreen({ route, navigation }: Props) {
             </HelperText>
           )}
 
-          <Portal>
-            <Modal
-              visible={metaOpen}
-              onDismiss={() => setMetaOpen(false)}
-              contentContainerStyle={[
-                styles.metaSheet,
-                {
-                  backgroundColor: theme.colors.surface,
-                  borderColor: theme.colors.outline,
-                  borderTopLeftRadius: theme.carnet.radius.sheet,
-                  borderTopRightRadius: theme.carnet.radius.sheet,
-                  padding: theme.carnet.spacing.lg,
-                  gap: theme.carnet.spacing.md,
-                },
-              ]}
-            >
-              <Text variant="titleMedium">Tags & details</Text>
-              <TagInput tags={tags} onChange={setTags} knownTags={knownTags} />
-              <LocationChip location={location} onChange={setLocation} />
-              {mode !== "person" && (
-                <View style={styles.attachBlock}>
-                  <View style={styles.attachRow}>
-                    <Button
-                      icon="image"
-                      mode="contained-tonal"
-                      compact
-                      onPress={() => addAttachment(true)}
-                    >
-                      Image
-                    </Button>
-                    <Button
-                      icon="paperclip"
-                      mode="contained-tonal"
-                      compact
-                      onPress={() => addAttachment(false)}
-                    >
-                      File
-                    </Button>
-                  </View>
-                  {pending.length > 0 && (
-                    <View style={styles.chipRow}>
-                      {pending.map((p, i) => (
-                        <Chip
-                          key={`${p.filename}-${i}`}
-                          icon={p.kind === "image" ? "image" : "file"}
-                          onClose={() => removeAttachment(i)}
-                          compact
-                        >
-                          {p.filename}
-                        </Chip>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              )}
-              <Button mode="text" onPress={() => setMetaOpen(false)}>
-                Done
-              </Button>
-            </Modal>
-          </Portal>
+          <CaptureMetaSheet
+            visible={metaOpen}
+            onDismiss={() => setMetaOpen(false)}
+            tags={tags}
+            onTagsChange={setTags}
+            knownTags={knownTags}
+            location={location}
+            onLocationChange={setLocation}
+            showAttachments={mode !== "person"}
+            pending={pending}
+            onAddAttachment={addAttachment}
+            onRemoveAttachment={removeAttachment}
+          />
         </>
       )}
 
@@ -840,311 +756,34 @@ export default function CaptureScreen({ route, navigation }: Props) {
       )}
 
       {phase === "preview" && response && (
-        <Card style={styles.previewCard}>
-          <Card.Title
-            title="Preview"
-            subtitle={(() => {
-              const filename =
-                mode === "idea" && pendingIdea
-                  ? `Ideas/${pendingIdea.slug}.md`
-                  : mode === "journal" && pendingJournal
-                    ? `Journal/${pendingJournal.date}.md`
-                    : mode === "person" && pendingPerson
-                      ? `People/${pendingPerson.firstName}-${pendingPerson.lastName}.md`
-                      : "";
-              return `${filename}${omniModel ? ` • ${omniModel}` : ""}`;
-            })()}
-          />
-          <Card.Content>
-            {mode === "idea" && (
-              <View style={styles.statusRow}>
-                {IDEA_STATUSES.map((s) => (
-                  <Chip
-                    key={s}
-                    selected={currentStatus === s}
-                    onPress={() => promote(s)}
-                    style={styles.statusChip}
-                    compact
-                  >
-                    {s}
-                  </Chip>
-                ))}
-              </View>
-            )}
-            <Text
-              selectable
-              style={showSource ? styles.previewSource : styles.previewRendered}
-            >
-              {response.preview_markdown ?? ""}
-            </Text>
-          </Card.Content>
-          <Card.Actions>
-            <Button
-              mode="text"
-              compact
-              onPress={() => setShowSource((v) => !v)}
-            >
-              {showSource ? "View rendered" : "View source"}
-            </Button>
-            <Button onPress={confirmSave} mode="contained">
-              Save
-            </Button>
-          </Card.Actions>
-          {error && (
-            <Card.Content>
-              <HelperText type="error" visible>
-                {error}
-              </HelperText>
-            </Card.Content>
-          )}
-        </Card>
+        <CapturePreviewCard
+          subtitle={previewSubtitle}
+          previewMarkdown={response.preview_markdown ?? ""}
+          showStatusRow={mode === "idea"}
+          currentStatus={currentStatus}
+          onPromote={promote}
+          showSource={showSource}
+          onToggleSource={() => setShowSource((v) => !v)}
+          onSave={confirmSave}
+          error={error}
+        />
       )}
 
       {phase === "saved" && (degradedReason || enrichNotice) && (
-        <Card style={styles.previewCard}>
-          <Card.Title title="Saved to vault" />
-          <Card.Content>
-            {degradedReason ? (
-              <Banner visible icon="alert" actions={[]} style={styles.degradedBanner}>
-                {`Your note is safe in the vault. Tidying it up didn't work (${degradedReason}) — tap Re-enrich to try again, or just edit it in Obsidian.`}
-              </Banner>
-            ) : null}
-            {enrichNotice ? (
-              <Banner
-                visible
-                icon="information"
-                actions={[]}
-                style={styles.degradedBanner}
-              >
-                {enrichNotice}
-              </Banner>
-            ) : null}
-            <Text variant="bodySmall" selectable style={styles.previewRendered}>
-              {savedFilepath ?? ""}
-            </Text>
-            <HelperText type="info" visible>
-              Open Obsidian (or your editor) on the synced folder to read and
-              edit. Carnet is intake-only.
-            </HelperText>
-          </Card.Content>
-          <Card.Actions>
-            {degradedReason ? (
-              <Button mode="text" onPress={reEnrichSaved}>
-                Re-enrich
-              </Button>
-            ) : null}
-            <Button mode="contained" onPress={() => navigation.goBack()}>
-              Done
-            </Button>
-          </Card.Actions>
-        </Card>
+        <CaptureSavedCard
+          degradedReason={degradedReason}
+          enrichNotice={enrichNotice}
+          savedFilepath={savedFilepath}
+          onReEnrich={reEnrichSaved}
+          onDone={() => navigation.goBack()}
+        />
       )}
     </ScrollView>
   );
 }
 
-interface ModeInputProps {
-  mode: CaptureMode;
-  text: string;
-  onTextChange: (v: string) => void;
-  transcript: string;
-  onTranscriptChange: (v: string) => void;
-  ocrText: string;
-  onOcrChange: (v: string) => void;
-  /** Forwarded to the Idea/Journal VoiceButton so the parent can stop+flush
-   * dictation before opening the attachment picker. */
-  voiceRef?: Ref<VoiceButtonHandle>;
-}
-
-function ModeInput({
-  mode,
-  text,
-  onTextChange,
-  transcript,
-  onTranscriptChange,
-  ocrText,
-  onOcrChange,
-  voiceRef,
-}: ModeInputProps) {
-  if (mode === "idea") {
-    return (
-      <View style={styles.ideaBlock}>
-        <View style={styles.voiceRow}>
-          <VoiceButton
-            ref={voiceRef}
-            onTranscript={(t, isFinal) => {
-              if (isFinal) {
-                onTextChange(text ? `${text}\n${t}`.trim() : t);
-              }
-            }}
-          />
-          <Text variant="bodySmall" style={styles.voiceHint}>
-            Tap to dictate
-          </Text>
-        </View>
-        <TextInput
-          placeholder="What's on your mind?"
-          mode="flat"
-          multiline
-          numberOfLines={8}
-          value={text}
-          onChangeText={onTextChange}
-          autoFocus
-          underlineColor="transparent"
-          activeUnderlineColor="transparent"
-          style={styles.fullBleedInput}
-        />
-        <Text variant="bodySmall" style={styles.wordCounter}>
-          {text.length} chars
-        </Text>
-      </View>
-    );
-  }
-  if (mode === "journal") {
-    return (
-      <View style={styles.journalBlock}>
-        <View style={styles.voiceRow}>
-          <VoiceButton
-            ref={voiceRef}
-            onTranscript={(t, isFinal) => {
-              if (isFinal) {
-                onTranscriptChange(
-                  transcript ? `${transcript}\n${t}`.trim() : t,
-                );
-              }
-            }}
-          />
-          <Text variant="bodySmall" style={styles.voiceHint}>
-            Tap to dictate
-          </Text>
-        </View>
-        <TextInput
-          placeholder="Transcript — speak or type"
-          mode="flat"
-          multiline
-          numberOfLines={6}
-          value={transcript}
-          onChangeText={onTranscriptChange}
-          autoFocus
-          underlineColor="transparent"
-          activeUnderlineColor="transparent"
-          style={styles.fullBleedInput}
-        />
-        <TextInput
-          placeholder="Additional notes"
-          mode="flat"
-          multiline
-          numberOfLines={3}
-          value={text}
-          onChangeText={onTextChange}
-          underlineColor="transparent"
-          activeUnderlineColor="transparent"
-          style={styles.fullBleedInputSecondary}
-        />
-      </View>
-    );
-  }
-  return (
-    <PersonInput
-      ocrText={ocrText}
-      onOcrChange={onOcrChange}
-      context={text}
-      onContextChange={onTextChange}
-    />
-  );
-}
-
-interface PersonInputProps {
-  ocrText: string;
-  onOcrChange: (v: string) => void;
-  context: string;
-  onContextChange: (v: string) => void;
-}
-
-function PersonInput({
-  ocrText,
-  onOcrChange,
-  context,
-  onContextChange,
-}: PersonInputProps) {
-  const [scannerVisible, setScannerVisible] = useState(false);
-  const [hint, setHint] = useState<string | null>(null);
-
-  const open = async () => {
-    setHint(null);
-    const settings = await getSettings();
-    if (!settings.omniRouteUrl.trim()) {
-      setHint(
-        "OmniRoute not configured. Type the card text below, then tap Send.",
-      );
-      return;
-    }
-    setScannerVisible(true);
-  };
-
-  return (
-    <View style={styles.personBlock}>
-      <Button icon="camera" mode="contained-tonal" onPress={open}>
-        Scan card
-      </Button>
-      {hint && (
-        <HelperText type="info" visible>
-          {hint}
-        </HelperText>
-      )}
-      <TextInput
-        placeholder="Card text — scan or type"
-        mode="flat"
-        multiline
-        numberOfLines={4}
-        value={ocrText}
-        onChangeText={onOcrChange}
-        autoFocus
-        underlineColor="transparent"
-        activeUnderlineColor="transparent"
-        style={styles.fullBleedInput}
-      />
-      <View style={styles.voiceRow}>
-        <VoiceButton
-          onTranscript={(t, isFinal) => {
-            if (isFinal) {
-              onContextChange(context ? `${context}\n${t}`.trim() : t);
-            }
-          }}
-        />
-        <Text variant="bodySmall" style={styles.voiceHint}>
-          Tap to dictate meeting context
-        </Text>
-      </View>
-      <TextInput
-        placeholder="Meeting context"
-        mode="flat"
-        multiline
-        numberOfLines={3}
-        value={context}
-        onChangeText={onContextChange}
-        underlineColor="transparent"
-        activeUnderlineColor="transparent"
-        style={styles.fullBleedInputSecondary}
-      />
-      <CardScannerModal
-        visible={scannerVisible}
-        onResult={(text) => {
-          onOcrChange(ocrText ? `${ocrText}\n${text}`.trim() : text);
-        }}
-        onClose={() => setScannerVisible(false)}
-      />
-    </View>
-  );
-}
-
-
 const styles = StyleSheet.create({
   content: { padding: 16, gap: 12 },
-  // Distraction-free writing surface: no card, no outline, no underline —
-  // the text sits directly on the screen background.
-  fullBleedInput: { backgroundColor: "transparent", fontSize: 18, paddingHorizontal: 0 },
-  fullBleedInputSecondary: { backgroundColor: "transparent", paddingHorizontal: 0 },
   actionBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -1154,22 +793,6 @@ const styles = StyleSheet.create({
   },
   metaSummary: { flex: 1 },
   sendContent: { paddingHorizontal: 16 },
-  metaSheet: { position: "absolute", left: 0, right: 0, bottom: 0, borderWidth: 1 },
   loading: { paddingVertical: 64, alignItems: "center", gap: 12 },
   loadingText: { opacity: 0.8 },
-  previewCard: { marginTop: 8 },
-  previewSource: { fontFamily: "monospace", fontSize: 12, marginTop: 12 },
-  previewRendered: { fontSize: 13, lineHeight: 20, marginTop: 12 },
-  statusRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  statusChip: {},
-  ideaBlock: { gap: 12 },
-  journalBlock: { gap: 12 },
-  voiceRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  voiceHint: { opacity: 0.7 },
-  personBlock: { gap: 12 },
-  wordCounter: { opacity: 0.5, marginTop: 4, textAlign: "right" },
-  attachBlock: { gap: 8 },
-  attachRow: { flexDirection: "row", gap: 8 },
-  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  degradedBanner: { marginBottom: 8 },
 });
