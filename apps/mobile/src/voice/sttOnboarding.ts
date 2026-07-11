@@ -79,6 +79,27 @@ export function describeReadiness(readiness: SttReadiness): ReadinessCopy {
   }
 }
 
+/**
+ * Shared source of truth for the "on-device voice model missing" error text
+ * thrown by `audioTranscribeOnDevice.ts`'s recognizer error handler. Kept
+ * here (not duplicated) so the audio-capture screen's error banner can
+ * detect this specific failure class — via {@link isSttModelMissingMessage}
+ * — and offer the same "download the model" recovery VoiceButton's dictation
+ * flow already has, instead of a dead-end error string.
+ */
+export const STT_MODEL_MISSING_MESSAGE =
+  "On-device voice model isn't installed. Open Journal voice dictation to download it, or enable Whisper transcription in Settings.";
+
+/**
+ * True when an error message is the on-device-model-missing class thrown by
+ * `transcribeOnDevice`'s recognizer error handler. Exact match against the
+ * shared constant, not a heuristic — the message text is only ever produced
+ * by that one call site, sourced from the same constant.
+ */
+export function isSttModelMissingMessage(message: string): boolean {
+  return message === STT_MODEL_MISSING_MESSAGE;
+}
+
 export interface ProactivePromptInput {
   readiness: SttReadiness;
   alreadyPrompted: boolean;

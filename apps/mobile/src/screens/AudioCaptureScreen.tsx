@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Animated, StyleSheet, View } from "react-native";
+import { Animated, Linking, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
   Banner,
@@ -45,6 +45,13 @@ import {
   MAX_SAFE_SHARE_BYTES,
   yamlQuote,
 } from "../lib/shareHelpers";
+import { isSttModelMissingMessage } from "../voice/sttOnboarding";
+import { triggerVoiceModelDownload } from "../voice/sttReadiness";
+
+// The recognizer package Speech Services by Google installs and downloads
+// its voice models through — same target VoiceButton's Play Store fallback
+// uses, so both dead-ends land the user in the same place.
+const SPEECH_SERVICES_PKG = "com.google.android.tts";
 
 type Props = NativeStackScreenProps<RootStackParamList, "AudioCapture">;
 
@@ -94,6 +101,10 @@ export default function AudioCaptureScreen({ navigation }: Props) {
   const [autoTranscribeError, setAutoTranscribeError] = useState<string | null>(
     null,
   );
+  // In flight while the in-app on-device voice-model download is running
+  // (the same trigger VoiceButton's error sheet uses), so the "Download
+  // model" button can disable + show progress instead of double-firing.
+  const [downloadingModel, setDownloadingModel] = useState(false);
 
   /** Pulse opacity for the REC indicator. opacity is compositor-friendly with
    * useNativeDriver, so a long recording won't drop frames on low-end phones. */
@@ -386,6 +397,49 @@ export default function AudioCaptureScreen({ navigation }: Props) {
     }
   }, [discardRecording]);
 
+  /** Re-run auto-transcribe against the already-saved note. Used by the
+   * "Download voice model" recovery button below — the audio + note are
+   * already safely on disk, so this only retries the transcription step. */
+  const retryTranscribe = useCallback(() => {
+    if (!savedFilepath) return;
+    setAutoTranscribing(true);
+    setAutoTranscribeError(null);
+    void autoTranscribeIfEnabled(savedFilepath).then((errMsg) => {
+      if (!mountedRef.current) return;
+      setAutoTranscribing(false);
+      if (errMsg) setAutoTranscribeError(errMsg);
+    });
+  }, [savedFilepath]);
+
+  /** Pull the on-device English voice model from inside the app (same
+   * trigger VoiceButton's dictation error sheet uses), then retry
+   * transcription on success. On a queued/dialog-based download (older
+   * Android) or an outright failure, point at Speech Services in the Play
+   * Store instead — the recognizer's own recovery path. */
+  const downloadVoiceModel = useCallback(async () => {
+    setDownloadingModel(true);
+    try {
+      const result = await triggerVoiceModelDownload("en-US");
+      if (!mountedRef.current) return;
+      if (result === "installed") {
+        retryTranscribe();
+      } else if (result === "dialog" || result === "scheduled") {
+        setAutoTranscribeError(
+          "Downloading the English voice model — tap Retry in a moment once it finishes.",
+        );
+      } else {
+        const market = `market://details?id=${SPEECH_SERVICES_PKG}`;
+        const web = `https://play.google.com/store/apps/details?id=${SPEECH_SERVICES_PKG}`;
+        setAutoTranscribeError(
+          "Couldn't start the download automatically. Opening Speech Services by Google in the Play Store — install/update it, then tap Retry.",
+        );
+        Linking.openURL(market).catch(() => Linking.openURL(web));
+      }
+    } finally {
+      if (mountedRef.current) setDownloadingModel(false);
+    }
+  }, [retryTranscribe]);
+
   // ── Render branches ────────────────────────────────────────────────────────
 
   if (permissionDenied) {
@@ -428,10 +482,34 @@ export default function AudioCaptureScreen({ navigation }: Props) {
                   Transcribing audio…
                 </Text>
               </View>
+            ) : autoTranscribeError && isSttModelMissingMessage(autoTranscribeError) ? (
+              <View style={styles.modelMissing}>
+                <HelperText type="error" visible>
+                  The on-device English voice model isn't installed, so this
+                  recording couldn't be transcribed. The audio itself is
+                  safely saved — download the model to transcribe it.
+                </HelperText>
+                <View style={styles.modelMissingActions}>
+                  <Button
+                    mode="contained-tonal"
+                    onPress={downloadVoiceModel}
+                    loading={downloadingModel}
+                    disabled={downloadingModel}
+                  >
+                    Download voice model
+                  </Button>
+                  <Button onPress={retryTranscribe} disabled={downloadingModel}>
+                    Retry
+                  </Button>
+                </View>
+              </View>
             ) : autoTranscribeError ? (
-              <HelperText type="error" visible>
-                {`Auto-transcribe failed: ${autoTranscribeError}`}
-              </HelperText>
+              <View style={styles.modelMissing}>
+                <HelperText type="error" visible>
+                  {`Auto-transcribe failed: ${autoTranscribeError}`}
+                </HelperText>
+                <Button onPress={retryTranscribe}>Retry</Button>
+              </View>
             ) : (
               <HelperText type="info" visible>
                 Open Obsidian (or your editor) on the synced folder to listen
@@ -546,4 +624,6 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingTop: 8,
   },
+  modelMissing: { gap: 4 },
+  modelMissingActions: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
 });

@@ -23,6 +23,8 @@ import {
   shouldPromptProactively,
   wasOnboardingPrompted,
   markOnboardingPrompted,
+  isSttModelMissingMessage,
+  STT_MODEL_MISSING_MESSAGE,
   STT_ONBOARDING_PROMPTED_KEY,
   type SttEngine,
 } from './sttOnboarding';
@@ -119,6 +121,30 @@ describe('shouldPromptProactively', () => {
       });
       expect(result).toBe(engine === 'ondevice');
     }
+  });
+});
+
+describe('isSttModelMissingMessage', () => {
+  it('matches the exact message audioTranscribeOnDevice throws for a missing model', () => {
+    expect(isSttModelMissingMessage(STT_MODEL_MISSING_MESSAGE)).toBe(true);
+  });
+
+  it('does not match an unrelated transcription error', () => {
+    expect(isSttModelMissingMessage('On-device STT error: audio-capture')).toBe(
+      false,
+    );
+    expect(
+      isSttModelMissingMessage(
+        'On-device STT returned no recognized speech (silent audio?)',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not match a substring or reordered fragment of the real message', () => {
+    expect(isSttModelMissingMessage("voice model isn't installed")).toBe(false);
+    expect(isSttModelMissingMessage(STT_MODEL_MISSING_MESSAGE + ' ')).toBe(
+      false,
+    );
   });
 });
 

@@ -31,6 +31,7 @@ import type {
   ExpoSpeechRecognitionResultEvent,
 } from "expo-speech-recognition";
 import * as audioDecoder from "./audioDecoder";
+import { STT_MODEL_MISSING_MESSAGE } from "../voice/sttOnboarding";
 
 const ON_DEVICE_TIMEOUT_MS = 90_000;
 
@@ -190,11 +191,7 @@ function runRecognizer(fileUri: string): Promise<string> {
             `${event.error} ${event.message ?? ""}`,
           );
           if (noModel) {
-            fail(
-              new Error(
-                "On-device voice model isn't installed. Open Journal voice dictation to download it, or enable Whisper transcription in Settings.",
-              ),
-            );
+            fail(new Error(STT_MODEL_MISSING_MESSAGE));
             return;
           }
           fail(
