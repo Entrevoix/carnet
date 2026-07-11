@@ -396,6 +396,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
   };
 
   const submit = async () => {
+    // The "+" metadata button already dismisses on open (QA finding: a still-open
+    // keyboard renders over the near-black sheet in dark mode); Send needs the
+    // same treatment — otherwise the keyboard stays up through submitting/preview
+    // and the user has to back out of it manually.
+    Keyboard.dismiss();
     setPhase("submitting");
     setError(null);
     setDegradedReason(null);
