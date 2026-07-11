@@ -12,10 +12,12 @@
     "build:shared": "npm -w @carnet/shared run build",
     "mobile": "npm -w @carnet/mobile start",
     "desktop": "npm -w @carnet/desktop run dev",
-    "desktop:tauri": "npm -w @carnet/desktop run tauri dev"
+    "desktop:tauri": "npm -w @carnet/desktop run tauri dev",
+    "postinstall": "patch-package"
   },
   "devDependencies": {
-    "metro-runtime": "0.83.3"
+    "metro-runtime": "0.83.3",
+    "patch-package": "^8.0.1"
   },
   "overrides": {
     "react-native-worklets": "0.5.1"

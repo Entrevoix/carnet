@@ -41,6 +41,14 @@ automated gates are `tsc --noEmit` and vitest, per workspace. Don't assume a lin
 exists or add one without discussing scope — it's a deliberate gap, not an oversight to
 silently "fix."
 
+`npm ci`/`npm install` runs a `postinstall: patch-package` hook — see `patches/`. Currently
+one patch: `expo-speech-recognition+3.1.3.patch` fixes a real upstream native-Kotlin crash
+(`PromiseAlreadySettledException` in `getSupportedLocales` when a recognizer package fires
+both `onSupportResult` and a duplicate `onError`, observed with `com.google.android.tts`).
+If bumping this dependency, re-verify the patch still applies (`npx patch-package
+expo-speech-recognition --exclude 'android/build/'` regenerates it) — don't silently drop
+it, the crash is real and reproducible.
+
 ## CI (`.github/workflows/ci.yml`)
 Five jobs: `shared` → `mobile`, `desktop`, `mobile-android` (parallel, all
 `needs: [shared]`) → `gate` (`needs: [shared, mobile, desktop, mobile-android]`,

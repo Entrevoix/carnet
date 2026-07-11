@@ -1,0 +1,37 @@
+diff --git a/node_modules/expo-speech-recognition/android/src/main/java/expo/modules/speechrecognition/ExpoSpeechRecognitionModule.kt b/node_modules/expo-speech-recognition/android/src/main/java/expo/modules/speechrecognition/ExpoSpeechRecognitionModule.kt
+index 9b523ab..d18391a 100644
+--- a/node_modules/expo-speech-recognition/android/src/main/java/expo/modules/speechrecognition/ExpoSpeechRecognitionModule.kt
++++ b/node_modules/expo-speech-recognition/android/src/main/java/expo/modules/speechrecognition/ExpoSpeechRecognitionModule.kt
+@@ -448,6 +448,14 @@ class ExpoSpeechRecognitionModule : Module() {
+                     override fun onSupportResult(recognitionSupport: RecognitionSupport) {
+                         Log.d("ExpoSpeechService", "onSupportResult() called with recognitionSupport: $recognitionSupport")
+                         // Seems to get called twice when using `createSpeechRecognizer()`
++                        // carnet patch: didResolve now guards ANY settle (resolve OR
++                        // reject), not just resolve — see the matching change in
++                        // onError below. Upstream's original guard checked this flag
++                        // before rejecting but never SET it before rejecting, so two
++                        // onError() calls for the same request (observed with
++                        // com.google.android.tts) each scheduled their own delayed
++                        // reject and the second one threw
++                        // PromiseAlreadySettledException, crashing the app.
+                         if (didResolve) {
+                             return
+                         }
+@@ -475,9 +483,17 @@ class ExpoSpeechRecognitionModule : Module() {
+                         // This occurs when providing some packages such as com.google.android.tts
+                         // com.samsung.android.bixby.agent usually errors though
+                         Handler(appContext.mainLooper).postDelayed({
++                            // carnet patch: must SET the flag here too, not just
++                            // check it — otherwise a second onError() call (both
++                            // fire for some packages, per the comment above) races
++                            // its own postDelayed reject in past this check before
++                            // the first one's Throwable(Promise) actually settles,
++                            // and the second promise.reject() throws
++                            // PromiseAlreadySettledException.
+                             if (didResolve) {
+                                 return@postDelayed
+                             }
++                            didResolve = true
+                             promise.reject(
+                                 "error_$error",
+                                 "Failed to retrieve supported locales with error: $error",
