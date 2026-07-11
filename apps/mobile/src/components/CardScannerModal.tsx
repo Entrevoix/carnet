@@ -39,7 +39,12 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
         throw new Error("no image captured");
       }
       const settings = await getSettings();
-      const { text } = await ocrBusinessCard(settings.omniRouteUrl, photo.base64);
+      const { text } = await ocrBusinessCard(
+        settings.omniRouteUrl,
+        settings.omniRouteApiKey,
+        photo.base64,
+        "image/jpeg",
+      );
       onResult(text);
       onClose();
     } catch (e: unknown) {
