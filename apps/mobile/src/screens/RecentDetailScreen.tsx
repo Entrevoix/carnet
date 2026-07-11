@@ -46,22 +46,16 @@ import { formatElapsed } from "../lib/shareHelpers";
 
 import type { RootStackParamList } from "../../App";
 import {
-  extFromMime,
   extractFrontmatterField,
-  injectImageEmbed,
   listPairedBinaries,
   moveToArchive,
   readNote,
-  readPairedBinaryFromNote,
   readPairedBinaryUri,
   resolvePairedUri,
-  slugify,
   splitFrontmatter,
   stripFrontmatter,
   stripPairedBinaryLinks,
   updateNote,
-  upsertSection,
-  writeBinary,
 } from "../lib/writer";
 import {
   applyFormat,
@@ -69,22 +63,6 @@ import {
   type FormatKind,
   type Sel,
 } from "../lib/markdownEdit";
-import {
-  getFrontmatterTags,
-  parseFrontmatter,
-  upsertFrontmatterField,
-} from "../lib/frontmatter";
-import {
-  attachTags,
-  createTextBookmark,
-  updateTextBookmark,
-  KarakeepError,
-} from "../lib/karakeep";
-import { pushNoteAttachments } from "../lib/karakeepExport";
-import { rewriteImageEmbedsToAssetUrls } from "../lib/karakeepInlineImages";
-import { clearPushedAssets } from "../lib/karakeepAssetSync";
-import { pickAttachment } from "../lib/attachments";
-import { MAX_EDITOR_IMAGE_BASE64, toDataUri } from "../lib/editorImages";
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
 import { StampChip } from "../components/StampChip";
 import { modeStamp } from "../components/NoteCard";
@@ -92,10 +70,11 @@ import { MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
 import { makeImageRule } from "../components/markdownImageRule";
 import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
 import { TagInput } from "../components/TagInput";
-import { applyTagsToHeader } from "../lib/tags";
 import { getTagIndex, invalidateNoteIndex, tagsForNote } from "../lib/vault";
-import { enrichSharedImage } from "../lib/dispatcher";
-import { transcribeAudio } from "../lib/omniroute";
+import { exportNoteToKarakeep } from "../lib/karakeepNoteExport";
+import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
+import { planWysiwygSave } from "../lib/wysiwygSave";
+import { pickAndWriteVaultImage } from "../lib/vaultImageInsert";
 import {
   removeFromHistory,
   removeFromHistoryByFilepath,
@@ -297,39 +276,11 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     reEnrichingRef.current = true;
     setReEnrichError(null);
     setReEnriching(true);
-    try {
-      // Locate the paired image. The match also tells us the relative path
-      // we need to re-inject after the LLM rewrites the body.
-      const linkMatch = body.match(/\.\.\/Photos\/([^/\s)]+)/);
-      if (!linkMatch) {
-        throw new Error(
-          "No paired image found in this note — re-enrich needs the original image on disk.",
-        );
-      }
-      const imageFilename = linkMatch[1];
-      const { base64, mime } = await readPairedBinaryFromNote(body);
-      // Re-enrich uses an empty context — the original context-at-capture
-      // isn't recoverable from the saved markdown without a brittle parse.
-      // A future PR can add a TextInput to let the user supply fresh context.
-      const result = await enrichSharedImage({
-        base64,
-        mimeType: mime,
-        context: "",
-      });
-      const withImage = injectImageEmbed(
-        result.markdown,
-        `../Photos/${imageFilename}`,
-      );
-      await updateNote(entry.filepath, withImage);
-      setBody(withImage);
-    } catch (e: unknown) {
-      const reason = e instanceof Error ? e.message : String(e);
-      console.warn("[RecentDetail] re-enrich failed:", reason);
-      setReEnrichError(reason);
-    } finally {
-      reEnrichingRef.current = false;
-      setReEnriching(false);
-    }
+    const outcome = await reEnrichNote({ body, filepath: entry.filepath });
+    if (outcome.kind === "updated") setBody(outcome.nextBody);
+    else setReEnrichError(outcome.reason);
+    reEnrichingRef.current = false;
+    setReEnriching(false);
   }, [body, entry.filepath]);
 
   const handleTranscribe = useCallback(async () => {
@@ -337,34 +288,11 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     transcribingRef.current = true;
     setTranscribeError(null);
     setTranscribing(true);
-    try {
-      // Locate the paired audio file — its filename is needed for the
-      // multipart `file` field on Whisper, and the regex doubles as a
-      // pre-flight check before we read bytes off disk.
-      const linkMatch = body.match(/\.\.\/Audio\/([^/\s)]+)/);
-      if (!linkMatch) {
-        throw new Error(
-          "No paired audio found in this note — transcription needs the original audio on disk.",
-        );
-      }
-      const filename = linkMatch[1];
-      const { base64, mime } = await readPairedBinaryFromNote(body);
-      const { text } = await transcribeAudio({
-        base64,
-        mimeType: mime,
-        filename,
-      });
-      const next = upsertSection(body, "Transcript", text);
-      await updateNote(entry.filepath, next);
-      setBody(next);
-    } catch (e: unknown) {
-      const reason = e instanceof Error ? e.message : String(e);
-      console.warn("[RecentDetail] transcribe failed:", reason);
-      setTranscribeError(reason);
-    } finally {
-      transcribingRef.current = false;
-      setTranscribing(false);
-    }
+    const outcome = await transcribeNote({ body, filepath: entry.filepath });
+    if (outcome.kind === "updated") setBody(outcome.nextBody);
+    else setTranscribeError(outcome.reason);
+    transcribingRef.current = false;
+    setTranscribing(false);
   }, [body, entry.filepath]);
 
   // Export the note to Karakeep as a text bookmark. Mirrors the other async
@@ -380,123 +308,32 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     exportingKarakeepRef.current = true;
     setKarakeepError(null);
     setExportingKarakeep(true);
-    try {
-      const { header, body: noteBody } = splitFrontmatter(body);
-      // Title: note H1 → filename stem fallback. deriveTitle falls back to the
-      // first line / "Untitled", so guard against an empty/whitespace H1 too.
-      const stem =
-        entry.filepath
-          .split("/")
-          .pop()
-          ?.replace(/\.md$/i, "") ?? entry.title;
-      const title = deriveTitle(noteBody).trim() || stem;
-      // Tags: frontmatter tags + a `kind` tag (idea/journal/person/...), deduped.
-      const fmTags = getFrontmatterTags(body);
-      const kindField = parseFrontmatter(body).fields.find(
-        ([k]) => k === "kind",
-      );
-      const kindTag = kindField?.[1]?.trim() ?? "";
-      const tags = [...new Set([...fmTags, ...(kindTag ? [kindTag] : [])])];
-      const createdAt = extractFrontmatterField(body, "created") ?? undefined;
-
-      const existingId = extractFrontmatterField(body, "karakeepId");
-      let id: string;
-      let didUpdate = false;
-      if (existingId) {
-        try {
-          ({ id } = await updateTextBookmark(existingId, {
-            text: noteBody,
-            title,
-            createdAt,
-          }));
-          didUpdate = true;
-        } catch (e: unknown) {
-          // The stored id points at a bookmark that no longer exists on the
-          // server — recover by creating a fresh one and re-stamping the id.
-          // ACCEPTED LIMITATION: a 404 from a *misconfigured* base URL (e.g. the
-          // user repointed karakeepUrl at a host without /api/v1) is
-          // indistinguishable here from a deleted bookmark, so it would create a
-          // duplicate. Bounded (one recoverable bookmark, requires misconfig);
-          // disambiguating would need a confirming GET — out of scope for v2.
-          if (e instanceof KarakeepError && e.status === 404) {
-            ({ id } = await createTextBookmark({ text: noteBody, title, createdAt }));
-            // The old bookmark is gone; its asset-sync record is dead. Drop it so
-            // AsyncStorage doesn't accumulate orphans, and so the fresh bookmark's
-            // (empty) record drives a full re-push of attachments below.
-            void clearPushedAssets(existingId);
-          } else {
-            throw e;
-          }
-        }
+    // exportNoteToKarakeep owns the create-vs-update / 404-recovery / asset-sync
+    // orchestration + the in-place note write; the screen only translates the
+    // outcome into UI state (guarded by mountedRef so a Back-during-export can't
+    // setState after unmount — the disk write itself already landed).
+    const outcome = await exportNoteToKarakeep({
+      body,
+      filepath: entry.filepath,
+      entryTitle: entry.title,
+    });
+    if (mountedRef.current) {
+      if (outcome.kind === "failed") {
+        setKarakeepError(outcome.reason);
       } else {
-        ({ id } = await createTextBookmark({ text: noteBody, title, createdAt }));
-      }
-      // attachTags is additive — on an update it re-attaches the note's current
-      // tags but does NOT detach tags removed from the note since the first
-      // export. ACCEPTED LIMITATION: the bookmark's tag set can drift superset;
-      // detaching would need a GET-diff + DELETE pass (a later increment).
-      await attachTags(id, tags);
-
-      // Incrementally sync attachments on BOTH create and re-export. A
-      // per-bookmark sync record (keyed by bookmark id, in AsyncStorage) means
-      // already-attached files are skipped — so Karakeep never accumulates
-      // duplicates on re-send — while an attachment added after the first export,
-      // or one that failed earlier, is (re)pushed here. Returns the first error
-      // (or null); a partial failure still leaves the bookmark stamped below.
-      const { error: assetError, imageUrlByRel } = await pushNoteAttachments(
-        id,
-        noteBody,
-      );
-
-      // Inline the note's images into the Karakeep bookmark BODY: rewrite each
-      // ../Photos embed to its uploaded asset URL so the images render in-content
-      // (Karakeep's MarkdownReadonly renders `![](…)` unrestricted — verified
-      // against a live instance). The VAULT note keeps its relative links — only
-      // this Karakeep copy is inlined. Best-effort: the bookmark already holds the
-      // original text + attached assets (incl. the cover), so a failed inline
-      // PATCH never loses the export.
-      const inlinedBody = rewriteImageEmbedsToAssetUrls(noteBody, imageUrlByRel);
-      if (inlinedBody !== noteBody) {
-        try {
-          await updateTextBookmark(id, { text: inlinedBody, title, createdAt });
-        } catch (e: unknown) {
-          const reason = e instanceof Error ? e.message : String(e);
-          console.warn(
-            "[RecentDetail] Karakeep inline-image body update failed:",
-            reason,
+        setBody(outcome.nextBody);
+        if (outcome.kind === "partial") {
+          setKarakeepError(
+            `Exported to Karakeep, but an attachment failed: ${outcome.assetError}`,
           );
+        } else {
+          setKarakeepUpdated(outcome.didUpdate);
+          setKarakeepDone(true);
         }
       }
-
-      // Idempotency: stamp the bookmark id into the note frontmatter (a no-op
-      // rewrite on update, since the id is unchanged). Stamped even when an
-      // attachment failed — the bookmark exists, so a re-export should update it
-      // rather than create a second one.
-      const next = upsertFrontmatterField(header + noteBody, "karakeepId", id);
-      await updateNote(entry.filepath, next);
-      if (!mountedRef.current) return;
-      setBody(next);
-      if (assetError) {
-        setKarakeepError(
-          `Exported to Karakeep, but an attachment failed: ${assetError}`,
-        );
-      } else {
-        setKarakeepUpdated(didUpdate);
-        setKarakeepDone(true);
-      }
-    } catch (e: unknown) {
-      const reason =
-        e instanceof KarakeepError
-          ? e.message
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      console.warn("[RecentDetail] Karakeep export failed:", reason);
-      if (mountedRef.current) setKarakeepError(reason);
-    } finally {
-      exportingKarakeepRef.current = false;
-      if (mountedRef.current) setExportingKarakeep(false);
     }
+    exportingKarakeepRef.current = false;
+    if (mountedRef.current) setExportingKarakeep(false);
   }, [body, entry.filepath, entry.title]);
 
   // Entry point for the button. If the note was already exported (frontmatter
@@ -579,17 +416,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     insertingImageRef.current = true;
     setEditError(null);
     try {
-      const picked = await pickAttachment({ imagesOnly: true });
-      if (!picked) return;
-      const ext = extFromMime(picked.mime);
-      const base = slugify(picked.filename.replace(/\.[^.]+$/, "")) || "image";
-      const { finalName } = await writeBinary(
-        "Photos",
-        `${base}.${ext}`,
-        picked.base64,
-        picked.mime,
-      );
-      const r = insertAtCursor(draft, selection, `![](../Photos/${finalName})`);
+      const written = await pickAndWriteVaultImage();
+      if (!written) return;
+      const r = insertAtCursor(draft, selection, `![](${written.rel})`);
       setDraft(r.text);
       setSelection(r.selection);
       setForceSelection(r.selection);
@@ -611,22 +440,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     insertingImageRef.current = true;
     setEditError(null);
     try {
-      const picked = await pickAttachment({ imagesOnly: true });
-      if (!picked) return;
-      const ext = extFromMime(picked.mime);
-      const base = slugify(picked.filename.replace(/\.[^.]+$/, "")) || "image";
-      const { finalName } = await writeBinary(
-        "Photos",
-        `${base}.${ext}`,
-        picked.base64,
-        picked.mime,
-      );
-      const rel = `../Photos/${finalName}`;
-      const dataUri =
-        picked.base64.length <= MAX_EDITOR_IMAGE_BASE64
-          ? toDataUri(picked.mime, picked.base64)
-          : null;
-      wysiwygRef.current?.insertImage(rel, dataUri);
+      const written = await pickAndWriteVaultImage();
+      if (!written) return;
+      wysiwygRef.current?.insertImage(written.rel, written.dataUri);
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -722,18 +538,19 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       // as an error instead of a stuck, disabled UI, and never leaks the resolver.
       const editedBody = await (wysiwygRef.current?.getMarkdown() ??
         Promise.reject(new Error("Editor not mounted")));
-      // Reattach the stashed frontmatter, applying any tag edits. Unchanged tags
-      // keep the header byte-exact (no spurious frontmatter rewrite).
-      const header = applyTagsToHeader(
-        editHeaderRef.current,
+      // Reattach the stashed frontmatter (applying tag edits) and decide whether
+      // a write is even needed — planWysiwygSave keeps the header byte-exact when
+      // tags are unchanged and skips the write when the content is identical.
+      const plan = planWysiwygSave({
+        header: editHeaderRef.current,
+        editedBody,
         editTags,
-        editOriginalTagsRef.current,
-      );
-      // applyTagsToHeader returns the header verbatim when the tag set is
-      // unchanged, so a differing header means the tags changed.
-      const tagsChanged = header !== editHeaderRef.current;
-      next = header + editedBody;
-      if (next === body) {
+        originalTags: editOriginalTagsRef.current,
+        currentBody: body,
+      });
+      const tagsChanged = plan.tagsChanged;
+      next = plan.next;
+      if (!plan.shouldWrite) {
         // Editor returned the exact on-disk content — nothing changed. Skip the
         // write so opening + saving a note never churns its content/mtime. (Real
         // edits, and any whitespace/underscore-escape normalization, still differ
