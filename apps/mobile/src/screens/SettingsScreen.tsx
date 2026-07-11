@@ -18,20 +18,23 @@ import {
 } from "react-native-paper";
 
 import {
-  DEFAULT_LLM_BACKEND,
   DEFAULT_OMNIROUTE_MODEL,
   DEFAULT_VISION_MODEL,
   dismissMigrationBanner,
   getSettings,
   hasKarakeepApiKey,
   hasOmniRouteApiKey,
-  type PromptOverrides,
   saveSettings,
   setKarakeepApiKey,
   setOmniRouteApiKey,
   shouldShowMigrationBanner,
-  type Settings,
 } from "../lib/settings";
+import {
+  captureFolderLabel,
+  composeSettingsForSave,
+  type FormState,
+} from "../lib/settingsForm";
+import { filterAndSplitModels } from "../lib/modelBrowser";
 import { listModels } from "../lib/omniroute";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { spacing, useCarnetTheme } from "../lib/theme";
@@ -41,19 +44,6 @@ import {
 } from "../lib/themePreference";
 import * as captureNotification from "../lib/captureNotification";
 import { VoiceSetupCheck } from "../voice/VoiceSetupCheck";
-
-interface FormState {
-  omniRouteUrl: string;
-  omniRouteModel: string;
-  omniRouteVisionModel: string;
-  persistentNotificationEnabled: boolean;
-  autoTranscribeOnSave: boolean;
-  richEditorEnabled: boolean;
-  previewBeforeSave: boolean;
-  captureFolderPath: string;
-  promptOverrides: PromptOverrides;
-  karakeepUrl: string;
-}
 
 /**
  * Pinned at the top of the model browser. Verified-working chat models on
@@ -104,15 +94,10 @@ export default function SettingsScreen() {
   // useMemo MUST run on every render in the same order — must live above
   // the `if (!form) return …` early return below, or hook count changes
   // between renders and React throws "Rendered more hooks than…".
-  const { recommended, others } = useMemo(() => {
-    if (!models) return { recommended: [], others: [] as string[] };
-    const q = modelFilter.trim().toLowerCase();
-    const matches = q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
-    const recSet = new Set<string>(RECOMMENDED_MODELS);
-    const rec = RECOMMENDED_MODELS.filter((m) => matches.includes(m));
-    const rest = matches.filter((m) => !recSet.has(m));
-    return { recommended: rec as string[], others: rest };
-  }, [models, modelFilter]);
+  const { recommended, others } = useMemo(
+    () => filterAndSplitModels(models, modelFilter, RECOMMENDED_MODELS),
+    [models, modelFilter],
+  );
 
   useEffect(() => {
     void (async () => {
@@ -178,36 +163,12 @@ export default function SettingsScreen() {
   };
 
   const save = async () => {
-    // Compose a Settings object. The API key is intentionally NOT read into
-    // form state — we only write it if the user typed a new one OR cleared it.
-    const next: Settings = {
-      omniRouteUrl: form.omniRouteUrl,
-      omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
-      omniRouteVisionModel:
-        form.omniRouteVisionModel || DEFAULT_VISION_MODEL,
-      // Phase 1 (B7) has no backend-picker UI, and no code path can produce a
-      // non-default value, so persist the default. Phase 4 threads the selected
-      // backend through FormState when the picker lands.
-      llmBackend: DEFAULT_LLM_BACKEND,
-      persistentNotificationEnabled: form.persistentNotificationEnabled,
-      autoTranscribeOnSave: form.autoTranscribeOnSave,
-      richEditorEnabled: form.richEditorEnabled,
-      previewBeforeSave: form.previewBeforeSave,
-      // Pass an empty string here so saveSettings doesn't touch the key.
-      // Then we handle the key write separately below.
-      omniRouteApiKey: "",
-      captureFolderPath: form.captureFolderPath,
-      promptOverrides: form.promptOverrides,
-      karakeepUrl: form.karakeepUrl,
-      // Same as omniRouteApiKey — the Karakeep key write is handled separately
-      // below so saveSettings doesn't wipe it when only the URL changed.
-      karakeepApiKey: "",
-    };
-    // Save URL / model / folder via saveSettings, but skip the key writes
-    // by re-reading the key state inside this scope (we don't have the keys
-    // in form state). Use the setters only when the user typed a new one.
-    const { omniRouteApiKey, karakeepApiKey } = await currentKeysOrEmpty();
-    await saveSettings({ ...next, omniRouteApiKey, karakeepApiKey });
+    // Compose the Settings object to persist. The API keys are intentionally
+    // NOT in form state — we thread the currently-stored keys through so
+    // saveSettings doesn't wipe them, then write any newly-typed key
+    // separately below (see composeSettingsForSave).
+    const existingKeys = await currentKeysOrEmpty();
+    await saveSettings(composeSettingsForSave(form, existingKeys));
     if (pendingKey.length > 0) {
       await setOmniRouteApiKey(pendingKey);
       setPendingKey("");
@@ -339,22 +300,6 @@ export default function SettingsScreen() {
       // Surface via Snackbar — do NOT write the error into the path field
       // (that would persist a broken capture folder on the next Save).
       setPickerError(`Folder picker failed: ${msg.slice(0, 120)}`);
-    }
-  };
-
-  /** Best-effort human-readable label for a `content://` tree URI. SAF
-   * URIs look like `content://com.android.externalstorage.documents/tree/primary%3AObsidian%2FCarnet`
-   * — show the tail after `tree/` decoded so the user sees `primary:Obsidian/Carnet`. */
-  const captureFolderLabel = (raw: string): string => {
-    if (!raw) return "";
-    if (!raw.startsWith("content://")) return raw;
-    try {
-      const decoded = decodeURIComponent(raw);
-      const idx = decoded.lastIndexOf("tree/");
-      if (idx >= 0) return decoded.slice(idx + 5);
-      return decoded;
-    } catch {
-      return raw;
     }
   };
 
