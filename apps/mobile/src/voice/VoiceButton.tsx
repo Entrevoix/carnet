@@ -25,6 +25,8 @@ import {
   composeFlush,
 } from './recognizerSelect';
 import { triggerVoiceModelDownload } from './sttReadiness';
+import { describeSttError, isFailoverEligibleCode } from './sttErrorMessage';
+import { DEFAULT_WHISPER_ENDPOINT, getSettings, hasWhisperApiKey } from '../lib/settings';
 
 // Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
 const MAX_RECORDING_MS = 3 * 60 * 1000;
@@ -40,9 +42,11 @@ const SODA_DICTATION_MODEL = 'web_search';
 export const STT_ENGINE_KEY = 'stt_engine';
 export const STT_RECOGNIZER_PKG_KEY = 'stt_recognizer_pkg';
 export const STT_RECOGNIZER_LABEL_KEY = 'stt_recognizer_label';
-export const WHISPER_API_KEY_STORAGE = 'whisper_api_key';
-export const WHISPER_ENDPOINT_KEY = 'whisper_endpoint';
-export const DEFAULT_WHISPER_ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions';
+// Whisper API key/endpoint moved to lib/settings.ts (SecureStore-backed,
+// like omniRouteApiKey/karakeepApiKey) — this used to be plaintext
+// AsyncStorage, which violates this repo's "API keys never live in
+// AsyncStorage" hard constraint. See getSettings()/DEFAULT_WHISPER_ENDPOINT
+// import below.
 
 const KNOWN_RECOGNIZERS: RecognizerOption[] = [
   // Android System Intelligence — the actual on-device Google STT service. Prefer first.
@@ -60,14 +64,10 @@ const KNOWN_RECOGNIZERS: RecognizerOption[] = [
   { pkg: 'com.iflytek.speechsuite', label: 'iFlytek' },
 ];
 
-// Error codes that indicate the *current* recognizer can't serve the request
-// but another recognizer might. Used only when a non-empty failover chain
-// is queued (i.e. detection surfaced multiple candidates).
-// 5 = ERROR_CLIENT (no-service variant), 7 = ERROR_NO_MATCH_OR_UNAVAILABLE,
-// 9 = ERROR_INSUFFICIENT_PERMISSIONS (service-not-allowed on Android 13+),
-// 11 = ERROR_LANGUAGE_UNAVAILABLE, 12 = ERROR_LANGUAGE_NOT_SUPPORTED,
-// 13 = ERROR_SERVER_UNAVAILABLE.
-const FAILOVER_CODES = new Set([5, 9, 11, 12, 13]);
+// FAILOVER_CODES moved to ./sttErrorMessage.ts (isFailoverEligibleCode) so
+// it's unit-testable without pulling in this file's RN/expo native imports.
+// 7 (ERROR_NO_MATCH_OR_UNAVAILABLE) is deliberately NOT in that set — it's
+// handled as a silent same-recognizer restart below, not a failover trigger.
 
 const PREFERRED_LANG = 'en-US';
 
@@ -90,22 +90,11 @@ async function pickBestLocale(pkg: string | null, preferred = PREFERRED_LANG): P
   }
 }
 
-function sttErrorMessage(code: number, raw: string): string {
-  const map: Record<number, string> = {
-    1: 'Network error — check your connection',
-    2: 'Network timeout — try again',
-    3: 'Audio recording error — try again',
-    4: 'Server error — try again later',
-    5: 'No speech service found on device',
-    6: 'No speech detected — speak closer to mic',
-    7: 'No speech detected — try again',
-    8: 'Speech service busy — wait and retry',
-    9: 'Speech service not allowed — trying another',
-    11: 'Language not supported by this service',
-    13: 'Speech service unavailable',
-  };
-  return map[code] ? `${map[code]} (${code})` : raw || `Speech error ${code}`;
-}
+// sttErrorMessage moved to ./sttErrorMessage.ts (describeSttError) so the
+// numeric-code / string-enum fallback logic is unit-testable without
+// pulling in this file's RN/expo native imports. Kept as a thin local alias
+// so the two call sites below don't need renaming.
+const sttErrorMessage = describeSttError;
 
 function labelForPackage(pkg: string): string {
   const known = KNOWN_RECOGNIZERS.find((r) => r.pkg === pkg);
@@ -355,11 +344,11 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     let mounted = true;
     Promise.all([
       AsyncStorage.getItem(STT_ENGINE_KEY),
-      AsyncStorage.getItem(WHISPER_API_KEY_STORAGE),
+      hasWhisperApiKey(),
       AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY),
-    ]).then(([engine, key, pkg]) => {
+    ]).then(([engine, hasKey, pkg]) => {
       if (!mounted) return;
-      if (engine === 'whisper' && !key?.trim()) {
+      if (engine === 'whisper' && !hasKey) {
         AsyncStorage.removeItem(STT_ENGINE_KEY);
         AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
         AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
@@ -815,7 +804,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
           if (code !== 6 && code !== 7) { // 6/7 = silence, expected after stop
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const rawMsg = `${event.error}${(event as any).message ? ': ' + (event as any).message : ''} (code ${code})`;
-            showErrRef.current(sttErrorMessage(code, rawMsg), 4000);
+            showErrRef.current(sttErrorMessage(code, event.error, rawMsg), 4000);
           }
           return;
         }
@@ -837,7 +826,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
           return;
         }
 
-        if (FAILOVER_CODES.has(code) && lastAttemptedPkgRef.current) {
+        if (isFailoverEligibleCode(code) && lastAttemptedPkgRef.current) {
           sessionFailedPkgsRef.current.add(lastAttemptedPkgRef.current);
         }
 
@@ -859,7 +848,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         //    errors AND no-service errors (5) — a picker-driven selection
         //    that fails should silently try the next queued candidate rather
         //    than bouncing back through detection to the same picker.
-        if (FAILOVER_CODES.has(code) && failoverChainRef.current.length > 0) {
+        if (isFailoverEligibleCode(code) && failoverChainRef.current.length > 0) {
           const nextPkg = failoverChainRef.current.shift()!;
           // '' is the terminal sentinel: resolveEffectivePkg maps it back to a
           // pinned engine, so it only does anything if a pinned pkg has since
@@ -910,7 +899,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         // 3. Failover-eligible code but chain is empty. If detection hasn't
         //    run this session, a fresh scan may surface more candidates;
         //    also clear the saved pkg since it just failed.
-        if (FAILOVER_CODES.has(code) && !detectionRanRef.current) {
+        if (isFailoverEligibleCode(code) && !detectionRanRef.current) {
           await AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
           await AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
           await triggerDetectionRef.current();
@@ -929,7 +918,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         // 5. Generic friendly error for everything else
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const rawMsg = `${event.error}${(event as any).message ? ': ' + (event as any).message : ''} (code ${code})`;
-        const friendlyMsg = sttErrorMessage(code, rawMsg);
+        const friendlyMsg = sttErrorMessage(code, event.error, rawMsg);
         // Only truly transient errors auto-dismiss (6=no speech, 8=busy)
         const persist = ![6, 8].includes(code);
         showErrRef.current(friendlyMsg, 8000, persist);
@@ -1140,12 +1129,9 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       await rec.stopAndUnloadAsync();
       const uri = rec.getURI();
       if (!uri) { showErrRef.current('no audio'); return; }
-      const [apiKey, endpoint] = await Promise.all([
-        AsyncStorage.getItem(WHISPER_API_KEY_STORAGE),
-        AsyncStorage.getItem(WHISPER_ENDPOINT_KEY),
-      ]);
-      const key = apiKey?.trim() ?? '';
-      const ep = endpoint?.trim() || DEFAULT_WHISPER_ENDPOINT;
+      const stored = await getSettings();
+      const key = stored.whisperApiKey?.trim() ?? '';
+      const ep = stored.whisperEndpoint?.trim() || DEFAULT_WHISPER_ENDPOINT;
       if (!key) { showErrRef.current('Whisper API key not set.\nGo to Settings → Voice Input to add your key.', 0, true); return; }
       showErrRef.current('Transcribing…', 30000);
       const form = new FormData();
