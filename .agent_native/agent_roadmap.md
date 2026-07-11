@@ -7,11 +7,10 @@ roadmap targets the remaining gaps.
 
 Ranked by **Human-Attention-Saved per Unit of Effort** (HAS/E) — highest leverage first.
 
-**Status (2026-07-07, agent pass):** Items 1, 3, and 4 done — see notes inline below.
-Item 2 (screen-file decomposition) and item 5 (plan-lifecycle status markers) are
-untouched: item 2 is a large multi-file refactor out of scope for a quick pass; item 5
-requires a human judgment call on each existing plan's actual shipped/draft state before
-adding status markers, so it's left for a human or a dedicated follow-up session.
+**Status (2026-07-10 update):** Items 1, 2, 3, and 4 done — see notes inline below.
+Item 5 (plan-lifecycle status markers) remains untouched: it requires a human judgment
+call on each existing plan's actual shipped/draft state before adding status markers, so
+it's left for a human or a dedicated follow-up session.
 
 ---
 
@@ -48,7 +47,31 @@ files exist outside inline test strings).
   reproduces at least the 4 historical bug classes named above from a fixture, no device
   needed.
 
-### 2. Split the four largest screen files into UI + extracted `lib/` logic
+### 2. Split the four largest screen files into UI + extracted `lib/` logic — DONE (2026-07-10)
+Implemented across three PRs (#101, #102, #103), each behavior-preserving and
+independently code-reviewed with no CRITICAL/HIGH findings surviving:
+- **CaptureScreen.tsx** (PR #101): 1175→798 lines. New: `lib/captureErrorDecision.ts`,
+  `lib/saveFirstOutcome.ts`, `lib/attachmentPersistence.ts`, `lib/promoteIdeaOnDisk.ts`,
+  plus presentational split-outs `components/CaptureModeInput.tsx` and
+  `components/CaptureViews.tsx`.
+- **RecentDetailScreen.tsx** (PR #102): 1599→1416 lines. New: `lib/karakeepNoteExport.ts`
+  (the ~120-line Karakeep export decision logic — title/tag derivation, update-vs-create,
+  404-recovery, asset sync, frontmatter stamping), `lib/noteReprocess.ts` (re-enrich +
+  transcribe orchestration), `lib/wysiwygSave.ts` (frontmatter-reattach + tag-change +
+  no-write-if-unchanged decisions), `lib/vaultImageInsert.ts`. Deliberately left over the
+  800-line target — the remainder is presentational JSX/styles with no testability gain
+  from further extraction; forcing it would have been the "arbitrary line-count target
+  achieved by shuffling code" anti-pattern this item originally warned against.
+- **SettingsScreen.tsx** (PR #103): 849→794 lines. New: `lib/modelBrowser.ts`
+  (filter/recommend split), `lib/settingsForm.ts` (save-composition + API-key-preserving
+  logic — the highest-risk line in the file, verified byte-for-byte behavior-preserving
+  in review). Smallest of the three by design: most of this file is legitimate form UI,
+  not hidden business logic, and the extraction only pulled out the two genuinely
+  untested decision points rather than forcing a line-count target.
+
+10 new `lib/*.ts` modules total, each with a co-located `.test.ts`. Original text below
+kept for context on why this was prioritized.
+
 **HAS/E: high.** `CaptureScreen.tsx` (1039 lines), `RecentDetailScreen.tsx` (1458 lines),
 `SettingsScreen.tsx` (934 lines) all blow past this project's own 800-line/50-line-function
 style rules and mix business logic (save flow, conflict detection, export triggering)
@@ -56,19 +79,6 @@ directly into React components with zero test coverage (0 of 12 files under
 `apps/mobile/src/screens/` have a `.test.tsx`). An agent asked to fix a save-flow bug today
 has to read 1000+ lines of JSX to find the 30 lines of logic that matter, and cannot write
 a unit test against it without a full RN render harness.
-
-- **Files:** `apps/mobile/src/screens/CaptureScreen.tsx`,
-  `apps/mobile/src/screens/RecentDetailScreen.tsx`,
-  `apps/mobile/src/screens/SettingsScreen.tsx`.
-- **Action:** extract non-UI logic (save-first mtime-conflict handling, Karakeep
-  re-export confirm logic, settings validation) into new `lib/*.ts` modules following the
-  existing pattern (`lib/ideaSaveFirst.ts`, `lib/journalTagIndex.ts` already do this well —
-  extend the pattern to the screens that still inline it).
-  Recent screens are the outlier; the `lib/` layer is otherwise well-factored (~50 focused
-  modules, each with a co-located `.test.ts`).
-- **Acceptance:** each extracted module gets a co-located `.test.ts` at the same density as
-  existing `lib/` files (roughly 1 test file per module); the screen file drops under 800
-  lines or has an explicit CLAUDE.md-documented exception.
 
 ### 3. Add a scriptable "read-only" doctor check that mirrors `docs/smoke-test.md` — DONE (2026-07-07)
 Implemented: `apps/mobile/package.json` script `verify:capture-flow` runs
