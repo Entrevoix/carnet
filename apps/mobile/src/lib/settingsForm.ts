@@ -29,13 +29,15 @@ export interface FormState {
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
   karakeepUrl: string;
+  whisperEndpoint: string;
 }
 
 /** The currently-stored API keys, threaded into the saved Settings so
- * saveSettings doesn't wipe either when only URL/model/folder changed. */
+ * saveSettings doesn't wipe any of them when only URL/model/folder changed. */
 export interface ExistingApiKeys {
   omniRouteApiKey: string;
   karakeepApiKey: string;
+  whisperApiKey: string;
 }
 
 /**
@@ -65,6 +67,8 @@ export function composeSettingsForSave(
     promptOverrides: form.promptOverrides,
     karakeepUrl: form.karakeepUrl,
     karakeepApiKey: existing.karakeepApiKey,
+    whisperEndpoint: form.whisperEndpoint,
+    whisperApiKey: existing.whisperApiKey,
   };
 }
 

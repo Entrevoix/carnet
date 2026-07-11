@@ -39,9 +39,14 @@ const baseForm: FormState = {
   captureFolderPath: "content://tree/primary%3AObsidian",
   promptOverrides: { idea: "custom idea prompt" },
   karakeepUrl: "https://karakeep.example.com",
+  whisperEndpoint: "https://whisper.example.com/v1/audio/transcriptions",
 };
 
-const keys = { omniRouteApiKey: "sk-existing", karakeepApiKey: "kk-existing" };
+const keys = {
+  omniRouteApiKey: "sk-existing",
+  karakeepApiKey: "kk-existing",
+  whisperApiKey: "wh-existing",
+};
 
 describe("composeSettingsForSave", () => {
   it("threads form fields through verbatim and carries the existing keys", () => {
@@ -60,6 +65,8 @@ describe("composeSettingsForSave", () => {
       promptOverrides: { idea: "custom idea prompt" },
       karakeepUrl: "https://karakeep.example.com",
       karakeepApiKey: "kk-existing",
+      whisperEndpoint: "https://whisper.example.com/v1/audio/transcriptions",
+      whisperApiKey: "wh-existing",
     });
   });
 
@@ -88,9 +95,16 @@ describe("composeSettingsForSave", () => {
     const next = composeSettingsForSave(baseForm, {
       omniRouteApiKey: "",
       karakeepApiKey: "",
+      whisperApiKey: "",
     });
     expect(next.omniRouteApiKey).toBe("");
     expect(next.karakeepApiKey).toBe("");
+    expect(next.whisperApiKey).toBe("");
+  });
+
+  it("threads the whisper endpoint through verbatim, blank included (no default fallback here — that lives in VoiceButton at call time)", () => {
+    const next = composeSettingsForSave({ ...baseForm, whisperEndpoint: "" }, keys);
+    expect(next.whisperEndpoint).toBe("");
   });
 
   it("does not mutate the input form", () => {

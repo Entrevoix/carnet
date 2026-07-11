@@ -20,13 +20,16 @@ import {
 import {
   DEFAULT_OMNIROUTE_MODEL,
   DEFAULT_VISION_MODEL,
+  DEFAULT_WHISPER_ENDPOINT,
   dismissMigrationBanner,
   getSettings,
   hasKarakeepApiKey,
   hasOmniRouteApiKey,
+  hasWhisperApiKey,
   saveSettings,
   setKarakeepApiKey,
   setOmniRouteApiKey,
+  setWhisperApiKey,
   shouldShowMigrationBanner,
 } from "../lib/settings";
 import {
@@ -71,6 +74,10 @@ export default function SettingsScreen() {
   const [karakeepKeyConfigured, setKarakeepKeyConfigured] =
     useState<boolean>(false);
   const [pendingKarakeepKey, setPendingKarakeepKey] = useState<string>("");
+  /** Whisper key state — mirrors the OmniRoute/Karakeep key pattern. */
+  const [whisperKeyConfigured, setWhisperKeyConfigured] =
+    useState<boolean>(false);
+  const [pendingWhisperKey, setPendingWhisperKey] = useState<string>("");
   const [saved, setSaved] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
   /** Surfaced via Snackbar when the SAF folder picker fails. Previous
@@ -101,10 +108,11 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     void (async () => {
-      const [s, hasKey, hasKkKey, banner] = await Promise.all([
+      const [s, hasKey, hasKkKey, hasWhisperKey, banner] = await Promise.all([
         getSettings(),
         hasOmniRouteApiKey(),
         hasKarakeepApiKey(),
+        hasWhisperApiKey(),
         shouldShowMigrationBanner(),
       ]);
       // Source-of-truth for the notification toggle is native
@@ -143,9 +151,11 @@ export default function SettingsScreen() {
         captureFolderPath: s.captureFolderPath,
         promptOverrides: s.promptOverrides,
         karakeepUrl: s.karakeepUrl,
+        whisperEndpoint: s.whisperEndpoint,
       });
       setKeyConfigured(hasKey);
       setKarakeepKeyConfigured(hasKkKey);
+      setWhisperKeyConfigured(hasWhisperKey);
       setShowBanner(banner);
     })();
   }, []);
@@ -179,6 +189,11 @@ export default function SettingsScreen() {
       setPendingKarakeepKey("");
       setKarakeepKeyConfigured(true);
     }
+    if (pendingWhisperKey.length > 0) {
+      await setWhisperApiKey(pendingWhisperKey);
+      setPendingWhisperKey("");
+      setWhisperKeyConfigured(true);
+    }
     setSaved(true);
   };
 
@@ -192,6 +207,12 @@ export default function SettingsScreen() {
     await setKarakeepApiKey("");
     setKarakeepKeyConfigured(false);
     setPendingKarakeepKey("");
+  };
+
+  const clearWhisperKey = async () => {
+    await setWhisperApiKey("");
+    setWhisperKeyConfigured(false);
+    setPendingWhisperKey("");
   };
 
   /**
@@ -590,6 +611,51 @@ export default function SettingsScreen() {
           it's installed and pull it from inside the app — no Play Store trip.
         </HelperText>
         <VoiceSetupCheck />
+
+        <HelperText type="info" visible style={styles.whisperHint}>
+          Fallback for devices with no usable on-device speech service —
+          transcribes via a Whisper-compatible API instead. Leave blank to
+          use OpenAI's endpoint.
+        </HelperText>
+        <TextInput
+          label="Whisper endpoint"
+          mode="outlined"
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          value={form.whisperEndpoint}
+          onChangeText={(v) => update({ whisperEndpoint: v })}
+          placeholder={DEFAULT_WHISPER_ENDPOINT}
+        />
+        <TextInput
+          label={
+            whisperKeyConfigured && pendingWhisperKey.length === 0
+              ? "Whisper API key (configured)"
+              : "Whisper API key"
+          }
+          mode="outlined"
+          autoCapitalize="none"
+          autoCorrect={false}
+          secureTextEntry
+          placeholder={
+            whisperKeyConfigured ? "•••• configured — tap to replace" : "sk-..."
+          }
+          value={pendingWhisperKey}
+          onChangeText={setPendingWhisperKey}
+        />
+        <HelperText type="info" visible>
+          Stored in the secure keychain. The existing key is never shown again.
+        </HelperText>
+        {whisperKeyConfigured && (
+          <Button
+            mode="text"
+            compact
+            onPress={clearWhisperKey}
+            style={styles.clearKey}
+          >
+            Clear key
+          </Button>
+        )}
       </View>
 
       <View style={styles.notificationSection}>
@@ -750,11 +816,13 @@ export default function SettingsScreen() {
 async function currentKeysOrEmpty(): Promise<{
   omniRouteApiKey: string;
   karakeepApiKey: string;
+  whisperApiKey: string;
 }> {
   const s = await getSettings();
   return {
     omniRouteApiKey: s.omniRouteApiKey ?? "",
     karakeepApiKey: s.karakeepApiKey ?? "",
+    whisperApiKey: s.whisperApiKey ?? "",
   };
 }
 
@@ -791,4 +859,5 @@ const styles = StyleSheet.create({
   notificationRow: { paddingHorizontal: 0 },
   sectionTitle: { paddingHorizontal: 0, paddingTop: 16 },
   promptSectionTitle: { paddingHorizontal: 0, paddingTop: 8 },
+  whisperHint: { paddingTop: 8 },
 });

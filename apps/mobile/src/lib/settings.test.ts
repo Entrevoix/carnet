@@ -33,7 +33,9 @@ import {
   DEFAULT_OMNIROUTE_MODEL,
   DEFAULT_VISION_MODEL,
   getSettings,
+  hasWhisperApiKey,
   saveSettings,
+  setWhisperApiKey,
   type Settings,
 } from "./settings";
 
@@ -245,6 +247,8 @@ describe("getSettings — persisted-blob migration (B1 vision model split)", () 
       karakeepUrl: "",
       karakeepApiKey: "",
       previewBeforeSave: false,
+      whisperEndpoint: "",
+      whisperApiKey: "",
     };
     await saveSettings(next);
 
@@ -257,5 +261,61 @@ describe("getSettings — persisted-blob migration (B1 vision model split)", () 
 
     const reloaded = await getSettings();
     expect(reloaded.omniRouteVisionModel).toBe("gemini/gemini-2.5-flash");
+  });
+});
+
+// ── Whisper API key — SecureStore-backed, mirrors omniRouteApiKey/karakeepApiKey.
+// Regression: this used to be plaintext AsyncStorage (VoiceButton.tsx's
+// WHISPER_API_KEY_STORAGE), which violates this repo's "API keys never live
+// in AsyncStorage" hard constraint. Confirms the migrated storage actually
+// round-trips through SecureStore, not the old AsyncStorage path.
+
+describe("whisper API key (SecureStore)", () => {
+  it("reports not configured when no key has ever been set", async () => {
+    expect(await hasWhisperApiKey()).toBe(false);
+  });
+
+  it("reports configured after setWhisperApiKey, and getSettings returns the key", async () => {
+    await setWhisperApiKey("sk-whisper-test");
+    expect(await hasWhisperApiKey()).toBe(true);
+    const s = await getSettings();
+    expect(s.whisperApiKey).toBe("sk-whisper-test");
+  });
+
+  it("trims whitespace on write", async () => {
+    await setWhisperApiKey("  sk-whisper-padded  ");
+    const s = await getSettings();
+    expect(s.whisperApiKey).toBe("sk-whisper-padded");
+  });
+
+  it("clears the key when set to an empty string", async () => {
+    await setWhisperApiKey("sk-whisper-test");
+    expect(await hasWhisperApiKey()).toBe(true);
+    await setWhisperApiKey("");
+    expect(await hasWhisperApiKey()).toBe(false);
+    const s = await getSettings();
+    expect(s.whisperApiKey).toBe("");
+  });
+
+  it("stores the key in SecureStore, not AsyncStorage — the settings blob never carries it", async () => {
+    await setWhisperApiKey("sk-whisper-test");
+    const persisted = JSON.parse(_async.get(SETTINGS_KEY) ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    expect(persisted.whisperApiKey).toBeUndefined();
+    expect(_secure.size).toBeGreaterThan(0);
+  });
+
+  it("round-trips the whisper endpoint (non-secret) through the settings blob", async () => {
+    const base = await getSettings();
+    await saveSettings({
+      ...base,
+      whisperEndpoint: "https://self-hosted-whisper.example.com/v1/audio",
+    });
+    const reloaded = await getSettings();
+    expect(reloaded.whisperEndpoint).toBe(
+      "https://self-hosted-whisper.example.com/v1/audio",
+    );
   });
 });
