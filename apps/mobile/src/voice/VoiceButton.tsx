@@ -446,7 +446,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     const launcher = requireOptionalNativeModule<{
       startActivity: (action: string, params: { data: string }) => Promise<unknown>;
     }>('ExpoIntentLauncher');
-    if (!launcher) {
+    // Guard the METHOD too, not just the module: a present-but-incompatible
+    // native module without startActivity would throw synchronously, escaping
+    // the promise .catch below and skipping the fallback entirely.
+    if (!launcher?.startActivity) {
       Linking.openSettings().catch(() => {});
       return;
     }
@@ -458,8 +461,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   const retryDetection = useCallback(async () => {
     await AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
     await AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
-    sessionFailedPkgsRef.current.clear();
-    code9PkgsRef.current.clear();
+    // Reassign (not .clear()) to match the revival sites' idiom — fresh Set
+    // identity everywhere these refs are reset.
+    sessionFailedPkgsRef.current = new Set();
+    code9PkgsRef.current = new Set();
     consecutiveSilentEndsRef.current = 0;
     errorHandlingRef.current = false;
     detectionRanRef.current = false;
@@ -1279,8 +1284,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     // so this session can't accidentally commit the wrong recognizer.
     pendingPersistRef.current = null;
     serverDisconnectRetryRef.current = 0;
-    errPersistRef.current = false;
-    setErrMsg('');
+    // Full error-UI reset (errMsg + errPersist + errAction/micRevokedTarget
+    // pairing) — the modal is gated on errMsg alone, but leaving errAction
+    // stale made that invariant implicit. dismissErr makes it explicit.
+    dismissErr();
     clearMaxTimer();
     maxDurationTimer.current = setTimeout(() => {
       maxDurationTimer.current = null;
@@ -1295,7 +1302,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     if (!pressActiveRef.current) return;
     activeEngineRef.current = 'ondevice';
     await startOnDevice();
-  }, [detecting, disabled, clearMaxTimer, stopOnDevice, startOnDevice]);
+  }, [detecting, disabled, clearMaxTimer, stopOnDevice, startOnDevice, dismissErr]);
 
   return (
     <View>
