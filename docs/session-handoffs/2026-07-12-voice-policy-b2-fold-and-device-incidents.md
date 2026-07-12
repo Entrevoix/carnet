@@ -79,9 +79,24 @@ key is now unused by carnet (only `/v1/ocr` needed it) — candidate for dashboa
 - The user's other Ventoux app (`com.ventouxlabs.relais.izzy`) shares the test device; check
   `mCurrentFocus` before injecting taps — one shutter tap this session landed in relais.
 
+## Addendum (same session, after this handoff was first written)
+
+- All prior commits pushed; **CI green through `add1a4d` including the first
+  `mobile-android` build with expo-intent-launcher** — the native-dep risk is retired.
+- B2 verified end-to-end ON-DEVICE: real card scan → `ocrCardViaVision` (1.9s) →
+  person enrichment (2.0s) → correct contact note. During that verification, two
+  device incidents were diagnosed and fixed (see "Device incidents" above; the
+  OmniRoute settings restore and the `pm enable` recovery both happened this session).
+- Consolidated range review of `3309ef6..add1a4d` (scoped to the never-agent-reviewed
+  hand edits + cross-commit interactions): **APPROVE, 0 CRITICAL/HIGH/MEDIUM, 3 LOW** —
+  artifact at `.claude/PRPs/reviews/range-3309ef6-add1a4d-review.md` (`a671398`).
+  All three LOWs applied in `39475c5` (method-presence guard in `openAppDetails`,
+  explicit `dismissErr()` on fresh-tap start, unified Set-reset idiom). tsc clean,
+  917/917 after.
+
 ## Not done / next
 
-- Push `01f4391` + `1ec18e0`; watch `mobile-android` (first CI build with expo-intent-launcher).
+- ~~Push `01f4391` + `1ec18e0`; watch `mobile-android`~~ — done, green (see addendum).
 - Vault folder re-configuration + moving the two stranded notes (blocked on user's folder path).
 - Voice follow-ups: extract VoiceButton's listener wiring (file is ~1500 lines; the
   error/end/result interplay — auto-stop teardown, error-before-end ordering — has no
