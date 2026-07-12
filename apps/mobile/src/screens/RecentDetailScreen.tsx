@@ -112,6 +112,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // True when the last successful export UPDATED an existing bookmark (vs
   // created a new one) — drives the success-snackbar copy.
   const [karakeepUpdated, setKarakeepUpdated] = useState(false);
+  // Attachments Karakeep refused as an unsupported asset type on the last
+  // successful export — appended to the success snackbar as an informational
+  // notice (longer duration so the filenames are readable). Null when none.
+  const [karakeepSkipNote, setKarakeepSkipNote] = useState<string | null>(null);
   // Edit-mode state. `draft` holds the in-progress textarea content;
   // `editError` surfaces a save failure as a banner; `discardVisible`
   // gates the unsaved-changes dialog.
@@ -307,6 +311,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     if (exportingKarakeepRef.current) return;
     exportingKarakeepRef.current = true;
     setKarakeepError(null);
+    setKarakeepSkipNote(null);
     setExportingKarakeep(true);
     // exportNoteToKarakeep owns the create-vs-update / 404-recovery / asset-sync
     // orchestration + the in-place note write; the screen only translates the
@@ -322,12 +327,24 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
         setKarakeepError(outcome.reason);
       } else {
         setBody(outcome.nextBody);
+        // Files Karakeep refused as an unsupported asset type (its upload
+        // allowlist is ~images + PDF). The export itself succeeded — these are
+        // an informational notice (success snackbar / appended to the partial
+        // banner), never an error on their own.
+        const skipNote =
+          outcome.skippedUnsupported.length > 0
+            ? `${outcome.skippedUnsupported.join(", ")} ${
+                outcome.skippedUnsupported.length === 1 ? "is" : "are"
+              } a file type Karakeep doesn't accept — kept in the vault only`
+            : null;
         if (outcome.kind === "partial") {
           setKarakeepError(
-            `Exported to Karakeep, but an attachment failed: ${outcome.assetError}`,
+            `Exported to Karakeep, but an attachment failed: ${outcome.assetError}` +
+              (skipNote ? `\nAlso: ${skipNote}.` : ""),
           );
         } else {
           setKarakeepUpdated(outcome.didUpdate);
+          setKarakeepSkipNote(skipNote);
           setKarakeepDone(true);
         }
       }
@@ -1136,9 +1153,11 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       <Snackbar
         visible={karakeepDone}
         onDismiss={() => setKarakeepDone(false)}
-        duration={2500}
+        // The skip notice names files — give it time to be read.
+        duration={karakeepSkipNote ? 7000 : 2500}
       >
-        {karakeepUpdated ? "Updated in Karakeep" : "Exported to Karakeep"}
+        {(karakeepUpdated ? "Updated in Karakeep" : "Exported to Karakeep") +
+          (karakeepSkipNote ? `. ${karakeepSkipNote}.` : "")}
       </Snackbar>
 
       <Portal>

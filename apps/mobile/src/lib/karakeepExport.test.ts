@@ -26,7 +26,10 @@ vi.mock("./karakeepAssetSync", () => ({
   savePushedAssets: vi.fn(),
 }));
 
-import { pushNoteAttachments } from "./karakeepExport";
+import {
+  isUnsupportedAssetTypeError,
+  pushNoteAttachments,
+} from "./karakeepExport";
 import { listPairedBinaries, resolvePairedUri } from "./writer";
 import { uploadAsset, attachAssetToBookmark } from "./karakeep";
 import { loadPushedAssets, savePushedAssets } from "./karakeepAssetSync";
@@ -144,6 +147,60 @@ describe("pushNoteAttachments", () => {
     expect(result.imageUrlByRel).toEqual(new Map()); // nothing synced before the failure
     expect(mockUpload).toHaveBeenCalledOnce(); // did not attempt the second
     expect(mockAttach).not.toHaveBeenCalled();
+  });
+
+  it("skips an unsupported-type 400 and keeps pushing the remaining attachments", async () => {
+    mockList.mockReturnValue([link("Files", "report.docx"), link("Photos", "a.jpg")]);
+    mockUpload.mockImplementation(async (input) => {
+      if (input.filename === "report.docx") {
+        throw Object.assign(
+          new Error("Karakeep error — HTTP 400: Unsupported asset type"),
+          { status: 400 },
+        );
+      }
+      return { assetId: "as_img" };
+    });
+
+    const result = await pushNoteAttachments("bk_1", "body");
+
+    // Not an error: the export succeeded, the docx just stays vault-only.
+    expect(result.error).toBeNull();
+    expect(result.unsupportedFilenames).toEqual(["report.docx"]);
+    // The image AFTER the unsupported file still synced.
+    expect(mockAttach).toHaveBeenCalledOnce();
+    expect(result.imageUrlByRel).toEqual(
+      new Map([["../Photos/a.jpg", "/api/assets/as_img"]]),
+    );
+    // The skipped file is NOT recorded — a server that later accepts the type
+    // gets it on a subsequent export.
+    expect(mockSavePushed).toHaveBeenCalledOnce();
+    expect(mockSavePushed).toHaveBeenCalledWith(
+      "bk_1",
+      new Map([["Photos/a.jpg", "as_img"]]),
+    );
+  });
+
+  it("a real failure still stops the loop, reporting the skips collected so far", async () => {
+    mockList.mockReturnValue([
+      link("Files", "report.docx"),
+      link("Photos", "a.jpg"),
+      link("Photos", "b.jpg"),
+    ]);
+    mockUpload.mockImplementation(async (input) => {
+      if (input.filename === "report.docx") {
+        throw Object.assign(
+          new Error("Karakeep error — HTTP 400: Unsupported asset type"),
+          { status: 400 },
+        );
+      }
+      throw new Error("Karakeep unreachable — timed out after 45s");
+    });
+
+    const result = await pushNoteAttachments("bk_1", "body");
+
+    expect(result.error).toBe("Karakeep unreachable — timed out after 45s");
+    expect(result.unsupportedFilenames).toEqual(["report.docx"]);
+    expect(mockUpload).toHaveBeenCalledTimes(2); // b.jpg never attempted
   });
 
   it("returns the error when an attach fails (after a successful upload)", async () => {
@@ -287,5 +344,34 @@ describe("pushNoteAttachments", () => {
     expect(result.error).toBeNull();
     expect(mockUpload).not.toHaveBeenCalled();
     expect(mockSavePushed).not.toHaveBeenCalled();
+  });
+});
+
+describe("isUnsupportedAssetTypeError", () => {
+  const err = (message: string, status?: number) =>
+    Object.assign(new Error(message), status !== undefined ? { status } : {});
+
+  it("matches Karakeep's unsupported-asset-type 400 (case-insensitive)", () => {
+    expect(
+      isUnsupportedAssetTypeError(
+        err("Karakeep error — HTTP 400: Unsupported asset type", 400),
+      ),
+    ).toBe(true);
+    expect(
+      isUnsupportedAssetTypeError(err("HTTP 400: UNSUPPORTED ASSET TYPE", 400)),
+    ).toBe(true);
+  });
+
+  it("rejects the same message on a different status (a 500 is not a type rejection)", () => {
+    expect(
+      isUnsupportedAssetTypeError(err("Unsupported asset type", 500)),
+    ).toBe(false);
+    expect(isUnsupportedAssetTypeError(err("Unsupported asset type"))).toBe(false);
+  });
+
+  it("rejects other 400s and non-Error values", () => {
+    expect(isUnsupportedAssetTypeError(err("HTTP 400: Bad request", 400))).toBe(false);
+    expect(isUnsupportedAssetTypeError("Unsupported asset type")).toBe(false);
+    expect(isUnsupportedAssetTypeError(null)).toBe(false);
   });
 });

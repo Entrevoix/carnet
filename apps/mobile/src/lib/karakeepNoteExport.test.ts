@@ -22,6 +22,7 @@ vi.mock("./karakeep", () => ({
 }));
 vi.mock("./karakeepExport", () => ({
   pushNoteAttachments: vi.fn(async () => ({
+    unsupportedFilenames: [],
     error: null,
     imageUrlByRel: new Map<string, string>(),
   })),
@@ -59,7 +60,7 @@ const FILEPATH = "file:///v/Ideas/my-thought.md";
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, "warn").mockImplementation(() => {});
-  mockPush.mockResolvedValue({ error: null, imageUrlByRel: new Map() });
+  mockPush.mockResolvedValue({ error: null, imageUrlByRel: new Map(), unsupportedFilenames: [] });
   mockRewrite.mockImplementation((md: string) => md);
 });
 
@@ -173,6 +174,7 @@ describe("exportNoteToKarakeep", () => {
     mockPush.mockResolvedValue({
       error: "upload failed",
       imageUrlByRel: new Map(),
+      unsupportedFilenames: [],
     });
     const body = "---\nkind: idea\n---\n# Hi\n";
     const out = await exportNoteToKarakeep({
@@ -188,11 +190,49 @@ describe("exportNoteToKarakeep", () => {
     expect(mockUpdateNote).toHaveBeenCalledWith(FILEPATH, out.nextBody);
   });
 
+  it("stays a full 'exported' success when files were only skipped as unsupported types", async () => {
+    mockCreate.mockResolvedValue({ id: "bm_new" });
+    mockPush.mockResolvedValue({
+      error: null,
+      imageUrlByRel: new Map(),
+      unsupportedFilenames: ["report.docx", "notes.txt"],
+    });
+    const out = await exportNoteToKarakeep({
+      body: "---\nkind: idea\n---\n# Hi\n",
+      filepath: FILEPATH,
+      entryTitle: "Hi",
+    });
+    // Unsupported types are an informational skip, NOT a partial failure.
+    expect(out.kind).toBe("exported");
+    if (out.kind !== "exported") throw new Error("unreachable");
+    expect(out.skippedUnsupported).toEqual(["report.docx", "notes.txt"]);
+    expect(out.nextBody).toContain("karakeepId: bm_new");
+  });
+
+  it("carries unsupported skips alongside a real partial failure", async () => {
+    mockCreate.mockResolvedValue({ id: "bm_new" });
+    mockPush.mockResolvedValue({
+      error: "upload failed",
+      imageUrlByRel: new Map(),
+      unsupportedFilenames: ["report.docx"],
+    });
+    const out = await exportNoteToKarakeep({
+      body: "---\nkind: idea\n---\n# Hi\n",
+      filepath: FILEPATH,
+      entryTitle: "Hi",
+    });
+    expect(out.kind).toBe("partial");
+    if (out.kind !== "partial") throw new Error("unreachable");
+    expect(out.assetError).toBe("upload failed");
+    expect(out.skippedUnsupported).toEqual(["report.docx"]);
+  });
+
   it("PATCHes the inlined body only when rewriting changed the text, and never fails the export on an inline PATCH error", async () => {
     mockCreate.mockResolvedValue({ id: "bm_new" });
     mockPush.mockResolvedValue({
       error: null,
       imageUrlByRel: new Map([["../Photos/x.jpg", "/api/assets/a1"]]),
+      unsupportedFilenames: [],
     });
     mockRewrite.mockReturnValue("# Hi\n\n![](/api/assets/a1)\n");
     mockUpdate.mockRejectedValueOnce(new Error("inline patch boom"));

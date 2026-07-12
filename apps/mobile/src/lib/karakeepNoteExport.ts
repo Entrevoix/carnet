@@ -87,8 +87,22 @@ export function deriveKarakeepExportFields(
  *   - failed:   the export threw before the bookmark was saved; nothing changed.
  */
 export type KarakeepExportOutcome =
-  | { kind: "exported"; nextBody: string; didUpdate: boolean }
-  | { kind: "partial"; nextBody: string; assetError: string }
+  /** `skippedUnsupported` (on both success kinds): attachment filenames
+   * Karakeep refused as an unsupported asset type — kept vault-only, surfaced
+   * as an informational notice, never a failure. Empty when all types were
+   * accepted. See {@link PushAttachmentsResult.unsupportedFilenames}. */
+  | {
+      kind: "exported";
+      nextBody: string;
+      didUpdate: boolean;
+      skippedUnsupported: string[];
+    }
+  | {
+      kind: "partial";
+      nextBody: string;
+      assetError: string;
+      skippedUnsupported: string[];
+    }
   | { kind: "failed"; reason: string };
 
 /**
@@ -145,10 +159,11 @@ export async function exportNoteToKarakeep(input: {
     // Incrementally sync attachments (create + re-export); already-attached files
     // are skipped so Karakeep never accumulates duplicates on re-send. Returns
     // the first error (or null); a partial failure still stamps the bookmark.
-    const { error: assetError, imageUrlByRel } = await pushNoteAttachments(
-      id,
-      noteBody,
-    );
+    const {
+      error: assetError,
+      imageUrlByRel,
+      unsupportedFilenames,
+    } = await pushNoteAttachments(id, noteBody);
 
     // Inline the note's images into the Karakeep bookmark BODY: rewrite each
     // ../Photos embed to its uploaded asset URL so the images render in-content.
@@ -174,9 +189,19 @@ export async function exportNoteToKarakeep(input: {
     const next = upsertFrontmatterField(header + noteBody, "karakeepId", id);
     await updateNote(input.filepath, next);
     if (assetError) {
-      return { kind: "partial", nextBody: next, assetError };
+      return {
+        kind: "partial",
+        nextBody: next,
+        assetError,
+        skippedUnsupported: unsupportedFilenames,
+      };
     }
-    return { kind: "exported", nextBody: next, didUpdate };
+    return {
+      kind: "exported",
+      nextBody: next,
+      didUpdate,
+      skippedUnsupported: unsupportedFilenames,
+    };
   } catch (e: unknown) {
     const reason =
       e instanceof KarakeepError
