@@ -459,9 +459,6 @@ export async function attachTags(
  * networking streams the uri (a `file://` sandbox path or a SAF `content://`
  * URI) and derives the multipart boundary itself, so NO Content-Type header is
  * set here. Gets the longer asset timeout since it ships bytes over the network.
- * (VoiceButton's Whisper upload uses the same `{uri,name,type}` part shape but
- * still posts via `fetch` — it shares the latent Hermes crash karakeepUpload
- * works around, and needs the same XHR migration as a follow-up.)
  */
 export async function uploadAsset(input: {
   uri: string;

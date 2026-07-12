@@ -28,7 +28,6 @@ import {
   isPinnedRecognizer,
   resolveEffectivePkg,
   pinnedFailoverChain,
-  composeFlush,
 } from './recognizerSelect';
 import { triggerVoiceModelDownload } from './sttReadiness';
 import { describeSttError, isFailoverEligibleCode } from './sttErrorMessage';
@@ -36,9 +35,16 @@ import {
   classifyNoServiceSheet,
   decideSttErrorAction,
   reviveUserRecoverablePkgs,
-  shouldAutoStopOnSilence,
   type NoServiceSheet,
 } from './sttErrorPolicy';
+import {
+  EMPTY_ACCUMULATOR,
+  applyResultEvent,
+  composeSessionFlush,
+  decideEndEvent,
+  resetSegments,
+  type TranscriptAccumulator,
+} from './dictationSession';
 
 // Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
 const MAX_RECORDING_MS = 3 * 60 * 1000;
@@ -338,14 +344,12 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // end tap). Async paths must check this between awaits so a stop in flight
   // aborts the start.
   const pressActiveRef = useRef(false);
-  // Per-utterance final segments, joined into the composed transcript.
+  // Transcript accumulator (final segments + interim + folded session text).
   // continuous: true emits multiple isFinal results during a session (Soda
   // re-arms after each utterance boundary); we accumulate, then flush on
-  // stop as a single isFinal=true callback.
-  const finalSegmentsRef = useRef<string[]>([]);
-  const sessionTextRef = useRef('');
-  // Latest in-progress (isFinal=false) transcript for the current utterance.
-  const interimRef = useRef('');
+  // stop as a single isFinal=true callback. All transitions go through the
+  // pure helpers in ./dictationSession so the interplay is unit-testable.
+  const accRef = useRef<TranscriptAccumulator>(EMPTY_ACCUMULATOR);
   // Set by stopAndFlush() so the `end` listener's user-stop branch doesn't
   // commit the transcript a second time after we've already flushed it.
   const flushedExternallyRef = useRef(false);
@@ -569,16 +573,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   useEffect(() => { stopListeningRef.current = stopListening; });
 
   // Recording helpers ─────────────────────────────────────────────────────
-  const composeText = useCallback(() => {
-    const finals = finalSegmentsRef.current.join(' ').trim();
-    const interim = interimRef.current.trim();
-    if (finals && interim) return `${finals} ${interim}`;
-    return finals || interim;
-  }, []);
-
+  // Clears the per-segment state but keeps folded sessionText (see
+  // resetSegments); full clears assign EMPTY_ACCUMULATOR directly.
   const resetAccumulator = useCallback(() => {
-    finalSegmentsRef.current = [];
-    interimRef.current = '';
+    accRef.current = resetSegments(accRef.current);
   }, []);
 
   const clearMaxTimer = useCallback(() => {
@@ -622,14 +620,13 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // manual stop tap (composeFlush of sessionText + any final segments). With no
   // text at all, tear down silently and show a brief transient toast.
   const autoStopCommitRef = useRef(() => {
-    const finalText = composeFlush(sessionTextRef.current, composeText());
+    const finalText = composeSessionFlush(accRef.current);
     if (finalText) {
       onTranscriptRef.current(finalText, true);
     } else {
       showErrRef.current('No speech detected', 2500);
     }
-    sessionTextRef.current = '';
-    resetAccumulator();
+    accRef.current = EMPTY_ACCUMULATOR;
     pressActiveRef.current = false;
     activeEngineRef.current = null;
     consecutiveSilentEndsRef.current = 0;
@@ -798,11 +795,17 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         audioSeenRef.current = true;
         serverDisconnectRetryRef.current = 0; // recognizer produced output — recovered
         clearWatchdogRef.current();
-        // Already committed via stopAndFlush() — ignore any trailing result the
-        // recognizer emits during teardown so we don't re-accumulate or fire a
-        // stray non-final update after the final flush.
-        if (flushedExternallyRef.current) return;
-        if (!transcript) return;
+        // Accumulation decision (dictationSession.ts): drops trailing results
+        // after an external stopAndFlush and empty transcripts; otherwise
+        // collects finals / overwrites the interim and composes the non-final
+        // display update. The single final commit happens in 'end' (on stop).
+        const outcome = applyResultEvent(accRef.current, {
+          transcript,
+          isFinal: event.isFinal,
+          flushedExternally: flushedExternallyRef.current,
+        });
+        if (outcome.type !== 'accumulate') return;
+        accRef.current = outcome.acc;
         // First real transcript proves this recognizer can serve STT — commit any
         // persist staged by the pinnedHit auto-select now, so we only ever
         // remember an engine that actually works.
@@ -812,25 +815,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
           void AsyncStorage.setItem(STT_RECOGNIZER_PKG_KEY, pkg).catch(() => { /* best-effort */ });
           void AsyncStorage.setItem(STT_RECOGNIZER_LABEL_KEY, label).catch(() => { /* best-effort */ });
         }
-        // Accumulator: continuous: true emits multiple isFinal results
-        // (one per utterance boundary). We collect finals and overwrite the
-        // interim slot, then emit the composed text as a non-final update so
-        // MainScreen shows the in-progress transcript without committing.
-        // The single final commit happens in the 'end' listener (on release).
-        if (event.isFinal) {
-          finalSegmentsRef.current.push(transcript);
-          interimRef.current = '';
-          // A segment yielded final text — the session is not silent; reset the
-          // silence auto-stop counter so quiet only accrues from here on.
-          consecutiveSilentEndsRef.current = 0;
-        } else {
-          interimRef.current = transcript;
-        }
-        const current = composeText();
-        const display = sessionTextRef.current
-          ? `${sessionTextRef.current} ${current}`
-          : current;
-        onTranscriptRef.current(display, false);
+        // A segment yielded final text — the session is not silent; reset the
+        // silence auto-stop counter so quiet only accrues from here on.
+        if (outcome.resetsSilentEnds) consecutiveSilentEndsRef.current = 0;
+        onTranscriptRef.current(outcome.display, false);
       }
     );
     // Lifecycle listeners. expo-speech-recognition emits these on Android;
@@ -1032,7 +1020,6 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     const endSub = ExpoSpeechRecognitionModule.addListener('end', () => {
       logEventRef.current('end');
       clearWatchdogRef.current();
-      const text = composeText();
 
       // KNOWN EDGE (deferred): a native `end` for a flushed/stopped session can
       // arrive AFTER a new session has started — the picker that triggers
@@ -1045,45 +1032,19 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       // Low probability in practice: stopOnDevice() usually delivers `end` before
       // the user can return from the picker and re-tap.
 
-      // Tap-to-toggle: if user hasn't tapped stop yet (pressActiveRef still
-      // true), Soda ended on its own (silence/timeout). Accumulate the text
-      // from this segment and auto-restart after a brief delay — unless enough
-      // consecutive silent ends have accrued, in which case stop on quiet.
-      if (pressActiveRef.current && activeEngineRef.current === 'ondevice') {
-        if (errorHandlingRef.current) return;
-        if (text) {
-          // Segment produced text — not a silent end; reset the auto-stop counter.
-          consecutiveSilentEndsRef.current = 0;
-          sessionTextRef.current = sessionTextRef.current
-            ? `${sessionTextRef.current} ${text}`
-            : text;
-        } else {
-          // Silent end (no new final text this segment). Once enough consecutive
-          // silent ends accrue, end the session on quiet instead of restarting.
-          consecutiveSilentEndsRef.current += 1;
-          if (shouldAutoStopOnSilence(consecutiveSilentEndsRef.current)) {
-            autoStopCommitRef.current();
-            return;
-          }
-        }
-        resetAccumulator();
-        started.current = false;
-        setIsListening(false);
-        stopPulse();
-        setTimeout(async () => {
-          if (!pressActiveRef.current) return;
-          const savedPkg = await AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY);
-          await startRecognizerRef.current(savedPkg);
-        }, 500);
-        return;
-      }
+      // Branch decision lives in dictationSession.ts (decideEndEvent); this
+      // listener only applies the side effects each outcome asks for.
+      const outcome = decideEndEvent(accRef.current, {
+        pressActive: pressActiveRef.current,
+        activeEngineOnDevice: activeEngineRef.current === 'ondevice',
+        errorHandlingLatched: errorHandlingRef.current,
+        flushedExternally: flushedExternallyRef.current,
+        consecutiveSilentEnds: consecutiveSilentEndsRef.current,
+      });
 
-      // Already committed by an external stopAndFlush() — just tear down,
-      // don't emit the transcript a second time.
-      if (flushedExternallyRef.current) {
-        flushedExternallyRef.current = false;
-        sessionTextRef.current = '';
-        resetAccumulator();
+      // Shared session teardown for the two terminal outcomes below.
+      const teardown = () => {
+        accRef.current = EMPTY_ACCUMULATOR;
         pressActiveRef.current = false;
         activeEngineRef.current = null;
         if (maxDurationTimer.current) {
@@ -1091,21 +1052,45 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
           maxDurationTimer.current = null;
         }
         stopListeningRef.current();
-        return;
-      }
+      };
 
-      // User tapped stop (or max-duration) — send accumulated + final.
-      const finalText = composeFlush(sessionTextRef.current, text);
-      if (finalText) onTranscriptRef.current(finalText, true);
-      sessionTextRef.current = '';
-      resetAccumulator();
-      pressActiveRef.current = false;
-      activeEngineRef.current = null;
-      if (maxDurationTimer.current) {
-        clearTimeout(maxDurationTimer.current);
-        maxDurationTimer.current = null;
+      switch (outcome.type) {
+        case 'ignore-latched':
+          // Error listener owns this end — it already scheduled any restart
+          // (3309ef6: acting here too causes overlapping sessions).
+          return;
+        case 'fold-and-restart':
+        case 'restart-after-silence':
+          // Soda ended on its own (silence/timeout) mid-session: fold/keep the
+          // accumulated text and re-arm the recognizer after a brief delay.
+          accRef.current = outcome.acc;
+          consecutiveSilentEndsRef.current = outcome.consecutiveSilentEnds;
+          started.current = false;
+          setIsListening(false);
+          stopPulse();
+          setTimeout(async () => {
+            if (!pressActiveRef.current) return;
+            const savedPkg = await AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY);
+            await startRecognizerRef.current(savedPkg);
+          }, outcome.restartDelayMs);
+          return;
+        case 'auto-stop-commit':
+          // Enough consecutive silent ends — end the session on quiet.
+          // autoStopCommitRef recomputes the same finalText from accRef.
+          autoStopCommitRef.current();
+          return;
+        case 'teardown-flushed':
+          // Already committed by an external stopAndFlush() — just tear down,
+          // don't emit the transcript a second time.
+          flushedExternallyRef.current = false;
+          teardown();
+          return;
+        case 'commit-final':
+          // User tapped stop (or max-duration) — send accumulated + final.
+          if (outcome.finalText) onTranscriptRef.current(outcome.finalText, true);
+          teardown();
+          return;
       }
-      stopListeningRef.current();
     });
 
     return () => {
@@ -1216,17 +1201,16 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     // from onTranscript can't strand the mic or wedge pressActiveRef.
     pressActiveRef.current = false;
     activeEngineRef.current = null;
-    const text = composeFlush(sessionTextRef.current, composeText());
+    const text = composeSessionFlush(accRef.current);
     // Diagnostics: len=0 means STT captured no transcript to flush (e.g. a Soda
     // nomatch), NOT that the flush dropped it. session = chars already folded
     // from prior auto-restarted segments.
     logEventRef.current('flush.ondevice', {
       len: text.length,
-      session: sessionTextRef.current.length,
+      session: accRef.current.sessionText.length,
     });
     flushedExternallyRef.current = true; // suppress the end-listener re-commit
-    sessionTextRef.current = '';
-    resetAccumulator();
+    accRef.current = EMPTY_ACCUMULATOR;
     stopOnDevice(); // release the mic; `end` fires and short-circuits on the flag
     // Emit LAST and contained: teardown is done and the mic is released, so a
     // throwing parent callback can't leave the recognizer running.
@@ -1242,7 +1226,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     } else {
       logEventRef.current('flush.empty');
     }
-  }, [composeText, resetAccumulator, clearMaxTimer, stopOnDevice]);
+  }, [clearMaxTimer, stopOnDevice]);
 
   useImperativeHandle(ref, () => ({ stopAndFlush }), [stopAndFlush]);
 
@@ -1275,7 +1259,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       code9PkgsRef.current,
     );
     code9PkgsRef.current = new Set();
-    sessionTextRef.current = '';
+    accRef.current = { ...accRef.current, sessionText: '' };
     // Self-heal the external-flush guard at the start of every session so a
     // prior session whose `end` never arrived can't make this one skip its
     // real commit.
