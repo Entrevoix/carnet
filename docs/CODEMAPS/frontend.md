@@ -1,32 +1,48 @@
 # Frontend — screens & components
-<!-- Generated: 2026-06-14 | Files scanned: ~53 | Token estimate: ~680 -->
+<!-- Generated: 2026-07-12 | Files scanned: ~135 (78 src + tests) | Token estimate: ~760 -->
 
 ## Navigation — `apps/mobile/App.tsx` (native-stack)
 ```
-Home → Capture | PhotoCapture | AudioCapture | ShareReceive | RecentDetail | TagBrowser | Settings
+Home → Capture | PhotoCapture | AudioCapture | ShareReceive | RecentDetail
+     | TagBrowser | Search | Settings
 ```
+Capture modes route through `CaptureFab` (Idea one-tap; Journal/Contact/Photo/Audio
+behind the "more modes" chevron sheet).
 
-## Screens (`apps/mobile/src/screens`)
+## Screens (`apps/mobile/src/screens`) — smoke tests exist for all (headless)
 | screen | ln | role |
 |---|---|---|
-| `HomeScreen` | 349 | capture-mode launcher + recents list; one-shot `VoiceReadinessBanner` |
-| `CaptureScreen` | 830 | Idea/Journal text capture; Tags + Location metadata; Send |
-| `PhotoCaptureScreen` | 506 | camera → OCR / vision (Person, Photo) |
-| `AudioCaptureScreen` | 549 | record → transcribe → journal |
-| `RecentDetailScreen` | 1406 | note view + WYSIWYG edit, tags, geo chip, attachments, **Send to Karakeep** |
-| `ShareReceiveScreen` | 628 | Android share-sheet intake (image / link) |
-| `TagBrowserScreen` | 135 | vault tags + counts → notes → detail |
-| `SettingsScreen` | 882 | OmniRoute creds + model, **Karakeep URL+key**, **Voice input** check, feature flags |
+| `HomeScreen` | 445 | recents list + `CaptureFab`; one-shot `VoiceReadinessBanner` |
+| `CaptureScreen` | 803 | Idea/Journal/Contact text capture; dictation; Tags+Location; save-first |
+| `PhotoCaptureScreen` | 507 | camera → vision enrichment (Photo) |
+| `AudioCaptureScreen` | 629 | record → on-device transcribe → journal |
+| `RecentDetailScreen` | 1416 | note view + WYSIWYG edit, tags, geo, attachments, Karakeep export |
+| `ShareReceiveScreen` | 627 | Android share-sheet intake (image / link) |
+| `SearchScreen` | 284 | vault full-text/tag search (B6), stamp-based filters |
+| `TagBrowserScreen` | 140 | tags + counts → routes into Search |
+| `SettingsScreen` | 794 | OmniRoute URL/key + chat/vision models, Karakeep, voice check, flags |
+
+Business logic lives in extracted `lib/*.ts` modules (ideaSaveFirst, saveFirstOutcome,
+captureErrorDecision, attachmentPersistence, promoteIdeaOnDisk, noteReprocess,
+wysiwygSave, vaultImageInsert, settingsForm, modelBrowser, shareHelpers…) — screens are
+mostly UI. Prefer extending those modules over adding inline screen logic.
 
 ## Components (`apps/mobile/src/components`)
-`VoiceButton` (1520, STT) · `WysiwygEditor` (286) + `MarkdownToolbar` (70) + `bridges/MarkdownBridge`
-(TenTap WebView) · `TagInput` (95, chips + autocomplete) · `LocationChip` (127) ·
-`CardScannerModal` (144, OCR).
-Voice onboarding (`apps/mobile/src/voice`): `VoiceReadinessBanner` (126, Home one-shot prompt) +
-`VoiceSetupCheck` (183, Settings "Check voice setup").
+`CaptureFab` (mode launcher) · `CaptureModeInput` (per-mode input incl. Contact card-scan
+entry) · `CardScannerModal` (expo-camera → `ocrCardViaVision`) · `CaptureViews` ·
+`WysiwygEditor` + `MarkdownToolbar` + `bridges/MarkdownBridge` (TenTap WebView) ·
+`TagInput` · `LocationChip` · `NoteCard` · `StampChip` · `SyncStatusDot` ·
+`PromptOverridesSection`.
+
+## Voice (`apps/mobile/src/voice`)
+`VoiceButton` (1541 — tap-to-toggle dictation; failover chain; silence auto-stop after 2
+quiet windows; 3-min cap; mic-revoked recovery sheet with App-info deep link via
+`requireOptionalNativeModule('ExpoIntentLauncher')`) · `sttErrorPolicy` (277, PURE
+decision ladder + tests — the errorHandlingRef latch invariant lives here) ·
+`recognizerSelect` · `sttErrorMessage` · `sttOnboarding` · `sttReadiness` ·
+`VoiceReadinessBanner` · `VoiceSetupCheck`.
 
 ## State & theming
-React local/component state; `lib/settings.ts` (AsyncStorage; API keys in SecureStore) for prefs +
-flags + OmniRoute/Karakeep creds; `lib/theme.ts`.
-The rich editor is a Vite-bundled **TenTap (tiptap) WebView** under `apps/mobile/editor-web/`,
-communicating with RN through `bridges/MarkdownBridge.ts` (markdown round-trip).
+React local state; `lib/settings.ts` (AsyncStorage blob `carnet:settings:v2`; API keys
+in SecureStore). Theming via `lib/theme.ts` `useCarnetTheme` tokens — DESIGN.md is the
+visual contract (Stamped Paper). Maestro flows in `apps/mobile/.maestro/`.

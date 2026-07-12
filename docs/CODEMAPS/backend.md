@@ -1,5 +1,5 @@
 # Device Pipeline & Integrations
-<!-- Generated: 2026-06-14 | Files scanned: ~53 | Token estimate: ~800 -->
+<!-- Generated: 2026-07-12 | Files scanned: ~135 (78 src + tests) | Token estimate: ~800 -->
 
 No HTTP server. The "backend" is the **on-device enrichment + persistence pipeline**,
 plus an opt-in **Karakeep export** REST client.

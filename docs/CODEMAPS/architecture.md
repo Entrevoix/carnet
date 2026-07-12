@@ -1,5 +1,5 @@
 # Architecture — Carnet
-<!-- Generated: 2026-06-14 | Files scanned: ~53 | Token estimate: ~720 -->
+<!-- Generated: 2026-07-12 | Files scanned: ~135 (78 src + tests) | Token estimate: ~780 -->
 
 Mobile-first knowledge capture. The Android app writes Markdown into a local folder;
 Syncthing replicates it peer-to-peer into an Obsidian vault on the workstation.
@@ -7,29 +7,42 @@ Syncthing replicates it peer-to-peer into an Obsidian vault on the workstation.
 
 ## Workspaces (npm monorepo, v0.2.0)
 - `apps/mobile`    — Expo SDK 54 / React Native 0.81 — the primary surface
-- `apps/desktop`   — Tauri (Rust) + React — tiny companion; stores the LLM-gateway token
-- `packages/shared` — `@carnet/shared` — TS types + markdown helpers (used by both apps)
+- `apps/desktop`   — Tauri (Rust) + React — intentional stub, fate deferred (TODO.md)
+- `packages/shared` — `@carnet/shared` — TS types + markdown helpers (no app deps)
 
 ## Data flow
 ```
-Capture (Idea / Journal / Person / Photo / Audio / Share)
-  → enrich via LLM client      lib/omniroute.ts   (HTTPS → OmniRoute / navetted)
-  → render Markdown            lib/writer.ts
-  → write local folder         /Documents/carnet/{Ideas,Journal,People,Photos,Attachments}
+Capture (Idea / Journal / Contact / Photo / Audio / Share / notification inline-reply)
+  → backend dispatcher            lib/dispatcher.ts  (B7 seam: "omniroute" | future on-device)
+  → enrich via LLM client         lib/omniroute.ts   (OpenAI-compatible /v1/chat/completions;
+       vision: enrichSharedImage + ocrCardViaVision on visionModel; stream:false always)
+  → sanitize LLM output           lib/enrichSanitize.ts  (B3, at the executeChat chokepoint)
+  → render Markdown               lib/writer.ts
+  → write local folder            {captureFolderPath}/{Ideas,Journal,People,Photos,Attachments}
         │  (offline → lib/queue.ts buffers in AsyncStorage, drains when online)
+        │  (Idea/Journal default SAVE-FIRST: file lands instantly, enrichment patches after — B4)
         ▼  Syncthing p2p
-  ~/Obsidian/Carnet/           workstation vault (Obsidian opens it directly)
+  ~/Obsidian/Carnet/              workstation vault (Obsidian opens it directly)
 
 Export (opt-in, per note, from RecentDetail)
-  → lib/karakeep.ts (HTTPS REST) → self-hosted Karakeep: bookmark + tags + asset attachments
+  → lib/karakeep*.ts (HTTPS REST) → self-hosted Karakeep: bookmark + tags + assets
 ```
 
 ## Layer boundaries
-- **UI** `screens/`, `components/` — capture + review
-- **Domain** `lib/` — enrichment, markdown/frontmatter, vault IO, offline queue, tags, location, Karakeep export
-- **Native bridges** `bridges/`, `voice/`, `editor-web/` (TenTap) — STT (+ onboarding), OCR, WYSIWYG
-- **External** — OmniRoute/navetted (LLM, HTTPS), Karakeep (export, HTTPS REST), Syncthing (sync),
-  device sensors/camera/mic
+- **UI** `screens/` (9), `components/` (14) — capture + review + search
+- **Domain** `lib/` (44 modules, each with co-located tests) — enrichment, sanitize,
+  markdown/frontmatter, vault IO + tag/search index, offline queue, save-first flows,
+  settings, net allowlist (B0 SSRF/host hardening), Karakeep export, notification capture
+- **Voice** `voice/` — on-device STT: recognizer detection/failover (`recognizerSelect`),
+  pure error-decision ladder (`sttErrorPolicy` — restart latching, silence auto-stop,
+  mic-revoked classification), onboarding/readiness
+- **Native bridges** `bridges/` + `editor-web/` (TenTap WebView WYSIWYG)
+- **External** — OmniRoute (self-hosted LLM gateway, all AI calls), Karakeep (export),
+  Syncthing (sync), Android STT RecognitionServices, camera/mic/location
 
-See `backend.md` (device pipeline + export), `frontend.md` (screens), `data.md` (vault schema + stores),
-`dependencies.md` (integrations).
+## Security invariants
+No `.env`; runtime config entered in-app (keys in SecureStore). `netAllowlist.ts` pins
+outbound hosts. Frontmatter stays byte-compatible with existing vault files.
+
+See `backend.md` (device pipeline + integrations), `frontend.md` (screens),
+`data.md` (vault schema + stores), `dependencies.md` (integrations).
