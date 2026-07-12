@@ -15,7 +15,7 @@ Tracking deferred v0.3 scope and known issues.
 
 Backend-generalization + capture-surface audit (`AUDIT-backend.md`, PR #62) → execution
 plan (`.claude/PRPs/plans/stage2-backend-and-capture.plan.md`, branches B0–B7). All
-branches shipped except B2 (gated, see below).
+branches shipped (B2 folded via `visionModel`, gate passed 2026-07-12).
 
 - [x] **B3 — LLM markdown sanitizer + frontmatter normalizer** (PR #63) — `lib/enrichSanitize.ts`;
   neutralizes Dataview/Templater/script/`javascript:` injection in LLM output before it
@@ -41,11 +41,11 @@ branches shipped except B2 (gated, see below).
   seam (`lib/dispatcher.ts`) re-exporting the six enrich functions from the selected
   backend; `Settings.llmBackend` (default `"omniroute"`). No native code yet — this is
   the prerequisite the "On-device Gemma backend" item below now builds on.
-- [~] **B2 — fold business-card OCR into chat vision** — gated, not started. Needs an
-  on-device side-by-side quality comparison of VLM OCR (via the new `visionModel`) vs.
-  the current dedicated `POST {omniRouteUrl}/ocr` endpoint on real business cards.
-  Attempted 2026-07-10, blocked: OmniRoute isn't configured on the test device. Resume by
-  configuring OmniRoute URL + API key in Settings on-device, then re-run.
+- [x] **B2 — fold business-card OCR into chat vision** — done; folded via `visionModel`,
+  gate passed 2026-07-12. The dedicated `POST {omniRouteUrl}/ocr` client (`lib/ocr.ts`) is
+  retired; `CardScannerModal` now calls `ocrCardViaVision()` in `lib/omniroute.ts`, an
+  `image_url` chat-vision call on the vision model. Side-by-side vs. the old Mistral `/ocr`
+  endpoint on real cards matched (and beat it on stylized text).
 - [x] **Screen-file decomposition** (`.agent_native/agent_roadmap.md` item #2, PRs #101–#103)
   — extracted business logic from the three oversized screen files into tested `lib/*.ts`
   modules: `CaptureScreen.tsx` 1175→798 lines, `RecentDetailScreen.tsx` 1599→1416,
@@ -75,7 +75,7 @@ branches shipped except B2 (gated, see below).
 
 ## Deferred (carry-over from v0.1)
 
-- [ ] **Person camera capture pipeline** — `PersonInput` wires up `expo-camera` → `ocrBusinessCard()` (implemented in `lib/ocr.ts`). The button is present; the full pipeline needs integration testing on device.
+- [ ] **Person camera capture pipeline** — `CardScannerModal` (opened from `CaptureModeInput`) wires up `expo-camera` → `ocrCardViaVision()` (in `lib/omniroute.ts`; the standalone `lib/ocr.ts` `/ocr` client was retired in B2). The button is present; the full pipeline needs integration testing on device.
 - [ ] **Slugify Unicode edge cases** — ASCII-only slugifier drops non-Latin characters. For French accents this is fine; for non-Latin titles you get "untitled". Consider a Unicode-aware slugifier if this comes up in practice.
 - [ ] **Settings: live connection test** — A "Tester la connexion" button that pings OmniRoute and reports latency/auth status.
 - [x] **Promote-idea race condition** — Closed by the B4 mtime conflict guard (`writer.ts` `getModificationTime` + `updateNoteIfUnchanged`). Promote now records the file's `modificationTime` before its read-modify-write and re-checks it before the overwrite; a Syncthing/workstation edit that landed in between is kept (write skipped) and a conflict message is surfaced in `CaptureScreen`. The same guard backs the save-first Idea enriched overwrite and the offline-drain in-place update.

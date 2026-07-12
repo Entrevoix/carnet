@@ -41,8 +41,10 @@ Driven from RecentDetailScreen "Send to Karakeep"; `karakeepId` frontmatter give
 
 ## On-device extras
 STT `voice/VoiceButton.tsx` + `voice/recognizerSelect.ts`; STT onboarding `voice/sttReadiness.ts`
-(en-model probe, code-12 dead-end) + `voice/sttOnboarding.ts` (proactive prompt logic); OCR `lib/ocr.ts`;
-on-device transcribe `lib/audioTranscribeOnDevice.ts`; notifications `lib/captureNotification.ts`.
+(en-model probe, code-12 dead-end) + `voice/sttOnboarding.ts` (proactive prompt logic);
+card OCR `ocrCardViaVision()` in `lib/omniroute.ts` (chat-vision call; the standalone `/ocr`
+client was retired in Stage 2 B2); on-device transcribe `lib/audioTranscribeOnDevice.ts`;
+notifications `lib/captureNotification.ts`.
 
 ## Desktop — `apps/desktop/src-tauri` (Rust)
 `#[tauri::command]` `get_navetted_token` / `set_navetted_token` / `delete_navetted_token`

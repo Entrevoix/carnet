@@ -12,7 +12,7 @@
 - `expo` ~54, `react-native` 0.81 (New Architecture)
 - `expo-location` ~19 — device coords → `lib/location.ts`
 - audio recording → `AudioCaptureScreen`, `lib/audioDecoder.ts`, `lib/audioTranscribeOnDevice.ts`
-- camera + OCR/vision → `PhotoCaptureScreen`, `lib/ocr.ts`, `CardScannerModal`
+- camera + OCR/vision → `PhotoCaptureScreen`, `CardScannerModal` → `ocrCardViaVision()` in `lib/omniroute.ts`
 - STT — `expo-speech-recognition` (on-device model download for the code-12 dead-end) → `voice/`
 - `@10play/tentap-editor` 1.0.1 — WYSIWYG (editor-web bundle + `MarkdownBridge`)
 - `@react-native-async-storage/async-storage` — offline queue, settings, tag cache, Karakeep asset record

@@ -11,8 +11,7 @@ import {
 } from "react-native-paper";
 import { CameraView, useCameraPermissions } from "expo-camera";
 
-import { ocrBusinessCard } from "../lib/ocr";
-import { getSettings } from "../lib/settings";
+import { ocrCardViaVision } from "../lib/omniroute";
 
 interface Props {
   visible: boolean;
@@ -38,13 +37,10 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
       if (!photo?.base64) {
         throw new Error("no image captured");
       }
-      const settings = await getSettings();
-      const { text } = await ocrBusinessCard(
-        settings.omniRouteUrl,
-        settings.omniRouteApiKey,
-        photo.base64,
-        "image/jpeg",
-      );
+      const { text } = await ocrCardViaVision({
+        base64: photo.base64,
+        mimeType: "image/jpeg",
+      });
       onResult(text);
       onClose();
     } catch (e: unknown) {

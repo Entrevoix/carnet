@@ -549,6 +549,106 @@ export async function enrichSharedImage(input: {
 }
 
 /**
+ * Fixed transcription instruction for business-card OCR. Verified on-device
+ * against the (now-retired) dedicated `/v1/ocr` Mistral endpoint — do NOT
+ * reword: the phrasing is what makes the VLM emit a faithful, one-field-per-line
+ * transcription instead of a chatty summary. The extracted text feeds
+ * `enrichPerson` (which builds the contact note), so it must stay raw and
+ * unnormalized here — enrichment applies its own sanitize/normalize pass.
+ */
+const OCR_CARD_PROMPT =
+  "Transcribe ALL text on this business card exactly as printed. Preserve every field: name, title, company, phone numbers, email addresses, websites, physical address, and any other text. Output plain text, one field per line. Do not invent, omit, or normalize anything.";
+
+/**
+ * Transcribe a business-card image via the vision model, replacing the bespoke
+ * `POST /v1/ocr` path (retired 2026-07-12 — see Stage 2 B2). Uses the same
+ * settings plumbing and mime allowlist as {@link enrichSharedImage}, but sends
+ * a single user turn (no system message) with a fixed transcription prompt and
+ * `temperature: 0` for deterministic, faithful output.
+ *
+ * Unlike {@link executeChat}, this returns the RAW model content (trimmed) with
+ * NO markdown sanitization or frontmatter normalization: the output is not a
+ * vault note, it is contact text handed to `enrichPerson`, whose enriched
+ * result is the thing that gets sanitized before write. Throws a
+ * "no OCR text" OmniRouteError on empty content so the caller's existing
+ * failure UX (and the person degraded-save path downstream) behaves identically
+ * to the old `/v1/ocr` client.
+ */
+export async function ocrCardViaVision(input: {
+  base64: string;
+  mimeType: string;
+}): Promise<{ text: string }> {
+  // Same allowlist as enrichSharedImage — defends against a pathological mime
+  // being interpolated into the data: URL; falls back to image/jpeg.
+  const safeMime = /^image\/(jpe?g|png|webp|gif|heic|heif)$/.test(input.mimeType)
+    ? input.mimeType
+    : "image/jpeg";
+  const [baseUrl, apiKey, model] = await Promise.all([
+    getBaseUrl(),
+    getApiKey(),
+    getVisionModel(),
+  ]);
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  assertHttpsOrLocal(trimmed);
+
+  const dataUrl = `data:${safeMime};base64,${input.base64}`;
+  const messages: OpenAIMessage[] = [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: OCR_CARD_PROMPT },
+        { type: "image_url", image_url: { url: dataUrl } },
+      ],
+    },
+  ];
+  const url = `${trimmed}/v1/chat/completions`;
+  // temperature: 0 — transcription must be deterministic, not creative. Built
+  // into the body directly (no executeChat plumbing) since this path returns
+  // raw text rather than a sanitized note.
+  const body = JSON.stringify({ model, messages, stream: false, temperature: 0 });
+
+  return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body,
+        signal,
+      });
+    } catch (e: unknown) {
+      if (e instanceof OmniRouteError) throw e;
+      const raw = e instanceof Error ? e.message : String(e);
+      throw new OmniRouteError(
+        `OmniRoute network error — ${sanitizeErrorMessage(raw)}`,
+        0,
+      );
+    }
+
+    if (!response.ok) {
+      throw new OmniRouteError(
+        `OmniRoute error — ${await parseErrorBody(response)}`,
+        response.status,
+      );
+    }
+
+    const json = (await response.json()) as OpenAIResponse;
+    const content = json.choices?.[0]?.message?.content;
+    const text = typeof content === "string" ? content.trim() : "";
+    if (!text) {
+      throw new OmniRouteError(
+        "OmniRoute response contained no OCR text",
+        response.status,
+      );
+    }
+    return { text };
+  });
+}
+
+/**
  * Text-only enrichment for a URL or raw text shared into carnet. When
  * a URL is present, we fetch the page first (best-effort, in parallel
  * with the settings reads) and thread the resulting title /
