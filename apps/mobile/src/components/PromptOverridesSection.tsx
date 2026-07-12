@@ -10,6 +10,7 @@ import {
   buildSharedImagePrompt,
   buildSharedLinkPrompt,
 } from "../lib/prompts";
+import { caretProps, useCarnetTheme } from "../lib/theme";
 
 const PROMPT_MODES = [
   { key: "idea", label: "Idea", icon: "lightbulb-on" },
@@ -54,6 +55,7 @@ export function PromptOverridesSection({
   overrides,
   onChange,
 }: PromptOverridesSectionProps) {
+  const theme = useCarnetTheme();
   // Which editor is open. Null = all collapsed. Screen-local UI state.
   const [expanded, setExpanded] = useState<PromptModeKey | null>(null);
 
@@ -90,6 +92,7 @@ export function PromptOverridesSection({
             {isExpanded ? (
               <View style={styles.editor}>
                 <TextInput
+                  {...caretProps(theme)}
                   mode="outlined"
                   multiline
                   numberOfLines={10}

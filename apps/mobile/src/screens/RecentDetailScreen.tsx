@@ -66,7 +66,7 @@ import {
 import { MarkdownToolbar } from "../components/MarkdownToolbar";
 import { StampChip } from "../components/StampChip";
 import { modeStamp } from "../components/NoteCard";
-import { MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
+import { caretProps, MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
 import { makeImageRule } from "../components/markdownImageRule";
 import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
 import { TagInput } from "../components/TagInput";
@@ -988,6 +988,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
                   disabled={saving}
                 />
                 <TextInput
+                  {...caretProps(theme)}
                   mode="outlined"
                   multiline
                   numberOfLines={16}

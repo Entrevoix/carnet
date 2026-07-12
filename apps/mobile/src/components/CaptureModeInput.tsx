@@ -6,6 +6,7 @@ import { VoiceButton, type VoiceButtonHandle } from "../voice/VoiceButton";
 import { CardScannerModal } from "./CardScannerModal";
 import { getSettings } from "../lib/settings";
 import type { CaptureMode } from "../lib/storage";
+import { caretProps, useCarnetTheme } from "../lib/theme";
 
 interface ModeInputProps {
   mode: CaptureMode;
@@ -33,6 +34,7 @@ export function ModeInput({
   onOcrChange,
   voiceRef,
 }: ModeInputProps) {
+  const theme = useCarnetTheme();
   if (mode === "idea") {
     return (
       <View style={styles.ideaBlock}>
@@ -50,6 +52,7 @@ export function ModeInput({
           </Text>
         </View>
         <TextInput
+          {...caretProps(theme)}
           placeholder="What's on your mind?"
           mode="flat"
           multiline
@@ -86,6 +89,7 @@ export function ModeInput({
           </Text>
         </View>
         <TextInput
+          {...caretProps(theme)}
           placeholder="Transcript — speak or type"
           mode="flat"
           multiline
@@ -98,6 +102,7 @@ export function ModeInput({
           style={styles.fullBleedInput}
         />
         <TextInput
+          {...caretProps(theme)}
           placeholder="Additional notes"
           mode="flat"
           multiline
@@ -134,6 +139,7 @@ function PersonInput({
   context,
   onContextChange,
 }: PersonInputProps) {
+  const theme = useCarnetTheme();
   const [scannerVisible, setScannerVisible] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
 
@@ -160,6 +166,7 @@ function PersonInput({
         </HelperText>
       )}
       <TextInput
+        {...caretProps(theme)}
         placeholder="Card text — scan or type"
         mode="flat"
         multiline
@@ -184,6 +191,7 @@ function PersonInput({
         </Text>
       </View>
       <TextInput
+        {...caretProps(theme)}
         placeholder="Meeting context"
         mode="flat"
         multiline

@@ -39,6 +39,7 @@ import {
 } from "../lib/writer";
 import { enrichSharedImage } from "../lib/dispatcher";
 import { assertBase64UnderLimit } from "../lib/omniroute";
+import { caretProps, useCarnetTheme } from "../lib/theme";
 import { deriveTitle } from "@carnet/shared";
 
 type Props = NativeStackScreenProps<RootStackParamList, "PhotoCapture">;
@@ -58,6 +59,7 @@ function localId(): string {
 }
 
 export default function PhotoCaptureScreen({ navigation }: Props) {
+  const theme = useCarnetTheme();
   const cameraRef = useRef<CameraView>(null);
   /** Guards against fast double-taps on Save. `setPhase("submitting")`
    * schedules a re-render but does not block the next event synchronously —
@@ -406,6 +408,7 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
             </View>
             {transcript ? (
               <TextInput
+                {...caretProps(theme)}
                 label="Transcript"
                 mode="outlined"
                 multiline
@@ -415,6 +418,7 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
               />
             ) : null}
             <TextInput
+              {...caretProps(theme)}
               label="Notes"
               mode="outlined"
               multiline

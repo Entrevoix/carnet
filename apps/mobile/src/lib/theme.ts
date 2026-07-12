@@ -99,6 +99,26 @@ export function useCarnetTheme(): CarnetTheme {
   return useTheme<CarnetTheme>();
 }
 
+/**
+ * Caret/selection props for native TextInputs. Android's default caret is
+ * near-invisible on the dark ink surface, so every TextInput spreads these:
+ * the caret and selection handles take the theme primary (dark mode's
+ * brightened teal #8FCABB holds contrast on #17181B; light mode's deep teal
+ * reads fine on paper), and the selection highlight is the same teal at ~40%
+ * so selected text stays legible.
+ */
+export function caretProps(theme: MD3Theme | CarnetTheme): {
+  cursorColor: string;
+  selectionColor: string;
+  selectionHandleColor: string;
+} {
+  return {
+    cursorColor: theme.colors.primary,
+    selectionColor: `${theme.colors.primary}66`,
+    selectionHandleColor: theme.colors.primary,
+  };
+}
+
 // ── Typography ───────────────────────────────────────────────────────────────
 //
 // Space Grotesk carries display/headline/title voice; Inter carries body and

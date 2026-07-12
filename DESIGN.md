@@ -58,6 +58,7 @@ No `success` / `warning` / `info` tokens. The intake-only flow has no positive-c
 - **No colored icons** in the UI body. Icons inherit `onSurface`/`onSurfaceVariant`, or `primary` when active.
 - **Every screen, sheet, and dialog ships light *and* dark.** Never branch on `isSystemInDarkTheme`-style checks in components — consume `useTheme()`/`useCarnetTheme()` and the right values arrive.
 - **The splash + Android adaptive-icon background** is the teal (`#2C6155`).
+- **Every native `TextInput` spreads `caretProps(theme)`** (`apps/mobile/src/lib/theme.ts`) so the caret/selection use `colors.primary` — Android's default caret is near-invisible on the dark ink surface.
 
 ## The stamp (signature element)
 Pill shape · **dashed 1px border** in `primary` (or `carnet.stamp` for destructive states) · background `primaryContainer` · slight `-1deg` rotation · label in Inter 500. Used for: note tags, sync-status badges, category/mode labels. It is the **only** decorative motif — do not introduce competing devices. (Android caveat: dashed borders need a `borderRadius`-compatible path on some RN versions; if a device renders artifacts, drop to solid border, keep the rotation.)

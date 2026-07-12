@@ -51,6 +51,7 @@ import {
   sanitizeShareString,
   yamlQuote,
 } from "../lib/shareHelpers";
+import { caretProps, useCarnetTheme } from "../lib/theme";
 import { deriveTitle } from "@carnet/shared";
 
 type Props = NativeStackScreenProps<RootStackParamList, "ShareReceive">;
@@ -77,6 +78,7 @@ function localId(): string {
 }
 
 export default function ShareReceiveScreen({ navigation }: Props) {
+  const theme = useCarnetTheme();
   const { shareIntent, resetShareIntent } = useShareIntentContext();
 
   // If the screen ever opens without a shareIntent (deep link mishap), bail.
@@ -509,6 +511,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
           </View>
           {transcript ? (
             <TextInput
+              {...caretProps(theme)}
               label="Transcript"
               mode="outlined"
               multiline
@@ -518,6 +521,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
             />
           ) : null}
           <TextInput
+            {...caretProps(theme)}
             label="Notes"
             mode="outlined"
             multiline

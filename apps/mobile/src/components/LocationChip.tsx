@@ -3,6 +3,7 @@ import { StyleSheet, View } from "react-native";
 import { Button, Chip, HelperText, TextInput } from "react-native-paper";
 
 import { describeCoords, formatCoords, getCurrentCoords, parseCoords } from "../lib/location";
+import { caretProps, useCarnetTheme } from "../lib/theme";
 
 interface LocationChipProps {
   /** Current location as a `lat,lon` string, or null. */
@@ -17,6 +18,7 @@ interface LocationChipProps {
  * Stores only `lat,lon` — no map, no persisted address (display label only).
  */
 export function LocationChip({ location, onChange }: LocationChipProps) {
+  const theme = useCarnetTheme();
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
@@ -99,6 +101,7 @@ export function LocationChip({ location, onChange }: LocationChipProps) {
       </View>
       {manualOpen && (
         <TextInput
+          {...caretProps(theme)}
           mode="outlined"
           dense
           label="lat,lon"

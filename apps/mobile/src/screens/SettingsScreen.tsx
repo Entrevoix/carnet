@@ -37,7 +37,7 @@ import {
 import { filterAndSplitModels } from "../lib/modelBrowser";
 import { listModels } from "../lib/omniroute";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
-import { spacing, useCarnetTheme } from "../lib/theme";
+import { caretProps, spacing, useCarnetTheme } from "../lib/theme";
 import {
   useThemePreference,
   type ThemePreference,
@@ -353,6 +353,7 @@ export default function SettingsScreen() {
         Where AI enrichment runs — your self-hosted OmniRoute endpoint.
       </HelperText>
       <TextInput
+        {...caretProps(theme)}
         label="OmniRoute URL"
         mode="outlined"
         autoCapitalize="none"
@@ -366,6 +367,7 @@ export default function SettingsScreen() {
       </HelperText>
 
       <TextInput
+        {...caretProps(theme)}
         label={keyConfigured && pendingKey.length === 0 ? "OmniRoute API key (configured)" : "OmniRoute API key"}
         mode="outlined"
         autoCapitalize="none"
@@ -385,6 +387,7 @@ export default function SettingsScreen() {
       )}
 
       <TextInput
+        {...caretProps(theme)}
         label="Model"
         mode="outlined"
         autoCapitalize="none"
@@ -408,6 +411,7 @@ export default function SettingsScreen() {
       </Button>
 
       <TextInput
+        {...caretProps(theme)}
         label="Vision model"
         mode="outlined"
         autoCapitalize="none"
@@ -441,6 +445,7 @@ export default function SettingsScreen() {
         folder so captures sync to your workstation.
       </HelperText>
       <TextInput
+        {...caretProps(theme)}
         label="Capture folder"
         mode="outlined"
         autoCapitalize="none"
@@ -486,6 +491,7 @@ export default function SettingsScreen() {
           to hide the "Send to Karakeep" action.
         </HelperText>
         <TextInput
+          {...caretProps(theme)}
           label="Karakeep URL"
           mode="outlined"
           autoCapitalize="none"
@@ -500,6 +506,7 @@ export default function SettingsScreen() {
         </HelperText>
 
         <TextInput
+          {...caretProps(theme)}
           label={
             karakeepKeyConfigured && pendingKarakeepKey.length === 0
               ? "Karakeep API key (configured)"
@@ -682,6 +689,7 @@ export default function SettingsScreen() {
           ) : (
             <View style={styles.browseBody}>
               <TextInput
+                {...caretProps(theme)}
                 mode="outlined"
                 placeholder="Filter (e.g. claude, gemini, gpt)"
                 autoCapitalize="none"

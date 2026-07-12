@@ -3,6 +3,7 @@ import { StyleSheet, View } from "react-native";
 import { Chip, TextInput } from "react-native-paper";
 
 import { addTag, splitTagInput, suggestionsFor } from "../lib/tags";
+import { caretProps, useCarnetTheme } from "../lib/theme";
 
 interface TagInputProps {
   /** Current tags (already normalized). */
@@ -21,6 +22,7 @@ interface TagInputProps {
  * the way in, so the frontmatter stays canonical.
  */
 export function TagInput({ tags, onChange, knownTags = [], label = "Tags" }: TagInputProps) {
+  const theme = useCarnetTheme();
   const [draft, setDraft] = useState("");
 
   const suggestions = useMemo(
@@ -55,6 +57,7 @@ export function TagInput({ tags, onChange, knownTags = [], label = "Tags" }: Tag
   return (
     <View style={styles.block}>
       <TextInput
+        {...caretProps(theme)}
         mode="outlined"
         label={label}
         dense
