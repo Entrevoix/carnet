@@ -47,16 +47,17 @@ ANDROID MOBILE (Expo + RN)                  WORKSTATION
    NO DAEMON. NO CUSTOM RUST. NO HMAC HANDSHAKE.
 ```
 
-Four capture modes:
+Five capture modes:
 
 | Mode | Input | Output |
 |------|-------|--------|
-| `idea`    | text                        | `Ideas/{slug}.md` |
+| `idea`    | text / dictation            | `Ideas/{slug}.md` (save-first: file lands instantly, enrichment patches after) |
 | `journal` | voice transcript (+ text)   | `Journal/{YYYY-MM-DD}.md` (appends to existing) |
-| `person`  | OCR'd business card + text  | `People/{Firstname-Lastname}.md` |
+| `person`  | business card scan (vision OCR) + dictated context | `People/{Firstname-Lastname}.md` |
 | `photo`   | in-app camera (+ voice/text context) | `Photos/{slug}.jpg` + paired `Ideas/{slug}.md` (via OmniRoute vision) |
+| `audio`   | voice memo                  | recording + on-device transcription → journal |
 
-All four modes go through OmniRoute for LLM enrichment, then write directly to the local capture folder. Offline captures are queued on-device (AsyncStorage) and drained on reconnect. Photo capture shares the same vision pipeline used by the Android share-target (Share → carnet on an image).
+All modes go through OmniRoute for LLM enrichment, then write directly to the local capture folder. Offline captures are queued on-device (AsyncStorage) and drained on reconnect. Photo capture shares the same vision pipeline used by the Android share-target (Share → carnet on an image). Quick captures also work from the persistent notification's inline reply, and the vault is browsable/searchable in-app (tags + full text).
 
 Any note can optionally be pushed to a self-hosted **Karakeep** instance from its detail screen ("Send to Karakeep" → text bookmark + tags + image/file attachments). Export is opt-in and configured per device.
 
@@ -86,8 +87,8 @@ No daemon, no navetted, no Rust toolchain required for mobile development.
 ## Build
 
 ```bash
-# Install once at root
-npm install
+# Install once at root (postinstall applies patches/ via patch-package)
+npm ci
 
 # Build the shared package (types + markdown helpers)
 npm run build:shared

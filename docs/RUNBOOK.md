@@ -14,8 +14,9 @@ cd apps/mobile && ANDROID_HOME="$HOME/Android/Sdk" npm run android:release
 - After adding a **new native module**, run `npx expo prebuild -p android --no-install` first to autolink.
 
 ## First-run device configuration
-1. **OmniRoute / navetted (LLM gateway)** — enter base URL + credentials in **Settings**.
-   No `.env`; creds live on the device. A blank URL surfaces a "not configured" error.
+1. **OmniRoute (LLM gateway)** — enter base URL + API key + chat/vision models in
+   **Settings**. No `.env`; creds live on the device. A blank URL or vision model surfaces
+   a "not configured" error (vision model has no fallback by design — B1).
 2. **Syncthing** — pair the device folder `/Documents/carnet/` with the workstation vault
    `~/Obsidian/Carnet/`. Full steps: [sync-setup.md](sync-setup.md).
 3. **Karakeep** *(optional)* — to use per-note "Send to Karakeep" export, enter the instance URL
@@ -33,11 +34,16 @@ reports the folder in sync. Offline captures buffer in the on-device queue (Asyn
 |---|---|
 | Release build: `Cannot find module 'metro-runtime/package.json'` | npm pruned the hoisted copy. `metro-runtime` is pinned at the workspace root to keep it; re-pin to match `metro` after an Expo/metro bump. |
 | Release build fails fetching gradle deps (`dl.google.com`) | This build env can't fetch **uncached** Google-Maven deps; a new native module needs its transitive deps pre-cached. |
-| "No working speech service" (STT) | A non-Google RecognitionService was selected; `voice/recognizerSelect.ts` pins Google. The device also needs an on-device speech model — install it via the in-app prompt or **Settings → Voice input → Check voice setup** (`voice/sttReadiness.ts`). |
-| "Not configured" on capture | OmniRoute base URL / creds are blank in Settings — re-enter on the device. |
+| "Speech Services … Microphone permission is turned off" (STT) | The RECOGNIZER app's own mic permission was revoked (Android auto-revokes unused apps). Follow the in-app sheet: Open App info → enable Microphone → tap dictate again (a fresh tap re-tests, no restart needed). Via adb: `pm grant com.google.android.tts android.permission.RECORD_AUDIO`. |
+| "No working speech service" (STT) | Failover exhausted: check a Google RecognitionService is installed (`voice/recognizerSelect.ts` pins Google) and the on-device speech model is downloaded — **Settings → Voice input → Check voice setup** (`voice/sttReadiness.ts`), or the sheet's Retry Detection. Error-decision logic: `voice/sttErrorPolicy.ts`. |
+| Dictation stops by itself after ~20s of silence | By design: two consecutive quiet windows auto-stop and commit (`SILENCE_AUTO_STOP_AFTER` in `voice/sttErrorPolicy.ts`); 3-min hard cap regardless. |
+| "Not configured" on capture | OmniRoute base URL / creds are blank in Settings — re-enter on the device. NB: an app reinstall or `pm clear` wipes ALL settings incl. SecureStore keys and the vault-folder path; captures then land in app-private `files/carnet/` until the folder is re-set. |
 | Karakeep export fails / "not configured" | Karakeep URL or key blank, or URL not `https://` (loopback/`10.x` HTTP excepted). Set both in Settings. Attachments sync incrementally per bookmark; a lost on-device record can re-upload a duplicate asset (harmless). |
 
 ## Rollback
-- **App:** install the previous release APK.
+- **App:** install the previous release APK — every CI run's advisory `apk` job keeps a
+  release-signed artifact for 14 days, and tagged releases attach `carnet-vX.Y.Z.apk`.
+  Debug-signed installs can't upgrade release-signed ones (uninstall once to cross over;
+  uninstalling wipes on-device settings, not the vault).
 - **Data:** the vault is plain Markdown under Syncthing — restore from any synced peer or
   from Obsidian's file history. No migrations to reverse.

@@ -66,7 +66,7 @@ npm run build:shared   # build shared first — mobile & desktop import @carnet/
 ## Configuration
 There are **no `.env` files**. All runtime config is entered **in-app** on the device via the
 Settings screen (API keys in SecureStore, the rest in AsyncStorage) — see [RUNBOOK.md](RUNBOOK.md):
-- **OmniRoute / navetted** (LLM gateway) — base URL + API key. Required to enrich captures.
+- **OmniRoute** (LLM gateway) — base URL + API key + chat/vision models. Required to enrich captures.
 - **Karakeep** (optional) — instance URL + API key, for the opt-in per-note "Send to Karakeep" export.
 
 ## Testing
@@ -75,9 +75,13 @@ Settings screen (API keys in SecureStore, the rest in AsyncStorage) — see [RUN
 - Fix the implementation, not the test, unless the test is wrong.
 
 ## CI — must be green before merge
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs four jobs on push/PR:
-**shared · mobile · desktop · gate** (install → `build:shared` → typecheck → Vitest).
-CI does **not** run the native release build.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on push/PR:
+**shared → mobile · desktop · mobile-android (parallel) → gate** (the branch-protection
+required check), plus an advisory **apk** job that attaches a release-signed installable
+APK to each run's artifacts (14-day retention). `mobile-android` runs Expo prebuild +
+`gradlew :app:compileDebugKotlin` to catch native/config-plugin regressions. Tag pushes
+matching `v*.*.*` trigger [`release.yml`](../.github/workflows/release.yml) (signed APK +
+GitHub Release).
 
 ## Pull requests
 1. Branch off `main`.

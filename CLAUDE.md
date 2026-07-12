@@ -32,6 +32,9 @@ npm run desktop:tauri         # desktop app, Tauri native-shell dev mode
 
 npm -w @carnet/mobile run typecheck   # tsc --noEmit (apps/mobile)
 npm -w @carnet/mobile test            # vitest run (apps/mobile)
+npm -w @carnet/mobile run verify:capture-flow  # fixture-backed capture-flow subset (fast repro gate)
+npm -w @carnet/mobile run android              # build + run debug app on attached device
+npm -w @carnet/mobile run android:release      # build + install release-signed APK
 npm -w @carnet/desktop test           # vitest run --passWithNoTests (apps/desktop — no real tests exist yet)
 npm -w @carnet/shared run typecheck   # tsc --noEmit (packages/shared)
 npm -w @carnet/shared test            # vitest run (packages/shared)
@@ -101,13 +104,15 @@ tampering.
 - Fix the implementation, not the test, unless the test itself is wrong.
 
 ## Reproducing bug reports
-There is currently no fixtures/replay harness (tracked in
-`.agent_native/agent_roadmap.md` item #1 — check whether it has since been built before
-writing a one-off repro script). Until then: reproduce capture-flow bugs by writing a
-targeted vitest test against the relevant `lib/*.ts` module (`writer.ts`, `omniroute.ts`,
-`queue.ts`, `frontmatter.ts` are the usual suspects) rather than attempting to run the full
-Expo/Android stack. `docs/smoke-test.md` is the manual, device-based checklist for anything
-that can't be reproduced this way (voice/OCR/native share-sheet/Syncthing).
+A fixtures/repro harness exists (agent_roadmap item #1, built 2026-07-08):
+`npm -w @carnet/mobile run verify:capture-flow` runs the capture-flow test subset
+(writer/frontmatter/queue/vault/search/journal-tag-index/WYSIWYG round-trip) plus
+`test/fixtures/repro.test.ts` against real vault fixtures in
+`apps/mobile/test/fixtures/vault/`. Reproduce capture-flow bugs by adding a fixture +
+case there, or a targeted vitest against the relevant `lib/*.ts` module (`writer.ts`,
+`omniroute.ts`, `queue.ts`, `frontmatter.ts` are the usual suspects) — not by running the
+full Expo/Android stack. `docs/smoke-test.md` is the manual, device-based checklist for
+anything that can't be reproduced this way (voice/OCR/native share-sheet/Syncthing).
 
 ## Structural notes for agents
 - `apps/mobile/src/lib/**` is well-factored: small, single-purpose modules, each with a
