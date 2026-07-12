@@ -2,8 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { requireOptionalNativeModule } from 'expo';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
+// NOTE: expo-intent-launcher's JS wrapper is deliberately NOT imported. Its
+// Android accessor runs requireNativeModule() eagerly at import time, which
+// crashes the whole capture surface at bundle eval on a client built before
+// the dependency was added. openAppDetails reaches the native module via
+// requireOptionalNativeModule('ExpoIntentLauncher') instead, which returns
+// null (never throws) so the Linking.openSettings() fallback can run.
 import {
   ExpoSpeechRecognitionModule,
   type ExpoSpeechRecognitionErrorEvent,
@@ -25,6 +32,12 @@ import {
 } from './recognizerSelect';
 import { triggerVoiceModelDownload } from './sttReadiness';
 import { describeSttError, isFailoverEligibleCode } from './sttErrorMessage';
+import {
+  classifyNoServiceSheet,
+  decideSttErrorAction,
+  shouldAutoStopOnSilence,
+  type NoServiceSheet,
+} from './sttErrorPolicy';
 
 // Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
 const MAX_RECORDING_MS = 3 * 60 * 1000;
@@ -258,7 +271,7 @@ export interface VoiceButtonHandle {
   stopAndFlush: () => void;
 }
 
-type ErrAction = 'none' | 'no-service' | 'permission' | 'lang-unavailable' | 'diag';
+type ErrAction = 'none' | 'no-service' | 'no-service-mic-revoked' | 'permission' | 'lang-unavailable' | 'diag';
 
 export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   function VoiceButton({ onTranscript, disabled }, ref) {
@@ -307,6 +320,17 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   const errorHandlingRef = useRef(false);
   const sessionFailedPkgsRef = useRef<Set<string>>(new Set());
   const lastAttemptedPkgRef = useRef<string | null>(null);
+  // Packages that raised a code 9 (service-not-allowed) this session. Used to
+  // offer the mic-revoked variant of the terminal no-service sheet when such a
+  // package is still resolvable on the device (installed but its own
+  // RECORD_AUDIO was revoked). Cleared alongside sessionFailedPkgs in retryDetection.
+  const code9PkgsRef = useRef<Set<string>>(new Set());
+  // Target package for the mic-revoked sheet's "Open App info" deep link, plus
+  // its label for the button copy. Set when that sheet variant is shown.
+  const [micRevokedTarget, setMicRevokedTarget] = useState<{ pkg: string; label: string } | null>(null);
+  // Consecutive silent session ends (code-7 no-speech end, or an `end` with no
+  // new final text). Reset to 0 by any final transcript; drives silence auto-stop.
+  const consecutiveSilentEndsRef = useRef(0);
 
   // ── Tap-to-toggle recording state ───────────────────────────────────────
   // True while a recording session is active (between the start tap and the
@@ -406,10 +430,36 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     Linking.openSettings().catch(() => {});
   }, []);
 
+  // Deep-link to Android's App info screen for a SPECIFIC package (the recognizer
+  // whose mic permission was revoked) so the user can re-enable Microphone there.
+  // RN's Linking can't pass a data URI to an arbitrary settings action, so this
+  // uses expo-intent-launcher's ACTION_APPLICATION_DETAILS_SETTINGS. Falls back to
+  // this app's own settings if the intent can't be launched.
+  const openAppDetails = useCallback((pkg: string) => {
+    // requireOptionalNativeModule returns null (never throws) when the
+    // installed client predates the expo-intent-launcher native module —
+    // try/catch around require() is NOT enough, Metro's dev guard reports a
+    // module-factory throw as fatal before the catch runs. The native method
+    // is startActivity(action, params) (expo-intent-launcher's JS wrapper is
+    // deliberately not imported so its eager requireNativeModule never runs).
+    const launcher = requireOptionalNativeModule<{
+      startActivity: (action: string, params: { data: string }) => Promise<unknown>;
+    }>('ExpoIntentLauncher');
+    if (!launcher) {
+      Linking.openSettings().catch(() => {});
+      return;
+    }
+    launcher
+      .startActivity('android.settings.APPLICATION_DETAILS_SETTINGS', { data: `package:${pkg}` })
+      .catch(() => { Linking.openSettings().catch(() => {}); });
+  }, []);
+
   const retryDetection = useCallback(async () => {
     await AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
     await AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
     sessionFailedPkgsRef.current.clear();
+    code9PkgsRef.current.clear();
+    consecutiveSilentEndsRef.current = 0;
     errorHandlingRef.current = false;
     detectionRanRef.current = false;
     dismissErr();
@@ -532,6 +582,55 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     }
   }, []);
 
+  // Resolve a code-9 package that is STILL enumerable on the device — installed
+  // but with its own mic permission revoked — for the mic-revoked no-service
+  // sheet. Cheap no-op (no native call) until a code 9 has actually been seen.
+  const resolveMicRevokedPkgRef = useRef((): { pkg: string; label: string } | null => {
+    if (code9PkgsRef.current.size === 0) return null;
+    let services: string[] = [];
+    try {
+      services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices() ?? [];
+    } catch { /* enumeration unavailable — treat as not resolvable */ }
+    for (const pkg of code9PkgsRef.current) {
+      if (services.includes(pkg)) return { pkg, label: labelForPackage(pkg) };
+    }
+    return null;
+  });
+
+  // Single rendering path for the terminal no-service sheet (error ladder AND
+  // detection), so the mic-revoked variant surfaces wherever the sheet appears.
+  const showNoServiceSheetRef = useRef((sheet: NoServiceSheet) => {
+    if (sheet.variant === 'mic-revoked') {
+      setMicRevokedTarget({ pkg: sheet.pkg, label: sheet.label });
+      showErrRef.current(
+        `${sheet.label} is installed, but its Microphone permission is turned off, so it can't record audio for dictation.\nOpen its App info and enable Microphone, then try dictation again.`,
+        0, true, 'no-service-mic-revoked',
+      );
+      return;
+    }
+    setMicRevokedTarget(null);
+    showErrRef.current(NO_SERVICE_MESSAGE, 0, true, 'no-service');
+  });
+
+  // End the active session on quiet, flushing accumulated text exactly like a
+  // manual stop tap (composeFlush of sessionText + any final segments). With no
+  // text at all, tear down silently and show a brief transient toast.
+  const autoStopCommitRef = useRef(() => {
+    const finalText = composeFlush(sessionTextRef.current, composeText());
+    if (finalText) {
+      onTranscriptRef.current(finalText, true);
+    } else {
+      showErrRef.current('No speech detected', 2500);
+    }
+    sessionTextRef.current = '';
+    resetAccumulator();
+    pressActiveRef.current = false;
+    activeEngineRef.current = null;
+    consecutiveSilentEndsRef.current = 0;
+    clearMaxTimer();
+    stopListeningRef.current();
+  });
+
   // Fires the native recognizer. Shared by the start-tap path, post-detection
   // auto-start, and picker auto-start — all share the same start options.
   //
@@ -576,7 +675,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       } else {
         pressActiveRef.current = false;
         activeEngineRef.current = null;
-        showErrRef.current(NO_SERVICE_MESSAGE, 0, true, 'no-service');
+        showNoServiceSheetRef.current(classifyNoServiceSheet(resolveMicRevokedPkgRef.current()));
       }
       return;
     }
@@ -653,7 +752,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
 
       if (realHits.length === 0) {
         failoverChainRef.current = [];
-        showErrRef.current(NO_SERVICE_MESSAGE, 0, true, 'no-service');
+        showNoServiceSheetRef.current(classifyNoServiceSheet(resolveMicRevokedPkgRef.current()));
         return;
       }
 
@@ -715,6 +814,9 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         if (event.isFinal) {
           finalSegmentsRef.current.push(transcript);
           interimRef.current = '';
+          // A segment yielded final text — the session is not silent; reset the
+          // silence auto-stop counter so quiet only accrues from here on.
+          consecutiveSilentEndsRef.current = 0;
         } else {
           interimRef.current = transcript;
         }
@@ -767,169 +869,158 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         lastErrorRef.current = `code=${code} error=${event.error}${nativeMsg ? ' msg=' + nativeMsg : ''}`;
         logEventRef.current('error', { code, error: event.error });
 
-        // Guard: only run detection/failover when the user is actively in a session.
-        // With continuous: true, expo-speech-recognition restarts the recognizer
-        // internally between utterances. The `end` handler fires first (resetting
-        // pressActiveRef), then the restart error arrives — these background errors
-        // must not clear the saved pkg or trigger detection, or the second tap
-        // finds no service. Show a brief transient error and exit.
-        if (!pressActiveRef.current) {
-          // A teardown error from an external stopAndFlush() (e.g. the picker
-          // Activity grabbed audio focus) — already committed; swallow it AND
-          // clear the guard here, since `end` may not arrive on the error path.
-          if (flushedExternallyRef.current) {
-            flushedExternallyRef.current = false;
-            return;
-          }
-          if (code !== 6 && code !== 7) { // 6/7 = silence, expected after stop
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const rawMsg = `${event.error}${(event as any).message ? ': ' + (event as any).message : ''} (code ${code})`;
-            showErrRef.current(sttErrorMessage(code, event.error, rawMsg), 4000);
-          }
-          return;
+        // Record every code-9 (service-not-allowed) package this session so the
+        // terminal no-service sheet can offer the mic-revoked variant (recognizer
+        // installed but its own RECORD_AUDIO revoked). See sttErrorPolicy.
+        if (code === 9 && lastAttemptedPkgRef.current) {
+          code9PkgsRef.current.add(lastAttemptedPkgRef.current);
         }
 
-        // Code 11 (SERVER_DISCONNECTED) is usually a transient Soda drop, not a
-        // dead recognizer. Retry the SAME engine once — BEFORE marking it failed
-        // — instead of failing straight over to a possibly model-less fallback
-        // (e.g. com.google.android.as with no language pack, which just returns
-        // code 12 and lands on the no-service sheet). Reset on a real result.
-        if (code === 11 && serverDisconnectRetryRef.current < 1 && lastAttemptedPkgRef.current) {
-          serverDisconnectRetryRef.current += 1;
-          // Keep errorHandlingRef true: the native `start` event of the retried
-          // session resets it (line ~735). Resetting it here lets the imminent
-          // `end` event schedule a SECOND restart that stomps this one — the
-          // overlapping sessions then kill each other with more code-11s until
-          // failover blacklists a perfectly working recognizer (observed
-          // on-device 2026-07-11: five overlapping starts in 1.5s ending in a
-          // false "no working speech service" sheet with the mic left open).
-          const retryPkg = lastAttemptedPkgRef.current;
-          showErrRef.current('Reconnecting…', 1500);
-          setTimeout(async () => {
-            if (!pressActiveRef.current) return;
-            await startRecognizerRef.current(retryPkg);
-          }, 400);
-          return;
-        }
+        // Count this end toward silence auto-stop before deciding what to do:
+        // code 7 is a no-speech timeout. (A segment that produced final text
+        // already reset the counter in the result listener.)
+        // Only count silence during an active session — a background code-7
+        // (silence after a manual stop, common with continuous: true) was a
+        // pure no-op pre-extraction and must stay side-effect-free.
+        if (code === 7 && pressActiveRef.current) consecutiveSilentEndsRef.current += 1;
 
-        if (isFailoverEligibleCode(code) && lastAttemptedPkgRef.current) {
-          sessionFailedPkgsRef.current.add(lastAttemptedPkgRef.current);
-        }
-
-        // Code 7 (no-match / silence timeout) is benign — the recognizer
-        // heard nothing during its window. Restart silently during an active
-        // session instead of entering failover or the no-service handler.
-        if (code === 7) {
-          // Keep errorHandlingRef true until the restarted session's `start`
-          // event resets it — same double-restart hazard as the code-11 retry
-          // above. (Silence segments carry no text, so skipping the `end`
-          // handler's accumulate step loses nothing; finalSegmentsRef carries
-          // any earlier segments across the restart.)
-          setTimeout(async () => {
-            if (!pressActiveRef.current) return;
-            const savedPkg = await AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY);
-            await startRecognizerRef.current(savedPkg);
-          }, 300);
-          return;
-        }
-
-        // 1. Failover: try the next candidate in the chain before giving up
-        //    or re-running detection. Applies to language/server-availability
-        //    errors AND no-service errors (5) — a picker-driven selection
-        //    that fails should silently try the next queued candidate rather
-        //    than bouncing back through detection to the same picker.
-        if (isFailoverEligibleCode(code) && failoverChainRef.current.length > 0) {
-          const nextPkg = failoverChainRef.current.shift()!;
-          // '' is the terminal sentinel: resolveEffectivePkg maps it back to a
-          // pinned engine, so it only does anything if a pinned pkg has since
-          // recovered this session; otherwise it no-ops into the no-service
-          // sheet. Intentionally kept in the chain, not dead code.
-          const label = nextPkg ? labelForPackage(nextPkg) : 'System Default';
-          showErrRef.current(`Retrying with ${label}…`, 2000);
-          await startRecognizerRef.current(nextPkg);
-          return;
-        }
-
-        // 2. No-service / not-allowed errors — detect-or-clear flow
-        //    code 5 = client error (no service),
-        //    code 9 = service-not-allowed. Confirmed root cause (2026-07-11,
-        //    Pixel 10 Pro Fold logcat): the recognizer APP's own RECORD_AUDIO
-        //    was revoked (e.g. Android auto-revoke on "unused"
-        //    com.google.android.tts) — the proxied AppOps mic check covers
-        //    both caller and recognizer, and RecognitionService maps the
-        //    recognizer-side denial to ERROR_INSUFFICIENT_PERMISSIONS (9).
-        //    Not a bind restriction; the caller's own mic grant is fine.
-        if (code === 5 || code === 9) {
-          const [savedPkg, savedLabel] = await Promise.all([
+        // The saved recognizer pkg/label are consulted ONLY by the code-5/9
+        // detect-or-clear ladder, which is reached only for an active session
+        // whose failover chain is empty — read AsyncStorage exactly there so no
+        // other error path touches it (matching the original branch gating).
+        let savedPkg: string | null = null;
+        let hasSavedPkg = false;
+        let hasSavedLabel = false;
+        if (
+          pressActiveRef.current &&
+          (code === 5 || code === 9) &&
+          failoverChainRef.current.length === 0
+        ) {
+          const [sp, sl] = await Promise.all([
             AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY),
             AsyncStorage.getItem(STT_RECOGNIZER_LABEL_KEY),
           ]);
-          if (savedPkg === null && savedLabel === null) {
-            await triggerDetectionRef.current();
+          savedPkg = sp;
+          hasSavedPkg = sp !== null;
+          hasSavedLabel = sl !== null;
+        }
+
+        const action = decideSttErrorAction({
+          code,
+          pressActive: pressActiveRef.current,
+          flushedExternally: flushedExternallyRef.current,
+          serverDisconnectRetries: serverDisconnectRetryRef.current,
+          noServiceRetries: noServiceRetryRef.current,
+          failoverChainLength: failoverChainRef.current.length,
+          detectionRan: detectionRanRef.current,
+          hasSavedPkg,
+          hasSavedLabel,
+          hasLastAttemptedPkg: lastAttemptedPkgRef.current !== null,
+          micRevoked: resolveMicRevokedPkgRef.current(),
+          consecutiveSilentEnds: consecutiveSilentEndsRef.current,
+        });
+
+        // Mirror the original ordering: the attempted pkg is marked failed for
+        // every failover-eligible error that gets past the code-11 single retry
+        // and the inactive-session guard — i.e. every action except
+        // retry-same-engine and the three inactive-session (!pressActive) ones.
+        if (
+          isFailoverEligibleCode(code) &&
+          lastAttemptedPkgRef.current &&
+          action.type !== 'retry-same-engine' &&
+          action.type !== 'swallow-flushed' &&
+          action.type !== 'swallow' &&
+          action.type !== 'transient-toast'
+        ) {
+          sessionFailedPkgsRef.current.add(lastAttemptedPkgRef.current);
+        }
+
+        switch (action.type) {
+          case 'swallow-flushed':
+            // Teardown error after an external stopAndFlush() — already committed;
+            // clear the guard here since `end` may not arrive on the error path.
+            flushedExternallyRef.current = false;
+            return;
+          case 'swallow':
+            return;
+          case 'transient-toast': {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const rawMsg = `${event.error}${(event as any).message ? ': ' + (event as any).message : ''} (code ${code})`;
+            showErrRef.current(sttErrorMessage(code, event.error, rawMsg), 4000);
             return;
           }
-          if (savedPkg === null && savedLabel !== null) {
-            // Stale label with no pkg (e.g. user previously picked System Default,
-            // which clears pkg but sets label). Clear it and re-detect fresh.
+          case 'retry-same-engine': {
+            // keepsErrorHandlingLatched (3309ef6): do NOT reset errorHandlingRef —
+            // the retried session's native `start` event resets it. Resetting here
+            // lets the imminent `end` schedule a second, overlapping restart.
+            serverDisconnectRetryRef.current += 1;
+            const retryPkg = lastAttemptedPkgRef.current;
+            showErrRef.current('Reconnecting…', 1500);
+            setTimeout(async () => {
+              if (!pressActiveRef.current) return;
+              await startRecognizerRef.current(retryPkg);
+            }, action.delayMs);
+            return;
+          }
+          case 'silent-restart':
+            // keepsErrorHandlingLatched (3309ef6): same double-restart hazard.
+            setTimeout(async () => {
+              if (!pressActiveRef.current) return;
+              const restartPkg = await AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY);
+              await startRecognizerRef.current(restartPkg);
+            }, action.delayMs);
+            return;
+          case 'auto-stop-commit':
+            // Enough consecutive silent ends — end the session on quiet, flushing
+            // accumulated text exactly like a manual stop tap.
+            autoStopCommitRef.current();
+            return;
+          case 'failover-next': {
+            const nextPkg = failoverChainRef.current.shift()!;
+            // '' is the terminal sentinel: resolveEffectivePkg maps it back to a
+            // pinned engine, so it only does anything if a pinned pkg has since
+            // recovered this session; otherwise it no-ops into the no-service
+            // sheet. Intentionally kept in the chain, not dead code.
+            const label = nextPkg ? labelForPackage(nextPkg) : 'System Default';
+            showErrRef.current(`Retrying with ${label}…`, 2000);
+            await startRecognizerRef.current(nextPkg);
+            return;
+          }
+          case 'detect':
+            await triggerDetectionRef.current();
+            return;
+          case 'clear-label-and-detect':
             await AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
             await triggerDetectionRef.current();
             return;
-          }
-          // Android 16: after a continuous session ends, Soda's service is briefly
-          // mid-teardown and returns ERROR_CLIENT (code 5) on immediate re-start.
-          // Retry once after 700ms before wiping state and running detection.
-          if (noServiceRetryRef.current < 1) {
+          case 'retry-no-service':
             noServiceRetryRef.current += 1;
-            await new Promise<void>(r => setTimeout(r, 700));
+            await new Promise<void>(r => setTimeout(r, action.delayMs));
             if (!pressActiveRef.current) return;
             await startRecognizerRef.current(savedPkg);
             return;
+          case 'clear-saved-and-detect':
+            if (action.resetNoServiceRetries) noServiceRetryRef.current = 0;
+            await AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
+            await AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
+            await triggerDetectionRef.current();
+            return;
+          case 'lang-unavailable-sheet':
+            showErrRef.current(
+              'English voice model not installed on any speech service.\nOpen Speech Services by Google to download it.',
+              0, true, 'lang-unavailable',
+            );
+            return;
+          case 'no-service-sheet':
+            showNoServiceSheetRef.current(action.sheet);
+            return;
+          case 'generic-error': {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const rawMsg = `${event.error}${(event as any).message ? ': ' + (event as any).message : ''} (code ${code})`;
+            showErrRef.current(sttErrorMessage(code, event.error, rawMsg), 8000, action.persist);
+            return;
           }
-          noServiceRetryRef.current = 0;
-          await AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
-          await AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
-          await triggerDetectionRef.current();
-          return;
         }
-
-        // 3. Failover-eligible code but chain is empty. If detection hasn't
-        //    run this session, a fresh scan may surface more candidates;
-        //    also clear the saved pkg since it just failed.
-        if (isFailoverEligibleCode(code) && !detectionRanRef.current) {
-          await AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
-          await AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
-          await triggerDetectionRef.current();
-          return;
-        }
-
-        // 4. Language-specific final error — chain exhausted, detection ran
-        if (code === 11 || code === 12) {
-          showErrRef.current(
-            'English voice model not installed on any speech service.\nOpen Speech Services by Google to download it.',
-            0, true, 'lang-unavailable',
-          );
-          return;
-        }
-
-        // 4.5. Any other failover-eligible code (e.g. -1, the native
-        //    catch-all for an absent pinned recognizer, or 13) that reaches
-        //    here has an exhausted chain AND detection already ran this
-        //    session — same terminal state as branch 3 above, just arrived
-        //    at after detection instead of before it. Show the same
-        //    no-service sheet instead of falling through to the generic
-        //    per-code message below, which has no recovery action.
-        if (isFailoverEligibleCode(code)) {
-          showErrRef.current(NO_SERVICE_MESSAGE, 0, true, 'no-service');
-          return;
-        }
-
-        // 5. Generic friendly error for everything else
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const rawMsg = `${event.error}${(event as any).message ? ': ' + (event as any).message : ''} (code ${code})`;
-        const friendlyMsg = sttErrorMessage(code, event.error, rawMsg);
-        // Only truly transient errors auto-dismiss (6=no speech, 8=busy)
-        const persist = ![6, 8].includes(code);
-        showErrRef.current(friendlyMsg, 8000, persist);
       }
     );
     const endSub = ExpoSpeechRecognitionModule.addListener('end', () => {
@@ -950,13 +1041,24 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
 
       // Tap-to-toggle: if user hasn't tapped stop yet (pressActiveRef still
       // true), Soda ended on its own (silence/timeout). Accumulate the text
-      // from this segment and auto-restart after a brief delay.
+      // from this segment and auto-restart after a brief delay — unless enough
+      // consecutive silent ends have accrued, in which case stop on quiet.
       if (pressActiveRef.current && activeEngineRef.current === 'ondevice') {
         if (errorHandlingRef.current) return;
         if (text) {
+          // Segment produced text — not a silent end; reset the auto-stop counter.
+          consecutiveSilentEndsRef.current = 0;
           sessionTextRef.current = sessionTextRef.current
             ? `${sessionTextRef.current} ${text}`
             : text;
+        } else {
+          // Silent end (no new final text this segment). Once enough consecutive
+          // silent ends accrue, end the session on quiet instead of restarting.
+          consecutiveSilentEndsRef.current += 1;
+          if (shouldAutoStopOnSilence(consecutiveSilentEndsRef.current)) {
+            autoStopCommitRef.current();
+            return;
+          }
         }
         resetAccumulator();
         started.current = false;
@@ -1028,6 +1130,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     // and stop-tap routing apply to picker-started sessions too. Picker is on-device only.
     pressActiveRef.current = true;
     activeEngineRef.current = 'ondevice';
+    consecutiveSilentEndsRef.current = 0;
     clearMaxTimer();
     maxDurationTimer.current = setTimeout(() => {
       maxDurationTimer.current = null;
@@ -1150,6 +1253,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     // First tap — start recording
     pressActiveRef.current = true;
     errorHandlingRef.current = false;
+    consecutiveSilentEndsRef.current = 0;
     sessionTextRef.current = '';
     // Self-heal the external-flush guard at the start of every session so a
     // prior session whose `end` never arrived can't make this one skip its
@@ -1283,6 +1387,25 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
                 <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={retryDetection}>
                   <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Retry Detection</Text>
                   <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Rescan device for speech services</Text>
+                </Pressable>
+                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={copyDiagnostics}>
+                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Copy diagnostics</Text>
+                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Paste the scan + probe output into a bug report</Text>
+                </Pressable>
+              </View>
+            )}
+            {errAction === 'no-service-mic-revoked' && micRevokedTarget && (
+              <View style={styles.errActions}>
+                <Pressable
+                  style={[styles.errActionBtn, { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary }]}
+                  onPress={() => openAppDetails(micRevokedTarget.pkg)}
+                >
+                  <Text style={[styles.errActionBtnText, { color: theme.colors.onPrimary }]}>{`Open ${micRevokedTarget.label} App info`}</Text>
+                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onPrimary }]}>Enable its Microphone permission, then try again</Text>
+                </Pressable>
+                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={retryDetection}>
+                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Retry Detection</Text>
+                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>After enabling Microphone, rescan devices</Text>
                 </Pressable>
                 <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={copyDiagnostics}>
                   <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Copy diagnostics</Text>
