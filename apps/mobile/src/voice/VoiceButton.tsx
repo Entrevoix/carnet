@@ -35,6 +35,7 @@ import { describeSttError, isFailoverEligibleCode } from './sttErrorMessage';
 import {
   classifyNoServiceSheet,
   decideSttErrorAction,
+  reviveUserRecoverablePkgs,
   shouldAutoStopOnSilence,
   type NoServiceSheet,
 } from './sttErrorPolicy';
@@ -1131,6 +1132,13 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     pressActiveRef.current = true;
     activeEngineRef.current = 'ondevice';
     consecutiveSilentEndsRef.current = 0;
+    // Same code-9 revival as handleToggle's first tap: a picker-started
+    // session is also a fresh user-initiated attempt.
+    sessionFailedPkgsRef.current = reviveUserRecoverablePkgs(
+      sessionFailedPkgsRef.current,
+      code9PkgsRef.current,
+    );
+    code9PkgsRef.current = new Set();
     clearMaxTimer();
     maxDurationTimer.current = setTimeout(() => {
       maxDurationTimer.current = null;
@@ -1254,6 +1262,14 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     pressActiveRef.current = true;
     errorHandlingRef.current = false;
     consecutiveSilentEndsRef.current = 0;
+    // Give code-9 (mic-revoked) packages another chance on every fresh tap —
+    // the user may have just re-enabled the permission, exactly as the
+    // mic-revoked sheet instructed. See reviveUserRecoverablePkgs.
+    sessionFailedPkgsRef.current = reviveUserRecoverablePkgs(
+      sessionFailedPkgsRef.current,
+      code9PkgsRef.current,
+    );
+    code9PkgsRef.current = new Set();
     sessionTextRef.current = '';
     // Self-heal the external-flush guard at the start of every session so a
     // prior session whose `end` never arrived can't make this one skip its

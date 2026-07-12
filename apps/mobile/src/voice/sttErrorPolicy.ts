@@ -41,6 +41,31 @@ export function shouldAutoStopOnSilence(consecutiveSilentEnds: number): boolean 
 }
 
 /**
+ * Session-blacklist revival for USER-RECOVERABLE failures, applied at every
+ * fresh user-initiated session start (dictate tap / picker selection).
+ *
+ * Code 9 (service-not-allowed) means the recognizer app's own RECORD_AUDIO is
+ * revoked — a condition the user can fix in Settings while this app session
+ * stays alive. The mic-revoked sheet explicitly tells them to "enable
+ * Microphone, then try dictation again", so a fresh tap MUST re-test those
+ * packages: without this, the code-9 entry in the session blacklist makes
+ * every retry skip the (now working) recognizer and re-show the stale sheet —
+ * an unrecoverable loop unless the user happens to tap Retry Detection
+ * (observed on-device 2026-07-12 after re-granting the permission).
+ *
+ * Non-code-9 failures (absent package, unserviceable engine) stay blacklisted.
+ * Returns a NEW set; never mutates the input.
+ */
+export function reviveUserRecoverablePkgs(
+  sessionFailedPkgs: ReadonlySet<string>,
+  code9Pkgs: ReadonlySet<string>,
+): Set<string> {
+  const revived = new Set(sessionFailedPkgs);
+  for (const pkg of code9Pkgs) revived.delete(pkg);
+  return revived;
+}
+
+/**
  * Which package a deferred-restart action should bind to when the caller acts:
  *  - 'last-attempted': the pkg of the session that just errored (a ref value)
  *  - 'saved':          re-read the persisted recognizer pkg from AsyncStorage

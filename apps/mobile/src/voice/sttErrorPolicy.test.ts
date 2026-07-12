@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyNoServiceSheet,
   decideSttErrorAction,
+  reviveUserRecoverablePkgs,
   shouldAutoStopOnSilence,
   SILENCE_AUTO_STOP_AFTER,
   type SttErrorPolicyInput,
@@ -218,5 +219,34 @@ describe('classifyNoServiceSheet', () => {
   it('returns the mic-revoked variant carrying the pkg + label', () => {
     expect(classifyNoServiceSheet({ pkg: 'com.google.android.tts', label: 'Speech Services by Google' }))
       .toEqual({ variant: 'mic-revoked', pkg: 'com.google.android.tts', label: 'Speech Services by Google' });
+  });
+});
+
+describe('reviveUserRecoverablePkgs', () => {
+  const TTS = 'com.google.android.tts';
+  const AS = 'com.google.android.as';
+
+  // Regression (observed on-device 2026-07-12): after a code-9 the user fixes
+  // the recognizer's mic permission, taps dictate again, and must NOT be
+  // routed around the now-working recognizer by the stale session blacklist.
+  it('removes code-9 pkgs from the session blacklist so a fresh tap re-tests them', () => {
+    const revived = reviveUserRecoverablePkgs(new Set([TTS, AS]), new Set([TTS]));
+    expect(revived).toEqual(new Set([AS]));
+  });
+
+  it('keeps non-code-9 failures blacklisted', () => {
+    const revived = reviveUserRecoverablePkgs(new Set([AS]), new Set());
+    expect(revived).toEqual(new Set([AS]));
+  });
+
+  it('is a no-op on empty inputs', () => {
+    expect(reviveUserRecoverablePkgs(new Set(), new Set())).toEqual(new Set());
+  });
+
+  it('returns a new set and never mutates the input', () => {
+    const original = new Set([TTS]);
+    const revived = reviveUserRecoverablePkgs(original, new Set([TTS]));
+    expect(original).toEqual(new Set([TTS]));
+    expect(revived).not.toBe(original);
   });
 });
