@@ -796,7 +796,13 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         // code 12 and lands on the no-service sheet). Reset on a real result.
         if (code === 11 && serverDisconnectRetryRef.current < 1 && lastAttemptedPkgRef.current) {
           serverDisconnectRetryRef.current += 1;
-          errorHandlingRef.current = false;
+          // Keep errorHandlingRef true: the native `start` event of the retried
+          // session resets it (line ~735). Resetting it here lets the imminent
+          // `end` event schedule a SECOND restart that stomps this one — the
+          // overlapping sessions then kill each other with more code-11s until
+          // failover blacklists a perfectly working recognizer (observed
+          // on-device 2026-07-11: five overlapping starts in 1.5s ending in a
+          // false "no working speech service" sheet with the mic left open).
           const retryPkg = lastAttemptedPkgRef.current;
           showErrRef.current('Reconnecting…', 1500);
           setTimeout(async () => {
@@ -814,7 +820,11 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         // heard nothing during its window. Restart silently during an active
         // session instead of entering failover or the no-service handler.
         if (code === 7) {
-          errorHandlingRef.current = false;
+          // Keep errorHandlingRef true until the restarted session's `start`
+          // event resets it — same double-restart hazard as the code-11 retry
+          // above. (Silence segments carry no text, so skipping the `end`
+          // handler's accumulate step loses nothing; finalSegmentsRef carries
+          // any earlier segments across the restart.)
           setTimeout(async () => {
             if (!pressActiveRef.current) return;
             const savedPkg = await AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY);
@@ -842,7 +852,13 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
 
         // 2. No-service / not-allowed errors — detect-or-clear flow
         //    code 5 = client error (no service),
-        //    code 9 = service-not-allowed (Android 13+ bind restriction)
+        //    code 9 = service-not-allowed. Confirmed root cause (2026-07-11,
+        //    Pixel 10 Pro Fold logcat): the recognizer APP's own RECORD_AUDIO
+        //    was revoked (e.g. Android auto-revoke on "unused"
+        //    com.google.android.tts) — the proxied AppOps mic check covers
+        //    both caller and recognizer, and RecognitionService maps the
+        //    recognizer-side denial to ERROR_INSUFFICIENT_PERMISSIONS (9).
+        //    Not a bind restriction; the caller's own mic grant is fine.
         if (code === 5 || code === 9) {
           const [savedPkg, savedLabel] = await Promise.all([
             AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY),

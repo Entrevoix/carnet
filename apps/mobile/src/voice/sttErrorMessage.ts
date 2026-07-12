@@ -75,7 +75,10 @@ export function describeSttError(code: number, error: string, raw: string): stri
  * detection) instead of showing a terminal dead-end message.
  *
  * 5 = ERROR_CLIENT (no-service variant), 9 = ERROR_INSUFFICIENT_PERMISSIONS
- * (service-not-allowed on Android 13+), 11 = ERROR_LANGUAGE_UNAVAILABLE,
+ * (service-not-allowed — seen when the recognizer app itself has its
+ * RECORD_AUDIO revoked, e.g. by Android's unused-app auto-revoke; the
+ * proxied AppOps mic check fails on the recognizer side even though the
+ * caller's grant is fine), 11 = ERROR_LANGUAGE_UNAVAILABLE,
  * 12 = ERROR_LANGUAGE_NOT_SUPPORTED, 13 = ERROR_SERVER_UNAVAILABLE.
  *
  * -1 = expo-speech-recognition's native catch-all: ExpoSpeechService.kt's
