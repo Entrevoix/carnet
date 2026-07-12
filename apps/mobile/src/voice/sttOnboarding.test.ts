@@ -57,10 +57,10 @@ describe('describeReadiness', () => {
     expect(copy.action).toBe('open-permission');
   });
 
-  it('reports unsupported with the use-whisper action', () => {
+  it('reports unsupported with no recommended action', () => {
     const copy = describeReadiness({ state: 'unsupported' });
     expect(copy.tone).toBe('info');
-    expect(copy.action).toBe('use-whisper');
+    expect(copy.action).toBe('none');
   });
 });
 
@@ -87,16 +87,6 @@ describe('shouldPromptProactively', () => {
     ).toBe(false);
   });
 
-  it('does not prompt Whisper users — they opted out of the local model', () => {
-    expect(
-      shouldPromptProactively({
-        readiness: needsModel,
-        alreadyPrompted: false,
-        engine: 'whisper',
-      }),
-    ).toBe(false);
-  });
-
   it.each<SttReadiness>([
     { state: 'ready', locale: 'en-US' },
     { state: 'no-permission' },
@@ -111,15 +101,15 @@ describe('shouldPromptProactively', () => {
     ).toBe(false);
   });
 
-  it('only prompts for the needs-model state across the full engine matrix', () => {
-    const engines: SttEngine[] = ['ondevice', 'whisper'];
+  it('prompts for the needs-model state on the on-device engine', () => {
+    const engines: SttEngine[] = ['ondevice'];
     for (const engine of engines) {
       const result = shouldPromptProactively({
         readiness: needsModel,
         alreadyPrompted: false,
         engine,
       });
-      expect(result).toBe(engine === 'ondevice');
+      expect(result).toBe(true);
     }
   });
 });

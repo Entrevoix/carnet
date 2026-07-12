@@ -9,7 +9,6 @@ const SETTINGS_KEY_V1 = "carnet:settings:v1";
 const LEGACY_NAVETTED_TOKEN_KEY = "carnet_navetted_token";
 const OMNIROUTE_API_KEY = "carnet_omniroute_api_key";
 const KARAKEEP_API_KEY = "carnet_karakeep_api_key";
-const WHISPER_API_KEY = "carnet_whisper_api_key";
 /** Flag: user dismissed the navetted→OmniRoute migration banner. */
 const MIGRATION_BANNER_KEY = "carnet:migration_banner_dismissed:v1";
 /** Flag: legacy SecureStore secrets purged. Set to "1" after the one-time
@@ -22,11 +21,6 @@ export const DEFAULT_OMNIROUTE_MODEL = "openrouter/openai/gpt-4o-mini";
  * text-only chat model can never silently eat image parts and return a
  * confidently-wrong "enrichment". Defaults to a known vision-capable model. */
 export const DEFAULT_VISION_MODEL = "openrouter/openai/gpt-4o-mini";
-
-/** Default Whisper-compatible transcription endpoint (OpenAI's). Used when
- * the user hasn't overridden it — e.g. a self-hosted Whisper server. */
-export const DEFAULT_WHISPER_ENDPOINT =
-  "https://api.openai.com/v1/audio/transcriptions";
 
 /**
  * Enrichment backend selector (Stage 2 / branch B7). `"omniroute"` is the
@@ -62,7 +56,7 @@ export interface Settings {
    * Held separately from omniRouteModel (the chat/text model) so swapping the
    * chat model can't misroute image parts to a text-only model. Repurposed
    * from the vestigial transcription-model field (transcription is on-device
-   * now via Whisper, so that config was dead). */
+   * now, so that config was dead). */
   omniRouteVisionModel: string;
   /** Which enrichment backend serves captures. Default `"omniroute"`; the
    * dispatcher (dispatcher.ts) routes on this. Only `"omniroute"` is wired in
@@ -73,7 +67,7 @@ export interface Settings {
    * in native SharedPreferences (BootReceiver reads it directly). Whenever
    * these two diverge, native wins; SettingsScreen reconciles on mount. */
   persistentNotificationEnabled: boolean;
-  /** When true, audio captures auto-run Whisper transcription after save.
+  /** When true, audio captures auto-run on-device transcription after save.
    * Default false — doubles OmniRoute API spend per capture, so opt-in. */
   autoTranscribeOnSave: boolean;
   /** When true, RecentDetail note editing uses the experimental WYSIWYG (TenTap)
@@ -100,13 +94,6 @@ export interface Settings {
   /** Karakeep API key (Bearer). Held in SecureStore, never persisted to the
    * AsyncStorage settings blob — mirrors omniRouteApiKey. */
   karakeepApiKey: string;
-  /** Whisper-compatible transcription endpoint. Non-secret — persisted
-   * alongside the rest of the settings blob. Defaults to OpenAI's endpoint
-   * when blank. */
-  whisperEndpoint: string;
-  /** Whisper API key (Bearer). Held in SecureStore, never persisted to the
-   * AsyncStorage settings blob — mirrors omniRouteApiKey/karakeepApiKey. */
-  whisperApiKey: string;
 }
 
 interface PersistedSettings {
@@ -121,7 +108,6 @@ interface PersistedSettings {
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
   karakeepUrl: string;
-  whisperEndpoint: string;
 }
 
 /** Shape of a v1 settings blob — used for one-time migration read. */
@@ -143,7 +129,6 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   captureFolderPath: "",
   promptOverrides: {},
   karakeepUrl: "",
-  whisperEndpoint: "",
 };
 
 /** Strip whitespace-only entries so a `{idea: "   "}` save doesn't strand
@@ -190,7 +175,6 @@ async function readPersisted(): Promise<PersistedSettings> {
         captureFolderPath: legacy.captureFolderPath ?? "",
         promptOverrides: {},
         karakeepUrl: "",
-        whisperEndpoint: "",
       };
     } catch {
       return { ...DEFAULT_PERSISTED };
@@ -213,7 +197,6 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: sanitisePromptOverrides(settings.promptOverrides),
     karakeepUrl: settings.karakeepUrl,
-    whisperEndpoint: settings.whisperEndpoint,
   };
   await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitised));
 }
@@ -242,7 +225,6 @@ export async function getSettings(): Promise<Settings> {
     (await SecureStore.getItemAsync(OMNIROUTE_API_KEY)) ?? "";
   const karakeepApiKey =
     (await SecureStore.getItemAsync(KARAKEEP_API_KEY)) ?? "";
-  const whisperApiKey = (await SecureStore.getItemAsync(WHISPER_API_KEY)) ?? "";
 
   return {
     omniRouteUrl: persisted.omniRouteUrl,
@@ -258,8 +240,6 @@ export async function getSettings(): Promise<Settings> {
     promptOverrides: persisted.promptOverrides,
     karakeepUrl: persisted.karakeepUrl,
     karakeepApiKey,
-    whisperEndpoint: persisted.whisperEndpoint,
-    whisperApiKey,
   };
 }
 
@@ -276,7 +256,6 @@ export async function saveSettings(settings: Settings): Promise<void> {
     captureFolderPath: settings.captureFolderPath,
     promptOverrides: settings.promptOverrides,
     karakeepUrl: settings.karakeepUrl,
-    whisperEndpoint: settings.whisperEndpoint,
   });
   if (settings.omniRouteApiKey) {
     await SecureStore.setItemAsync(OMNIROUTE_API_KEY, settings.omniRouteApiKey);
@@ -287,11 +266,6 @@ export async function saveSettings(settings: Settings): Promise<void> {
     await SecureStore.setItemAsync(KARAKEEP_API_KEY, settings.karakeepApiKey);
   } else {
     await SecureStore.deleteItemAsync(KARAKEEP_API_KEY);
-  }
-  if (settings.whisperApiKey) {
-    await SecureStore.setItemAsync(WHISPER_API_KEY, settings.whisperApiKey);
-  } else {
-    await SecureStore.deleteItemAsync(WHISPER_API_KEY);
   }
 }
 
@@ -338,25 +312,6 @@ export async function setKarakeepApiKey(value: string): Promise<void> {
     await SecureStore.setItemAsync(KARAKEEP_API_KEY, value.trim());
   } else {
     await SecureStore.deleteItemAsync(KARAKEEP_API_KEY);
-  }
-}
-
-/**
- * True if there is a Whisper API key stored in SecureStore. Used by the
- * settings UI to render a "•••• configured" placeholder rather than reading
- * the key into React state for display.
- */
-export async function hasWhisperApiKey(): Promise<boolean> {
-  const key = await SecureStore.getItemAsync(WHISPER_API_KEY);
-  return Boolean(key && key.trim().length > 0);
-}
-
-/** Write-only setter for the Whisper API key. Used by the settings UI. */
-export async function setWhisperApiKey(value: string): Promise<void> {
-  if (value && value.trim().length > 0) {
-    await SecureStore.setItemAsync(WHISPER_API_KEY, value.trim());
-  } else {
-    await SecureStore.deleteItemAsync(WHISPER_API_KEY);
   }
 }
 

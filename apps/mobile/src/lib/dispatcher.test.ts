@@ -23,8 +23,6 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     promptOverrides: {},
     karakeepUrl: "",
     karakeepApiKey: "",
-whisperEndpoint: "",
-whisperApiKey: "",
   },
 }));
 

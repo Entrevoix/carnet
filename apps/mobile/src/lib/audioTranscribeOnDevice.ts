@@ -186,7 +186,7 @@ function runRecognizer(fileUri: string): Promise<string> {
           // model isn't downloaded, so the recognizer dead-ends here (code 12 /
           // "no service found"). The raw error is cryptic — remap ONLY this
           // class to an actionable message that points at the Journal voice
-          // dictation download flow (or Whisper). Other errors pass through.
+          // dictation download flow. Other errors pass through.
           const noModel = /no service|language|not.?support|unavailable/i.test(
             `${event.error} ${event.message ?? ""}`,
           );

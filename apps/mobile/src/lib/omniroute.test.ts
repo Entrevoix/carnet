@@ -21,8 +21,6 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     promptOverrides: {},
     karakeepUrl: "",
     karakeepApiKey: "",
-whisperEndpoint: "",
-whisperApiKey: "",
   },
 }));
 
@@ -495,8 +493,6 @@ describe("HTTPS enforcement", () => {
       promptOverrides: {},
       karakeepUrl: "",
       karakeepApiKey: "",
-whisperEndpoint: "",
-whisperApiKey: "",
     });
     await expect(enrichIdea("x")).rejects.toThrow(/https:\/\//);
     // Ensure no fetch was attempted
@@ -519,8 +515,6 @@ whisperApiKey: "",
       promptOverrides: {},
       karakeepUrl: "",
       karakeepApiKey: "",
-whisperEndpoint: "",
-whisperApiKey: "",
     });
     fetchMock.mockResolvedValueOnce(
       makeOkResponse("---\n---\n# x\n"),

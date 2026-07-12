@@ -6,7 +6,7 @@
  * RecentDetail render, moveToArchive paired-binary detection, future
  * transcription — handles audio captures and audio shares identically).
  * The recording lifecycle (perm → setAudioMode → Recording.createAsync →
- * stopAndUnloadAsync → getURI) mirrors VoiceButton's Whisper path.
+ * stopAndUnloadAsync → getURI) uses expo-av's Recording API.
  *
  * Phase machine:
  *   idle      — permission gate; tap-to-record button

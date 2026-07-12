@@ -19,8 +19,6 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     promptOverrides: {},
     karakeepUrl: "https://karakeep.example.com",
     karakeepApiKey: "kk-secret-token-xyz123",
-whisperEndpoint: "",
-whisperApiKey: "",
   },
 }));
 

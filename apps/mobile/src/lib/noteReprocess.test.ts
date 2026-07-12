@@ -92,7 +92,7 @@ describe("reEnrichNote", () => {
 describe("transcribeNote", () => {
   it("transcribes, upserts a Transcript section, writes, and returns the new body", async () => {
     mockRead.mockResolvedValue({ base64: "BBB", mime: "audio/m4a" });
-    mockTranscribe.mockResolvedValue({ text: "hello world", model: "whisper" });
+    mockTranscribe.mockResolvedValue({ text: "hello world", model: "on-device" });
     const body = "# Voice\n\n[audio](../Audio/rec.m4a)\n";
     const out = await transcribeNote({ body, filepath: "f.md" });
     expect(mockTranscribe).toHaveBeenCalledWith({

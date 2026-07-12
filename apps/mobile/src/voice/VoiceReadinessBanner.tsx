@@ -11,17 +11,14 @@
 // recurring path is Settings → "Check voice setup".
 
 import { useEffect, useRef, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Banner, Snackbar } from 'react-native-paper';
 
-import { STT_ENGINE_KEY } from './VoiceButton';
 import { checkSttReadiness, triggerVoiceModelDownload } from './sttReadiness';
 import {
   describeReadiness,
   markOnboardingPrompted,
   shouldPromptProactively,
   wasOnboardingPrompted,
-  type SttEngine,
 } from './sttOnboarding';
 
 export function VoiceReadinessBanner() {
@@ -40,15 +37,13 @@ export function VoiceReadinessBanner() {
     void (async () => {
       try {
         if (await wasOnboardingPrompted()) return;
-        const engineRaw = await AsyncStorage.getItem(STT_ENGINE_KEY);
-        const engine: SttEngine = engineRaw === 'whisper' ? 'whisper' : 'ondevice';
         // checkSttReadiness collapses any native throw (iOS, Expo Go, missing
         // bridge) to 'unsupported', so on non-Android-13+ devices this resolves
         // to a no-op and the banner stays inert by design — carnet's code-12
         // model-download fix is Android-only.
         const readiness = await checkSttReadiness();
         if (!mounted.current) return;
-        if (shouldPromptProactively({ readiness, alreadyPrompted: false, engine })) {
+        if (shouldPromptProactively({ readiness, alreadyPrompted: false, engine: 'ondevice' })) {
           setBody(describeReadiness(readiness).body);
           setVisible(true);
           // Spend the one-shot the moment we decide to show it — not on action —

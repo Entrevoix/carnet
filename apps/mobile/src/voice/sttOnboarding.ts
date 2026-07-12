@@ -19,20 +19,19 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SttReadiness } from './sttReadiness';
 
 /**
- * Which speech engine the user has selected. Whisper users transcribe in the
- * cloud and never need the on-device model, so they are exempt from the
- * proactive model-download nudge.
+ * Which speech engine the user has selected. On-device is the only engine —
+ * kept as a named type so the readiness/onboarding surfaces stay explicit.
  */
-export type SttEngine = 'ondevice' | 'whisper';
+export type SttEngine = 'ondevice';
 
 export type OnboardingTone = 'ok' | 'warn' | 'info';
 
 /**
  * The single recommended next step for a given readiness state. The UI maps
  * each to a concrete control (the download trigger, an app-settings deep link,
- * a Whisper hint, or nothing).
+ * or nothing).
  */
-export type OnboardingAction = 'download' | 'open-permission' | 'use-whisper' | 'none';
+export type OnboardingAction = 'download' | 'open-permission' | 'none';
 
 export interface ReadinessCopy {
   tone: OnboardingTone;
@@ -73,8 +72,8 @@ export function describeReadiness(readiness: SttReadiness): ReadinessCopy {
       return {
         tone: 'info',
         title: 'On-device dictation unavailable',
-        body: 'This device has no on-device speech service for English. Use the Whisper API for cloud transcription instead.',
-        action: 'use-whisper',
+        body: 'This device has no on-device speech service for English. Install Speech Services by Google (or another recognizer) to enable dictation.',
+        action: 'none',
       };
   }
 }
@@ -88,7 +87,7 @@ export function describeReadiness(readiness: SttReadiness): ReadinessCopy {
  * flow already has, instead of a dead-end error string.
  */
 export const STT_MODEL_MISSING_MESSAGE =
-  "On-device voice model isn't installed. Open Journal voice dictation to download it, or enable Whisper transcription in Settings.";
+  "On-device voice model isn't installed. Open Journal voice dictation to download it.";
 
 /**
  * True when an error message is the on-device-model-missing class thrown by
@@ -110,8 +109,7 @@ export interface ProactivePromptInput {
  * Pure: should the one-shot first-run banner be shown?
  *
  * Only when there is a downloadable model we can pull on the user's behalf and
- * they have not been nudged before — and only for the on-device engine (Whisper
- * users opted out of the local model). Every other state is handled elsewhere:
+ * they have not been nudged before. Every other state is handled elsewhere:
  * 'no-permission' is requested at capture time, 'unsupported' has nothing to
  * download, and 'ready' needs no nudge.
  */

@@ -79,7 +79,7 @@ export function mapReadiness(probe: SttProbe, preferred = 'en-US'): SttReadiness
 /**
  * Probe the native recognizer and classify readiness. Any native throw (Expo
  * Go, iOS, missing bridge, getSupportedLocales `package_not_found`) collapses to
- * `unsupported` — the caller then routes to Whisper / manual setup.
+ * `unsupported` — the caller then routes to manual setup.
  */
 export async function checkSttReadiness(preferred = 'en-US'): Promise<SttReadiness> {
   try {

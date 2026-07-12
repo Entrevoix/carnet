@@ -647,8 +647,8 @@ export async function transcribeAudio(input: {
 /**
  * Optional post-save hook for audio captures. When the user has flipped
  * `autoTranscribeOnSave` on in Settings, this reads the paired audio file
- * off disk, runs Whisper, and idempotently inserts a `## Transcript`
- * section back into the note via upsertSection.
+ * off disk, runs on-device transcription, and idempotently inserts a
+ * `## Transcript` section back into the note via upsertSection.
  *
  * Best-effort by contract — NEVER throws. Returns null on success, an
  * error reason string on failure. Callers (AudioCaptureScreen,

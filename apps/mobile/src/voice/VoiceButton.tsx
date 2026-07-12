@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Audio } from 'expo-av';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import {
@@ -26,7 +25,6 @@ import {
 } from './recognizerSelect';
 import { triggerVoiceModelDownload } from './sttReadiness';
 import { describeSttError, isFailoverEligibleCode } from './sttErrorMessage';
-import { DEFAULT_WHISPER_ENDPOINT, getSettings, hasWhisperApiKey } from '../lib/settings';
 
 // Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
 const MAX_RECORDING_MS = 3 * 60 * 1000;
@@ -37,16 +35,12 @@ const MAX_RECORDING_MS = 3 * 60 * 1000;
 const KNOWN_BAD_PKGS: readonly string[] = [];
 // Android 16 fix: Soda's default LANGUAGE_MODEL flipped to AMBIENT_ONESHOT
 // after the Sept 2025 security patch. Without web_search, dictation returns
-// empty transcripts. See ./docs/learnings or memory/android16-stt-soda-ambient-fix.md.
+// empty transcripts. (No standalone writeup exists for this — the full
+// rationale lives in the startRecognizerRef comment below and this one.)
 const SODA_DICTATION_MODEL = 'web_search';
 export const STT_ENGINE_KEY = 'stt_engine';
 export const STT_RECOGNIZER_PKG_KEY = 'stt_recognizer_pkg';
 export const STT_RECOGNIZER_LABEL_KEY = 'stt_recognizer_label';
-// Whisper API key/endpoint moved to lib/settings.ts (SecureStore-backed,
-// like omniRouteApiKey/karakeepApiKey) — this used to be plaintext
-// AsyncStorage, which violates this repo's "API keys never live in
-// AsyncStorage" hard constraint. See getSettings()/DEFAULT_WHISPER_ENDPOINT
-// import below.
 
 const KNOWN_RECOGNIZERS: RecognizerOption[] = [
   // Android System Intelligence — the actual on-device Google STT service. Prefer first.
@@ -70,6 +64,16 @@ const KNOWN_RECOGNIZERS: RecognizerOption[] = [
 // handled as a silent same-recognizer restart below, not a failover trigger.
 
 const PREFERRED_LANG = 'en-US';
+
+// Single canonical copy for every "no working speech service" terminal
+// state (detection found nothing, failover chain exhausted post-detection,
+// or a null effectivePkg with detection already run). Previously three
+// near-duplicate strings existed and drifted from each other during QA
+// (2026-07-11) — unify so future edits can't reintroduce the split. All
+// three sites present the same 'no-service' action buttons regardless of
+// wording, so one message covers every trigger path.
+const NO_SERVICE_MESSAGE =
+  'No working speech service found on this device.\nInstall a speech service below, or copy diagnostics for details.';
 
 // Returns the best locale the given recognizer can serve, preferring an
 // already-installed match over a claimed-but-not-downloaded one. Falls back
@@ -274,7 +278,6 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   const pulseLoop = useRef<Animated.CompositeAnimation | null>(null);
   const errTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const started = useRef(false);
-  const whisperRecording = useRef<Audio.Recording | null>(null);
   const onTranscriptRef = useRef(onTranscript);
 
   // Ordered list of pkg candidates to try if the current recognizer fails
@@ -330,8 +333,8 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // retry the same engine before failing over to a possibly model-less fallback.
   const serverDisconnectRetryRef = useRef(0);
   // Which engine the active session is using — used by handlePressOut to
-  // route to stopOnDevice or finishWhisper without re-reading AsyncStorage.
-  const activeEngineRef = useRef<'ondevice' | 'whisper' | null>(null);
+  // route to stopOnDevice without re-reading AsyncStorage.
+  const activeEngineRef = useRef<'ondevice' | null>(null);
   // Safety cap timer — auto-stops at MAX_RECORDING_MS so a forgotten
   // session can't pin the mic open forever.
   const maxDurationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -339,20 +342,11 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // Note: com.google.android.tts is intentionally NOT in KNOWN_BAD_PKGS (defined at module scope).
   // expo-speech-recognition docs explicitly list it as a valid getDefaultRecognitionService() return on some devices.
 
-  // Self-heal: clear stuck whisper state or known-bad recognizer packages
+  // Self-heal: clear known-bad recognizer packages
   useEffect(() => {
     let mounted = true;
-    Promise.all([
-      AsyncStorage.getItem(STT_ENGINE_KEY),
-      hasWhisperApiKey(),
-      AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY),
-    ]).then(([engine, hasKey, pkg]) => {
+    AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY).then((pkg) => {
       if (!mounted) return;
-      if (engine === 'whisper' && !hasKey) {
-        AsyncStorage.removeItem(STT_ENGINE_KEY);
-        AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
-        AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
-      }
       if (pkg && KNOWN_BAD_PKGS.includes(pkg)) {
         AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
         AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
@@ -423,16 +417,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dismissErr]);
 
-  const switchToWhisper = useCallback(async () => {
-    await AsyncStorage.setItem(STT_ENGINE_KEY, 'whisper');
-    dismissErr();
-    showErrRef.current('Switched to Whisper. Add API key in Settings → Voice Input.', 4000);
-  }, [dismissErr]);
-
   // Pull the on-device English voice model from inside the app (Android 13+),
   // the in-app fix for the code-12 / "no service found" dead-end. On success
   // we dismiss the sheet and retry dictation with the saved recognizer; for a
-  // queued/dialog download we leave a hint; on failure we point at Whisper.
+  // queued/dialog download we leave a hint; on failure we point at Speech Services.
   const handleDownloadModel = useCallback(async () => {
     setDownloadingModel(true);
     try {
@@ -443,7 +431,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       } else if (result === 'dialog' || result === 'scheduled') {
         showErrRef.current('Downloading the English voice model… try dictation again in a moment.', 6000);
       } else {
-        showErrRef.current('Could not start the model download. Use Whisper or open Speech Services.', 5000);
+        showErrRef.current('Could not start the model download. Open Speech Services to install it.', 5000);
       }
     } finally {
       setDownloadingModel(false);
@@ -555,7 +543,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   // 'web_search' so Soda routes through the dictation pipeline.
   //
   // Do NOT reintroduce requiresOnDeviceRecognition or EXTRA_PREFER_OFFLINE here:
-  // both fail or are silently ignored on Android 16. See memory/android16-stt-soda-ambient-fix.md.
+  // both fail or are silently ignored on Android 16.
   const startRecognizerRef = useRef(async (pkg: string | null) => {
     // pkg meanings: non-empty string = explicit package; '' ("system default")
     // and null ("try defaults") both resolve to a pinned Google recognizer. We
@@ -588,10 +576,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       } else {
         pressActiveRef.current = false;
         activeEngineRef.current = null;
-        showErrRef.current(
-          'No working speech service found on this device.\nTry Whisper API or install a speech service from the Play Store.',
-          0, true, 'no-service',
-        );
+        showErrRef.current(NO_SERVICE_MESSAGE, 0, true, 'no-service');
       }
       return;
     }
@@ -668,12 +653,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
 
       if (realHits.length === 0) {
         failoverChainRef.current = [];
-        showErrRef.current(
-          'No speech service found on this device.\nInstall one below, switch to Whisper API, or copy diagnostics to see what the scan returned.',
-          0,
-          true,
-          'no-service',
-        );
+        showErrRef.current(NO_SERVICE_MESSAGE, 0, true, 'no-service');
         return;
       }
 
@@ -909,9 +889,21 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         // 4. Language-specific final error — chain exhausted, detection ran
         if (code === 11 || code === 12) {
           showErrRef.current(
-            'English voice model not installed on any speech service.\nOpen Speech Services by Google to download it, or switch to Whisper API.',
+            'English voice model not installed on any speech service.\nOpen Speech Services by Google to download it.',
             0, true, 'lang-unavailable',
           );
+          return;
+        }
+
+        // 4.5. Any other failover-eligible code (e.g. -1, the native
+        //    catch-all for an absent pinned recognizer, or 13) that reaches
+        //    here has an exhausted chain AND detection already ran this
+        //    session — same terminal state as branch 3 above, just arrived
+        //    at after detection instead of before it. Show the same
+        //    no-service sheet instead of falling through to the generic
+        //    per-code message below, which has no recovery action.
+        if (isFailoverEligibleCode(code)) {
+          showErrRef.current(NO_SERVICE_MESSAGE, 0, true, 'no-service');
           return;
         }
 
@@ -978,7 +970,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
         return;
       }
 
-      // User tapped stop (or whisper/max-duration) — send accumulated + final.
+      // User tapped stop (or max-duration) — send accumulated + final.
       const finalText = composeFlush(sessionTextRef.current, text);
       if (finalText) onTranscriptRef.current(finalText, true);
       sessionTextRef.current = '';
@@ -999,7 +991,6 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       lifecycleSubs.forEach((s) => s.remove());
       clearWatchdogRef.current();
       if (started.current) ExpoSpeechRecognitionModule.stop();
-      whisperRecording.current?.stopAndUnloadAsync().catch(() => {});
     };
   }, []);
 
@@ -1032,12 +1023,6 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       }
     }, MAX_RECORDING_MS);
     await startRecognizerRef.current(option.pkg || null);
-  };
-
-  const handlePickWhisper = async () => {
-    setPickerVisible(false);
-    await AsyncStorage.setItem(STT_ENGINE_KEY, 'whisper');
-    showErrRef.current('Switched to Whisper. Add API key in Settings.', 3000);
   };
 
   const requestRecordAudio = useCallback(async (): Promise<boolean> => {
@@ -1084,81 +1069,6 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     }
   }, [resetAccumulator]);
 
-  // ── Whisper API recording ───────────────────────────────────────────────
-
-  const startWhisper = useCallback(async () => {
-    setErrMsg('');
-    try {
-      const { granted } = await Audio.requestPermissionsAsync();
-      if (!pressActiveRef.current) return;
-      if (!granted) {
-        showErrRef.current(
-          'Microphone permission is required for voice input.\nIf the system dialog did not appear, enable it manually in App Settings.',
-          0, true, 'permission',
-        );
-        return;
-      }
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      if (!pressActiveRef.current) return;
-      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      if (!pressActiveRef.current) {
-        // Released mid-setup. Tear down the just-created recording.
-        try { await recording.stopAndUnloadAsync(); } catch { /* ignore */ }
-        return;
-      }
-      whisperRecording.current = recording;
-      started.current = true;
-      setIsListening(true);
-      startPulse();
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      showErrRef.current(msg.slice(0, 60));
-    }
-  }, []);
-
-  const finishWhisper = useCallback(async () => {
-    const rec = whisperRecording.current;
-    if (!rec) { setIsListening(false); stopPulse(); return; }
-    whisperRecording.current = null;
-    started.current = false;
-    setIsListening(false);
-    stopPulse();
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    try {
-      await rec.stopAndUnloadAsync();
-      const uri = rec.getURI();
-      if (!uri) { showErrRef.current('no audio'); return; }
-      const stored = await getSettings();
-      const key = stored.whisperApiKey?.trim() ?? '';
-      const ep = stored.whisperEndpoint?.trim() || DEFAULT_WHISPER_ENDPOINT;
-      if (!key) { showErrRef.current('Whisper API key not set.\nGo to Settings → Voice Input to add your key.', 0, true); return; }
-      showErrRef.current('Transcribing…', 30000);
-      const form = new FormData();
-      form.append('file', { uri, name: 'audio.m4a', type: 'audio/m4a' } as unknown as Blob);
-      form.append('model', 'whisper-1');
-      const resp = await fetch(ep, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}` },
-        body: form,
-      });
-      setErrMsg('');
-      if (!resp.ok) {
-        const txt = await resp.text().catch(() => resp.statusText);
-        const detail = txt.slice(0, 120);
-        showErrRef.current(`Whisper error ${resp.status}: ${detail}`, 0, true);
-        return;
-      }
-      const data = await resp.json() as { text?: string };
-      const text = data.text?.trim();
-      if (text) onTranscriptRef.current(text, true);
-    } catch (e: unknown) {
-      setErrMsg('');
-      const msg = e instanceof Error ? e.message : String(e);
-      showErrRef.current(msg.slice(0, 60));
-    }
-  }, []);
-
   // ── External stop+flush (parent calls this before opening a picker etc.) ──
   // Commits the in-progress transcript as final NOW (synchronously, from JS
   // state) rather than relying on the native `end` round-trip, which can be
@@ -1170,21 +1080,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       return;
     }
     clearMaxTimer();
-    const engine = activeEngineRef.current;
     // Tear the session down BEFORE running any parent code below, so a throw
     // from onTranscript can't strand the mic or wedge pressActiveRef.
     pressActiveRef.current = false;
     activeEngineRef.current = null;
-    if (engine === 'whisper') {
-      // Whisper has no interim AND doesn't go through the ExpoSpeechRecognition
-      // result/end/error listeners (it records via expo-av), so there's no
-      // end-listener re-commit to suppress and nothing to flush synchronously —
-      // finishing transcribes the recording + commits on return. The
-      // flushedExternallyRef guard is deliberately NOT set here.
-      logEventRef.current('flush.whisper');
-      void finishWhisper();
-      return;
-    }
     const text = composeFlush(sessionTextRef.current, composeText());
     // Diagnostics: len=0 means STT captured no transcript to flush (e.g. a Soda
     // nomatch), NOT that the flush dropped it. session = chars already folded
@@ -1211,7 +1110,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     } else {
       logEventRef.current('flush.empty');
     }
-  }, [composeText, finishWhisper, resetAccumulator, clearMaxTimer, stopOnDevice]);
+  }, [composeText, resetAccumulator, clearMaxTimer, stopOnDevice]);
 
   useImperativeHandle(ref, () => ({ stopAndFlush }), [stopAndFlush]);
 
@@ -1226,9 +1125,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       clearMaxTimer();
       const engine = activeEngineRef.current;
       activeEngineRef.current = null;
-      if (engine === 'whisper') {
-        void finishWhisper();
-      } else if (engine === 'ondevice') {
+      if (engine === 'ondevice') {
         stopOnDevice();
       }
       return;
@@ -1254,27 +1151,15 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       if (pressActiveRef.current) {
         logEventRef.current('recording.max-duration');
         pressActiveRef.current = false;
-        if (activeEngineRef.current === 'whisper') {
-          finishWhisper().catch((e: unknown) => {
-            const msg = e instanceof Error ? e.message : String(e);
-            showErrRef.current(msg.slice(0, 60));
-          });
-        } else {
-          stopOnDevice();
-        }
+        stopOnDevice();
         activeEngineRef.current = null;
       }
     }, MAX_RECORDING_MS);
 
-    const engine = await AsyncStorage.getItem(STT_ENGINE_KEY);
     if (!pressActiveRef.current) return;
-    activeEngineRef.current = engine === 'whisper' ? 'whisper' : 'ondevice';
-    if (activeEngineRef.current === 'whisper') {
-      await startWhisper();
-    } else {
-      await startOnDevice();
-    }
-  }, [detecting, disabled, clearMaxTimer, finishWhisper, stopOnDevice, startWhisper, startOnDevice]);
+    activeEngineRef.current = 'ondevice';
+    await startOnDevice();
+  }, [detecting, disabled, clearMaxTimer, stopOnDevice, startOnDevice]);
 
   return (
     <View>
@@ -1297,9 +1182,6 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
                 </Pressable>
               ))}
             </ScrollView>
-            <Pressable style={[styles.sheetWhisper, { borderColor: theme.colors.primary }]} onPress={handlePickWhisper}>
-              <Text style={[styles.sheetWhisperText, { color: theme.colors.primary }]}>Use Whisper API instead →</Text>
-            </Pressable>
           </View>
         </Pressable>
       </Modal>
@@ -1360,10 +1242,6 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
                   <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Retry Detection</Text>
                   <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>After downloading, rescan devices</Text>
                 </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={switchToWhisper}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Use Whisper API</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Cloud transcription — needs API key</Text>
-                </Pressable>
                 <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={copyDiagnostics}>
                   <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Copy diagnostics</Text>
                   <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Paste the scan + probe output into a bug report</Text>
@@ -1386,10 +1264,6 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
                   <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Install Samsung Bixby</Text>
                   <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>com.samsung.android.bixby.agent</Text>
                 </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={switchToWhisper}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Use Whisper API</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Cloud transcription — needs API key</Text>
-                </Pressable>
                 <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={retryDetection}>
                   <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Retry Detection</Text>
                   <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Rescan device for speech services</Text>
@@ -1409,10 +1283,6 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
                 <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={retryDetection}>
                   <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Retry Detection</Text>
                   <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Rescan device for speech services</Text>
-                </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={switchToWhisper}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Use Whisper API</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Cloud transcription — needs API key</Text>
                 </Pressable>
               </View>
             )}
@@ -1506,9 +1376,4 @@ const styles = StyleSheet.create({
   },
   sheetOptionLabel: { fontSize: 15, fontWeight: '600' },
   sheetOptionPkg: { fontSize: 11, fontFamily: 'monospace', marginTop: 2 },
-  sheetWhisper: {
-    marginTop: 4, padding: 14, borderRadius: 10,
-    borderWidth: 1, alignItems: 'center',
-  },
-  sheetWhisperText: { fontSize: 14, fontWeight: '600' },
 });

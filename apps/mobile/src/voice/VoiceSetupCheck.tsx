@@ -79,7 +79,7 @@ export function VoiceSetupCheck() {
         setNote('Downloading the English voice model… check again in a moment.');
       } else {
         setNote(
-          'Could not start the download. Open Speech Services by Google from the Play Store, or use the Whisper API.',
+          'Could not start the download. Open Speech Services by Google from the Play Store.',
         );
       }
     } finally {
@@ -149,11 +149,6 @@ export function VoiceSetupCheck() {
               Open app settings
             </Button>
           ) : null}
-          {copy.action === 'use-whisper' ? (
-            <HelperText type="info" visible style={styles.resultHint}>
-              Add a Whisper API key under Voice Input (above) to dictate via the cloud.
-            </HelperText>
-          ) : null}
         </View>
       ) : null}
 
@@ -179,5 +174,4 @@ const styles = StyleSheet.create({
   },
   resultBody: { opacity: 0.85 },
   resultAction: { alignSelf: 'flex-start', marginTop: 8 },
-  resultHint: { paddingHorizontal: 0 },
 });

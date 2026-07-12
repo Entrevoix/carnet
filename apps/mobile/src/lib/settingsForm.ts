@@ -29,7 +29,6 @@ export interface FormState {
   captureFolderPath: string;
   promptOverrides: PromptOverrides;
   karakeepUrl: string;
-  whisperEndpoint: string;
 }
 
 /** The currently-stored API keys, threaded into the saved Settings so
@@ -37,7 +36,6 @@ export interface FormState {
 export interface ExistingApiKeys {
   omniRouteApiKey: string;
   karakeepApiKey: string;
-  whisperApiKey: string;
 }
 
 /**
@@ -67,8 +65,6 @@ export function composeSettingsForSave(
     promptOverrides: form.promptOverrides,
     karakeepUrl: form.karakeepUrl,
     karakeepApiKey: existing.karakeepApiKey,
-    whisperEndpoint: form.whisperEndpoint,
-    whisperApiKey: existing.whisperApiKey,
   };
 }
 
