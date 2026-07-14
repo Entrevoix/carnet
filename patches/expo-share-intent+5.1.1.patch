@@ -1,5 +1,5 @@
 diff --git a/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt b/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
-index 0153c89..57bc736 100644
+index 0153c89..2ccb8e2 100644
 --- a/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
 +++ b/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
 @@ -66,37 +66,76 @@ class ExpoShareIntentModule : Module() {
@@ -104,3 +104,31 @@ index 0153c89..57bc736 100644
              }
  
              return mapOf(
+@@ -125,13 +164,26 @@ class ExpoShareIntentModule : Module() {
+             if (intent.type!!.startsWith("text/plain")) {
+                 // text / urls
+                 if (intent.action == Intent.ACTION_SEND) {
++                    // PATCH(carnet): file managers share a .txt FILE as
++                    // ACTION_SEND + text/plain with the document in EXTRA_STREAM
++                    // and no EXTRA_TEXT. Upstream read only EXTRA_TEXT here, so
++                    // such shares arrived in JS as {text: null} and were silently
++                    // dropped (observed on-device 2026-07-14, DocumentsUI .txt
++                    // share). Route stream-backed text/plain shares down the file
++                    // path instead; genuine text/url shares are unaffected.
++                    val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
++                    val streamUri = intent.parcelable<Uri>(Intent.EXTRA_STREAM)
++                    if (sharedText == null && streamUri != null) {
++                        notifyShareIntent(mapOf( "files" to arrayOf(getFileInfo(streamUri), "type" to "file")))
++                    } else {
+                     notifyShareIntent(mapOf(
+-                        "text" to intent.getStringExtra(Intent.EXTRA_TEXT),
++                        "text" to sharedText,
+                         "type" to "text",
+                         "meta" to mapOf(
+                             "title" to intent.getCharSequenceExtra(Intent.EXTRA_TITLE),
+                         )
+                     ))
++                    }
+                 } else if (intent.action == Intent.ACTION_VIEW) {
+                     notifyShareIntent(mapOf( "text" to intent.dataString, "type" to "text"))
+                 } else {
