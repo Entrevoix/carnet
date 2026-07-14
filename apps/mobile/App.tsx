@@ -1,6 +1,6 @@
 import "react-native-gesture-handler";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, useColorScheme, View } from "react-native";
+import { ActivityIndicator, AppState, useColorScheme, View } from "react-native";
 import {
   DarkTheme as NavDarkTheme,
   DefaultTheme as NavLightTheme,
@@ -35,6 +35,7 @@ import {
   ThemePreferenceContext,
   type ThemePreference,
 } from "./src/lib/themePreference";
+import { drainPendingKarakeepExports } from "./src/lib/pendingSyncRunner";
 
 export type RootStackParamList = {
   Home: undefined;
@@ -164,6 +165,26 @@ export default function App() {
       notification: paperTheme.colors.error,
     },
   };
+
+  // Pending-sync drain trigger: cold start + every return to foreground,
+  // throttled so rapid app-switching doesn't spam reachability probes. The
+  // drain itself is single-flight, empty-queue-cheap, and never throws
+  // (lib/pendingSync.ts + lib/pendingSyncRunner.ts) — this only decides WHEN.
+  const lastPendingDrainRef = useRef(0);
+  useEffect(() => {
+    const PENDING_DRAIN_THROTTLE_MS = 30_000;
+    const kickPendingDrain = () => {
+      const now = Date.now();
+      if (now - lastPendingDrainRef.current < PENDING_DRAIN_THROTTLE_MS) return;
+      lastPendingDrainRef.current = now;
+      void drainPendingKarakeepExports();
+    };
+    kickPendingDrain();
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") kickPendingDrain();
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     // Load the persisted theme override before first paint so the app

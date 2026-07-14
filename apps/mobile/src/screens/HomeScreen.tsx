@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FlatList, StyleSheet, View } from "react-native";
 import {
+  Banner,
   Button,
   Dialog,
   IconButton,
@@ -29,6 +30,8 @@ import {
   MAX_AUTO_RETRY_ATTEMPTS,
   type QueueRow,
 } from "../lib/queue";
+import { getPendingExportCount } from "../lib/pendingSync";
+import { drainPendingKarakeepExports } from "../lib/pendingSyncRunner";
 import { formatRelative, modeStamp } from "../components/NoteCard";
 import { useCarnetTheme } from "../lib/theme";
 import { VoiceReadinessBanner } from "../voice/VoiceReadinessBanner";
@@ -50,6 +53,10 @@ export default function HomeScreen({ navigation }: Props) {
   const [syncDialogVisible, setSyncDialogVisible] = useState(false);
   const [syncRows, setSyncRows] = useState<QueueRow[]>([]);
   const [retrying, setRetrying] = useState(false);
+  // Karakeep exports waiting on host reachability (lib/pendingSync.ts) —
+  // drives the "waiting for Karakeep" banner and its Retry action.
+  const [karakeepPending, setKarakeepPending] = useState(0);
+  const [karakeepRetrying, setKarakeepRetrying] = useState(false);
   // Selection mode: enter via long-press, toggle rows via tap, auto-exit
   // when selection empties or the screen blurs.
   const [selectionMode, setSelectionMode] = useState(false);
@@ -106,7 +113,31 @@ export default function HomeScreen({ navigation }: Props) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[Home] sync status read failed:", msg);
     }
+    try {
+      setKarakeepPending(await getPendingExportCount());
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[Home] pending-sync count read failed:", msg);
+    }
   }, [applyNoteIndex]);
+
+  // Banner Retry: run a pending-export drain pass now (reachability probe
+  // included — a tap while the VPN is still down is a fast no-op), then
+  // re-derive the count.
+  const retryKarakeepQueue = useCallback(async () => {
+    if (karakeepRetrying) return;
+    setKarakeepRetrying(true);
+    try {
+      await drainPendingKarakeepExports();
+    } finally {
+      setKarakeepRetrying(false);
+      try {
+        setKarakeepPending(await getPendingExportCount());
+      } catch {
+        // The banner keeps its previous count on a re-read failure.
+      }
+    }
+  }, [karakeepRetrying]);
 
   const exitSelection = useCallback(() => {
     setSelectionMode(false);
@@ -266,6 +297,23 @@ export default function HomeScreen({ navigation }: Props) {
         ListHeaderComponent={
           <View style={{ gap: theme.carnet.spacing.md }}>
             <VoiceReadinessBanner />
+            {karakeepPending > 0 ? (
+              <Banner
+                visible
+                icon="cloud-upload-outline"
+                style={{ borderRadius: theme.carnet.radius.md }}
+                actions={[
+                  {
+                    label: karakeepRetrying ? "Retrying…" : "Retry",
+                    onPress: () => void retryKarakeepQueue(),
+                  },
+                ]}
+              >
+                {`${karakeepPending} export${
+                  karakeepPending === 1 ? "" : "s"
+                } waiting for Karakeep — will send when the server is reachable`}
+              </Banner>
+            ) : null}
             {selectionMode ? (
               <View
                 style={[

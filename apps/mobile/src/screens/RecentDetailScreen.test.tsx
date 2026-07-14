@@ -80,6 +80,8 @@ vi.mock("../lib/karakeepInlineImages", () => ({
   rewriteImageEmbedsToAssetUrls: vi.fn((md: string) => md),
 }));
 vi.mock("../lib/karakeepAssetSync", () => ({ clearPushedAssets: vi.fn() }));
+// pendingSync pulls AsyncStorage's native binding — never load the real one.
+vi.mock("../lib/pendingSync", () => ({ enqueuePendingExport: vi.fn() }));
 
 vi.mock("../lib/dispatcher", () => ({ enrichSharedImage: vi.fn() }));
 vi.mock("../lib/omniroute", () => ({ transcribeAudio: vi.fn() }));

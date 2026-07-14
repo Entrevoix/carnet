@@ -103,7 +103,10 @@ export type KarakeepExportOutcome =
       assetError: string;
       skippedUnsupported: string[];
     }
-  | { kind: "failed"; reason: string };
+  /** `unreachable` (on failed): the host never answered (status-0 network
+   * failure, not a blank-URL misconfig) — the screen queues the export for a
+   * connectivity retry (lib/pendingSync.ts) instead of showing an error. */
+  | { kind: "failed"; reason: string; unreachable: boolean };
 
 /**
  * Export a note to Karakeep as a text bookmark and return an outcome the screen
@@ -209,7 +212,9 @@ export async function exportNoteToKarakeep(input: {
         : e instanceof Error
           ? e.message
           : String(e);
+    const unreachable =
+      e instanceof KarakeepError && e.status === 0 && !e.notConfigured;
     console.warn("[RecentDetail] Karakeep export failed:", reason);
-    return { kind: "failed", reason };
+    return { kind: "failed", reason, unreachable };
   }
 }

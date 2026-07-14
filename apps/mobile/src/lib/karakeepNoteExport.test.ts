@@ -164,9 +164,43 @@ describe("exportNoteToKarakeep", () => {
       filepath: FILEPATH,
       entryTitle: "Hi",
     });
-    expect(out).toEqual({ kind: "failed", reason: "server boom" });
+    expect(out).toEqual({
+      kind: "failed",
+      reason: "server boom",
+      unreachable: false,
+    });
     expect(mockCreate).not.toHaveBeenCalled();
     expect(mockUpdateNote).not.toHaveBeenCalled();
+  });
+
+  it("flags a status-0 network failure as unreachable (queue for connectivity retry)", async () => {
+    mockCreate.mockRejectedValueOnce(
+      new KarakeepError("Karakeep request timed out after 20s", 0),
+    );
+    const out = await exportNoteToKarakeep({
+      body: "---\nkind: idea\n---\n# Hi\n",
+      filepath: FILEPATH,
+      entryTitle: "Hi",
+    });
+    expect(out).toEqual({
+      kind: "failed",
+      reason: "Karakeep request timed out after 20s",
+      unreachable: true,
+    });
+  });
+
+  it("does NOT flag a not-configured status-0 error as unreachable", async () => {
+    const err = new KarakeepError("Karakeep URL is not set", 0);
+    (err as unknown as { notConfigured: boolean }).notConfigured = true;
+    mockCreate.mockRejectedValueOnce(err);
+    const out = await exportNoteToKarakeep({
+      body: "---\nkind: idea\n---\n# Hi\n",
+      filepath: FILEPATH,
+      entryTitle: "Hi",
+    });
+    expect(out.kind).toBe("failed");
+    if (out.kind !== "failed") throw new Error("unreachable");
+    expect(out.unreachable).toBe(false);
   });
 
   it("returns a partial outcome (still stamped) when an attachment push fails", async () => {

@@ -75,6 +75,14 @@ vi.mock("../lib/queue", () => ({
   MAX_AUTO_RETRY_ATTEMPTS: 10,
 }));
 
+// Pending Karakeep exports (host-unreachable retry queue) — default: empty.
+vi.mock("../lib/pendingSync", () => ({
+  getPendingExportCount: vi.fn(async () => 0),
+}));
+vi.mock("../lib/pendingSyncRunner", () => ({
+  drainPendingKarakeepExports: vi.fn(async () => {}),
+}));
+
 // Pulls in VoiceButton's native speech stack — irrelevant to Home's layout.
 vi.mock("../voice/VoiceReadinessBanner", () => ({
   VoiceReadinessBanner: () => null,
@@ -82,6 +90,8 @@ vi.mock("../voice/VoiceReadinessBanner", () => ({
 
 import HomeScreen from "./HomeScreen";
 import { getRecentCaptures } from "../lib/storage";
+import { getPendingExportCount } from "../lib/pendingSync";
+import { drainPendingKarakeepExports } from "../lib/pendingSyncRunner";
 
 type ScreenProps = Parameters<typeof HomeScreen>[0];
 
@@ -155,6 +165,33 @@ describe("HomeScreen", () => {
     fireEvent.click(await screen.findByText("Photo"));
     await waitFor(() =>
       expect(navigation.navigate).toHaveBeenCalledWith("PhotoCapture"),
+    );
+  });
+
+  it("shows no Karakeep banner when nothing is waiting", async () => {
+    renderScreen();
+    await screen.findByText("Jack's Baseball Team");
+    expect(screen.queryByText(/waiting for Karakeep/)).toBeNull();
+  });
+
+  it("shows the pending-export banner with a Retry that drains the queue", async () => {
+    vi.mocked(getPendingExportCount)
+      .mockResolvedValueOnce(2) // initial refresh
+      .mockResolvedValue(0); // re-read after the retry drain
+    renderScreen();
+    expect(
+      await screen.findByText(
+        "2 exports waiting for Karakeep — will send when the server is reachable",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Retry"));
+    await waitFor(() =>
+      expect(drainPendingKarakeepExports).toHaveBeenCalledTimes(1),
+    );
+    // Everything drained — the banner clears.
+    await waitFor(() =>
+      expect(screen.queryByText(/waiting for Karakeep/)).toBeNull(),
     );
   });
 

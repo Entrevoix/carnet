@@ -72,6 +72,7 @@ import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEdito
 import { TagInput } from "../components/TagInput";
 import { getTagIndex, invalidateNoteIndex, tagsForNote } from "../lib/vault";
 import { exportNoteToKarakeep } from "../lib/karakeepNoteExport";
+import { enqueuePendingExport } from "../lib/pendingSync";
 import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
 import { planWysiwygSave } from "../lib/wysiwygSave";
 import { pickAndWriteVaultImage } from "../lib/vaultImageInsert";
@@ -116,6 +117,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // successful export — appended to the success snackbar as an informational
   // notice (longer duration so the filenames are readable). Null when none.
   const [karakeepSkipNote, setKarakeepSkipNote] = useState<string | null>(null);
+  // True right after an unreachable-host failure was queued for a
+  // connectivity retry (lib/pendingSync.ts) — flips an informational snackbar
+  // instead of the error banner: the export isn't lost, just waiting.
+  const [karakeepQueued, setKarakeepQueued] = useState(false);
   // Edit-mode state. `draft` holds the in-progress textarea content;
   // `editError` surfaces a save failure as a banner; `discardVisible`
   // gates the unsaved-changes dialog.
@@ -312,6 +317,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     exportingKarakeepRef.current = true;
     setKarakeepError(null);
     setKarakeepSkipNote(null);
+    setKarakeepQueued(false);
     setExportingKarakeep(true);
     // exportNoteToKarakeep owns the create-vs-update / 404-recovery / asset-sync
     // orchestration + the in-place note write; the screen only translates the
@@ -322,7 +328,23 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       filepath: entry.filepath,
       entryTitle: entry.title,
     });
-    if (mountedRef.current) {
+    // An unreachable host (VPN/Tailscale down — status-0, never a 4xx/5xx
+    // answer) queues the export for a connectivity retry instead of erroring.
+    // The enqueue runs OUTSIDE the mounted guard: a Back-during-export must
+    // not lose the retry, only skip the snackbar.
+    if (outcome.kind === "failed" && outcome.unreachable) {
+      try {
+        await enqueuePendingExport({
+          filepath: entry.filepath,
+          entryTitle: entry.title,
+        });
+        if (mountedRef.current) setKarakeepQueued(true);
+      } catch {
+        // Queueing itself failed (storage error) — fall back to the plain
+        // error banner so the failure is at least visible.
+        if (mountedRef.current) setKarakeepError(outcome.reason);
+      }
+    } else if (mountedRef.current) {
       if (outcome.kind === "failed") {
         setKarakeepError(outcome.reason);
       } else {
@@ -1158,6 +1180,17 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       >
         {(karakeepUpdated ? "Updated in Karakeep" : "Exported to Karakeep") +
           (karakeepSkipNote ? `. ${karakeepSkipNote}.` : "")}
+      </Snackbar>
+
+      <Snackbar
+        visible={karakeepQueued}
+        onDismiss={() => setKarakeepQueued(false)}
+        // Informational, not an error — the export will send itself; give the
+        // VPN hint time to be read.
+        duration={6000}
+      >
+        Karakeep is unreachable — export queued, it will send when the server
+        is reachable. Check VPN/Tailscale.
       </Snackbar>
 
       <Portal>
