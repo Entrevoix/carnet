@@ -84,6 +84,23 @@ export function extFromMime(mime?: string): string {
   if (m === "audio/wav" || m === "audio/x-wav") return "wav";
   if (m === "audio/mp4" || m === "audio/m4a") return "m4a";
   if (m === "application/pdf") return "pdf";
+  // Common document/archive types shared into carnet. Without these the
+  // generic subtype fallback below produces monsters like
+  // `report.vnd.openxmlformats-officedocument.wordprocessingml.document` —
+  // and SAF's createFileAsync then RENAMES the file by appending the
+  // mime-canonical extension (`.docx`), which used to desync the on-disk
+  // name from the note's ../Files/ link (broken pairing: attachments
+  // silently skipped Karakeep export and were orphaned on archive).
+  if (m === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return "docx";
+  if (m === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return "xlsx";
+  if (m === "application/vnd.openxmlformats-officedocument.presentationml.presentation") return "pptx";
+  if (m === "application/msword") return "doc";
+  if (m === "application/vnd.ms-excel") return "xls";
+  if (m === "text/plain") return "txt";
+  if (m === "text/markdown") return "md";
+  if (m === "text/csv") return "csv";
+  if (m === "application/zip") return "zip";
+  if (m === "application/json") return "json";
   const slash = m.indexOf("/");
   return slash >= 0 ? m.slice(slash + 1) : "bin";
 }
@@ -811,6 +828,15 @@ export async function writeBinary(
     await StorageAccessFramework.writeAsStringAsync(filepath, base64, {
       encoding: FileSystem.EncodingType.Base64,
     });
+    // SAF may RENAME on create: DocumentsContract appends the mime-canonical
+    // extension when the display name doesn't already end with it (observed
+    // on-device 2026-07-14: requested `agenda-test.vnd.…document`, created
+    // `agenda-test.vnd.…document.docx`). The caller links `finalName` in the
+    // note body, so it MUST be the name SAF actually created — otherwise the
+    // pairing silently breaks (attachment skipped on Karakeep export,
+    // orphaned on archive). Derive it from the returned document URI.
+    const created = safLastSegment(filepath);
+    if (created) return { filepath, finalName: created };
   } else {
     filepath = `${dirUri.replace(/\/$/, "")}/${finalName}`;
     await FileSystem.writeAsStringAsync(filepath, base64, {
@@ -1069,6 +1095,16 @@ export function mimeFromFilename(filename: string): string {
     wav: "audio/wav",
     m4a: "audio/mp4",
     pdf: "application/pdf",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    doc: "application/msword",
+    xls: "application/vnd.ms-excel",
+    txt: "text/plain",
+    md: "text/markdown",
+    csv: "text/csv",
+    zip: "application/zip",
+    json: "application/json",
   };
   return map[ext] ?? "application/octet-stream";
 }

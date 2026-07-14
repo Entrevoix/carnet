@@ -634,6 +634,38 @@ describe("extFromMime", () => {
     expect(extFromMime("application/pdf")).toBe("pdf");
   });
 
+  it("maps common shared document types to their canonical extensions (not the raw subtype)", () => {
+    expect(
+      extFromMime("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ).toBe("docx");
+    expect(
+      extFromMime("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    ).toBe("xlsx");
+    expect(
+      extFromMime("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    ).toBe("pptx");
+    expect(extFromMime("application/msword")).toBe("doc");
+    expect(extFromMime("application/vnd.ms-excel")).toBe("xls");
+    expect(extFromMime("text/plain")).toBe("txt");
+    expect(extFromMime("text/markdown")).toBe("md");
+    expect(extFromMime("text/csv")).toBe("csv");
+    expect(extFromMime("application/zip")).toBe("zip");
+    expect(extFromMime("application/json")).toBe("json");
+  });
+
+  it("round-trips the document extensions through mimeFromFilename", () => {
+    for (const [file, mime] of [
+      ["a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+      ["a.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+      ["a.txt", "text/plain"],
+      ["a.md", "text/markdown"],
+      ["a.zip", "application/zip"],
+    ] as const) {
+      expect(mimeFromFilename(file)).toBe(mime);
+      expect(extFromMime(mime)).toBe(file.slice(2));
+    }
+  });
+
   it("falls back to the type/subtype slash split for unknowns", () => {
     expect(extFromMime("video/mp4")).toBe("mp4");
     expect(extFromMime("application/zip")).toBe("zip");
@@ -724,6 +756,47 @@ describe("writeBinary", () => {
     const { finalName: n2 } = await writeBinary("Photos", "raw", "Y", "application/octet-stream");
     expect(n1).toBe("raw");
     expect(n2).toBe("raw-2");
+  });
+
+  it("returns the name SAF actually created when createFileAsync renames the file", async () => {
+    // DocumentsContract appends the mime-canonical extension when the display
+    // name doesn't end with it (observed on-device 2026-07-14: requested
+    // `agenda-test.vnd.…document`, created `agenda-test.vnd.…document.docx`).
+    // finalName is what gets linked in the note body, so it must reflect the
+    // rename or the note<->file pairing silently breaks.
+    const ROOT = "content://auth/tree/primary%3ACarnet";
+    const doc = (rel: string) =>
+      `${ROOT}/document/primary%3ACarnet%2F${rel.split("/").join("%2F")}`;
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      captureFolderPath: ROOT,
+    } as unknown as Awaited<ReturnType<typeof getSettings>>);
+    const saf = FileSystem.StorageAccessFramework;
+    vi.mocked(saf.readDirectoryAsync).mockImplementation(async (uri: string) => {
+      if (uri === ROOT) return [doc("Files")];
+      return []; // empty Files/ -> no collision bump
+    });
+    vi.mocked(saf.createFileAsync).mockImplementation(
+      async (_dir: string, name: string) => doc(`Files/${name}.docx`),
+    );
+    vi.mocked(saf.writeAsStringAsync).mockResolvedValue(undefined as never);
+
+    const { filepath, finalName } = await writeBinary(
+      "Files",
+      "report.vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "QUFB",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+
+    expect(finalName).toBe(
+      "report.vnd.openxmlformats-officedocument.wordprocessingml.document.docx",
+    );
+    expect(filepath).toBe(
+      doc("Files/report.vnd.openxmlformats-officedocument.wordprocessingml.document.docx"),
+    );
+
+    vi.mocked(saf.readDirectoryAsync).mockReset();
+    vi.mocked(saf.createFileAsync).mockReset();
+    vi.mocked(saf.writeAsStringAsync).mockReset();
   });
 });
 
