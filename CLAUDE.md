@@ -44,13 +44,22 @@ automated gates are `tsc --noEmit` and vitest, per workspace. Don't assume a lin
 exists or add one without discussing scope — it's a deliberate gap, not an oversight to
 silently "fix."
 
-`npm ci`/`npm install` runs a `postinstall: patch-package` hook — see `patches/`. Currently
-one patch: `expo-speech-recognition+3.1.3.patch` fixes a real upstream native-Kotlin crash
-(`PromiseAlreadySettledException` in `getSupportedLocales` when a recognizer package fires
-both `onSupportResult` and a duplicate `onError`, observed with `com.google.android.tts`).
-If bumping this dependency, re-verify the patch still applies (`npx patch-package
-expo-speech-recognition --exclude 'android/build/'` regenerates it) — don't silently drop
-it, the crash is real and reproducible.
+`npm ci`/`npm install` runs a `postinstall: patch-package` hook — see `patches/`. Two
+patches, both fixing real, on-device-reproduced upstream native-Kotlin crashes:
+- `expo-speech-recognition+3.1.3.patch` — `PromiseAlreadySettledException` in
+  `getSupportedLocales` when a recognizer package fires both `onSupportResult` and a
+  duplicate `onError` (observed with `com.google.android.tts`).
+- `expo-share-intent+5.1.1.patch` — `getFileInfo` hard-crashed the whole app ("Carnet
+  keeps stopping" loop) on any share whose content URI it couldn't read: unguarded
+  `query(...)!!` → SecurityException, and an empty cursor →
+  CursorIndexOutOfBoundsException, both in `OnNewIntent` on the main thread (observed
+  2026-07-14, Android 17). The patch makes metadata gathering best-effort and defaults a
+  missing MIME type to `application/octet-stream` (the library's own JS parser calls
+  `mimeType.startsWith` unguarded, so a null would silently drop the share).
+
+If bumping either dependency, re-verify its patch still applies (`npx patch-package
+<pkg> --exclude 'android/build/'` regenerates it) — don't silently drop them, the
+crashes are real and reproducible.
 
 ## CI (`.github/workflows/ci.yml`)
 Five jobs: `shared` → `mobile`, `desktop`, `mobile-android` (parallel, all

@@ -1,0 +1,106 @@
+diff --git a/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt b/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
+index 0153c89..57bc736 100644
+--- a/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
++++ b/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
+@@ -66,37 +66,76 @@ class ExpoShareIntentModule : Module() {
+                     "filePath" to instance?.getAbsolutePath(uri),
+                 )
+             }
+-            val queryResult: Cursor = resolver.query(uri, null, null, null, null)!!
+-            queryResult.moveToFirst()
+-            val fileName = queryResult.getString(queryResult.getColumnIndex(OpenableColumns.DISPLAY_NAME))
+-            val fileSize = queryResult.getString(queryResult.getColumnIndex(OpenableColumns.SIZE))
+-            queryResult.close()
+-
+-            val mimeType = resolver.getType(uri)!!
++            // PATCH(carnet): a share receiver must never crash on a URI it cannot
++            // read. Upstream crashed the whole app here two ways, both observed
++            // on-device (2026-07-14, Android 17):
++            //  - resolver.query(...)!! threw SecurityException for a URI whose
++            //    read grant did not reach us (expired/revoked grants, intent
++            //    redelivery after process death) — and would NPE on providers
++            //    returning null;
++            //  - an EMPTY cursor (provider answered but returned no rows) hit
++            //    getString() without a moveToFirst() check →
++            //    CursorIndexOutOfBoundsException.
++            // Both landed in OnNewIntent on the main thread = "Carnet keeps
++            // stopping" loop. Gather metadata best-effort instead; on total
++            // failure the entry still carries the contentUri and the JS side
++            // shows its own error UI.
++            var fileName: String? = null
++            var fileSize: String? = null
++            try {
++                resolver.query(uri, null, null, null, null)?.use { cursor ->
++                    if (cursor.moveToFirst()) {
++                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
++                        if (nameIndex >= 0) fileName = cursor.getString(nameIndex)
++                        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
++                        if (sizeIndex >= 0) fileSize = cursor.getString(sizeIndex)
++                    }
++                }
++            } catch (e: Exception) {
++                notifyError("cannot read metadata for shared uri $uri: ${e.message}")
++            }
++            if (fileName == null) fileName = uri.lastPathSegment
++
++            // PATCH(carnet): upstream used getType(uri)!! — NPE when the provider
++            // has no type. Also guard the provider call itself. Default to
++            // application/octet-stream rather than null: the library's own JS
++            // parser calls file.mimeType.startsWith(...) unguarded, so a null
++            // here would throw there and silently drop the share.
++            val mimeType: String = try {
++                resolver.getType(uri) ?: "application/octet-stream"
++            } catch (e: Exception) {
++                "application/octet-stream"
++            }
+ 
+             var mediaWidth: String? = null;
+             var mediaHeight: String? = null;
+             var mediaDuration: String? = null;
+-            if (mimeType.startsWith("image/")) {
+-                val options = BitmapFactory.Options().apply {
+-                    inJustDecodeBounds = true
++            // PATCH(carnet): decode/probe steps open the stream and can throw the
++            // same SecurityException as the query — best-effort them too.
++            try {
++                if (mimeType.startsWith("image/")) {
++                    val options = BitmapFactory.Options().apply {
++                        inJustDecodeBounds = true
++                    }
++                    BitmapFactory.decodeStream(resolver.openInputStream(uri), null, options)
++                    mediaHeight = options.outHeight.toString()
++                    mediaWidth = options.outWidth.toString()
+                 }
+-                BitmapFactory.decodeStream(resolver.openInputStream(uri), null, options)
+-                mediaHeight = options.outHeight.toString()
+-                mediaWidth = options.outWidth.toString()
+-            }
+-            if (mimeType.startsWith("video/")) {
+-                val retriever = MediaMetadataRetriever()
+-                retriever.setDataSource(instance?.getAbsolutePath(uri))
+-                mediaWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt().toString() ?: null
+-                mediaHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt().toString() ?: null
+-                // Check orientation and flip size if required
+-                val metaRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toInt() ?: 0;
+-                if (metaRotation == 90 || metaRotation == 270) {
+-                    mediaWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt().toString() ?: null
+-                    mediaHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt().toString() ?: null
++                if (mimeType.startsWith("video/")) {
++                    val retriever = MediaMetadataRetriever()
++                    retriever.setDataSource(instance?.getAbsolutePath(uri))
++                    mediaWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt().toString() ?: null
++                    mediaHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt().toString() ?: null
++                    // Check orientation and flip size if required
++                    val metaRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toInt() ?: 0;
++                    if (metaRotation == 90 || metaRotation == 270) {
++                        mediaWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toInt().toString() ?: null
++                        mediaHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt().toString() ?: null
++                    }
++                    mediaDuration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt().toString() ?: null
+                 }
+-                mediaDuration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt().toString() ?: null
++            } catch (e: Exception) {
++                notifyError("cannot read media metadata for shared uri $uri: ${e.message}")
+             }
+ 
+             return mapOf(
