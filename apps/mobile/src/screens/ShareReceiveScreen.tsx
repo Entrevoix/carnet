@@ -48,6 +48,7 @@ import {
   BASE64_EXPANSION,
   MAX_SAFE_SHARE_BYTES,
   readShareFileAsBase64,
+  shareFileReadUri,
   sanitizeShareString,
   yamlQuote,
 } from "../lib/shareHelpers";
@@ -181,10 +182,11 @@ export default function ShareReceiveScreen({ navigation }: Props) {
         }
         const mime = imageFile.mimeType ?? "image/jpeg";
 
-        // Some share sources hand carnet a `content://` URI (Photos via
-        // FileProvider, etc.) — readShareFileAsBase64 picks SAF vs the
-        // legacy FileSystem API based on the scheme.
-        const base64 = await readShareFileAsBase64(imageFile.path);
+        // shareFileReadUri prefers the OS-granted content:// handle (the raw
+        // file path may be unreadable under scoped storage);
+        // readShareFileAsBase64 picks SAF vs the legacy FileSystem API based
+        // on the scheme.
+        const base64 = await readShareFileAsBase64(shareFileReadUri(imageFile));
         // Belt-and-suspenders: some content:// providers don't populate
         // `imageFile.size`, so the early check above is skipped. Recheck
         // against the actual decoded byte count before sending to the
@@ -244,7 +246,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
           );
         }
 
-        const base64 = await readShareFileAsBase64(audioFile.path);
+        const base64 = await readShareFileAsBase64(shareFileReadUri(audioFile));
         // Belt-and-suspenders: some content:// providers don't populate
         // audioFile.size, so the early check above is skipped. Recheck
         // against the decoded byte count expressed via base64 inflation.
@@ -297,7 +299,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
           );
         }
 
-        const base64 = await readShareFileAsBase64(otherFile.path);
+        const base64 = await readShareFileAsBase64(shareFileReadUri(otherFile));
         if (base64.length > MAX_SAFE_SHARE_BYTES * BASE64_EXPANSION) {
           const capMb = MAX_SAFE_SHARE_BYTES / 1024 / 1024;
           throw new Error(

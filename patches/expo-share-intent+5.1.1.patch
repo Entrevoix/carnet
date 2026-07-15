@@ -132,3 +132,34 @@ index 0153c89..2ccb8e2 100644
                  } else if (intent.action == Intent.ACTION_VIEW) {
                      notifyShareIntent(mapOf( "text" to intent.dataString, "type" to "text"))
                  } else {
+diff --git a/node_modules/expo-share-intent/build/ExpoShareIntentModule.types.d.ts b/node_modules/expo-share-intent/build/ExpoShareIntentModule.types.d.ts
+index f2ebd1a..343ada6 100644
+--- a/node_modules/expo-share-intent/build/ExpoShareIntentModule.types.d.ts
++++ b/node_modules/expo-share-intent/build/ExpoShareIntentModule.types.d.ts
+@@ -79,6 +79,9 @@ export type ShareIntentFile = {
+     fileName: string;
+     mimeType: string;
+     path: string;
++    /** Carnet patch: OS-granted content:// URI (Android), the only
++     * reliably-readable handle under scoped storage; null on iOS. */
++    contentUri: string | null;
+     size: number | null;
+     width: number | null;
+     height: number | null;
+diff --git a/node_modules/expo-share-intent/build/utils.js b/node_modules/expo-share-intent/build/utils.js
+index 3d343c6..ba63e65 100644
+--- a/node_modules/expo-share-intent/build/utils.js
++++ b/node_modules/expo-share-intent/build/utils.js
+@@ -101,6 +101,12 @@ export const parseShareIntent = (value, options) => {
+                                 (file.filePath ? `file://${file.filePath}` : null) ||
+                                 file.contentUri ||
+                                 null,
++                            // Carnet patch: keep the OS-granted content:// URI.
++                            // `filePath` is often a raw external path (e.g.
++                            // /storage/emulated/0/Download/...) that scoped
++                            // storage forbids reading — the contentUri is the
++                            // only reliably-readable handle for the share.
++                            contentUri: file.contentUri || null,
+                             mimeType: file.mimeType || null,
+                             fileName: file.fileName || null,
+                             width: file.width ? Number(file.width) : null,

@@ -14,11 +14,35 @@ vi.mock("expo-file-system/legacy", () => ({
 
 import {
   sanitizeShareString,
+  shareFileReadUri,
   yamlQuote,
   MAX_SAFE_SHARE_BYTES,
   BASE64_EXPANSION,
   formatElapsed,
 } from "./shareHelpers";
+
+describe("shareFileReadUri", () => {
+  it("prefers the OS-granted content:// URI over the raw file path", () => {
+    expect(
+      shareFileReadUri({
+        path: "file:///storage/emulated/0/Download/notes.txt",
+        contentUri: "content://com.android.providers.downloads.documents/document/42",
+      }),
+    ).toBe("content://com.android.providers.downloads.documents/document/42");
+  });
+
+  it("falls back to path when contentUri is null, undefined, or empty", () => {
+    expect(
+      shareFileReadUri({ path: "file:///cache/img.jpg", contentUri: null }),
+    ).toBe("file:///cache/img.jpg");
+    expect(shareFileReadUri({ path: "file:///cache/img.jpg" })).toBe(
+      "file:///cache/img.jpg",
+    );
+    expect(
+      shareFileReadUri({ path: "file:///cache/img.jpg", contentUri: "" }),
+    ).toBe("file:///cache/img.jpg");
+  });
+});
 
 describe("sanitizeShareString", () => {
   it("replaces LF with space", () => {

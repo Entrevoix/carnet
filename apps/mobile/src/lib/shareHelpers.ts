@@ -61,6 +61,26 @@ export function yamlQuote(v: string): string {
  * Throws whatever the underlying FileSystem / SAF call throws — caller
  * decides how to surface (typically the outer save() try/catch).
  */
+/**
+ * Pick the readable URI for a shared file's bytes.
+ *
+ * expo-share-intent's `path` is often a RAW filesystem path
+ * (`file:///storage/emulated/0/Download/...`, resolved from MediaStore's
+ * `_data` column) that scoped storage forbids this app from reading — a real
+ * Files-app .txt share failed exactly this way on-device (2026-07-14). The
+ * `contentUri` is the OS-granted handle from the share intent itself and is
+ * the only reliably-readable one, so it wins whenever present. `path` remains
+ * the fallback (iOS, and cache-copied files where no contentUri survives).
+ * `contentUri` exists via the repo's expo-share-intent patch, which threads
+ * it through the library's JS parser (upstream drops it).
+ */
+export function shareFileReadUri(file: {
+  path: string;
+  contentUri?: string | null;
+}): string {
+  return file.contentUri || file.path;
+}
+
 export async function readShareFileAsBase64(path: string): Promise<string> {
   if (path.startsWith("content://")) {
     return await StorageAccessFramework.readAsStringAsync(path, {
