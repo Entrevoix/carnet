@@ -121,6 +121,14 @@ export type KarakeepExportOutcome =
  *     bookmark, requires misconfig); disambiguating needs a confirming GET.
  *   - attachTags is additive: a re-export re-attaches current tags but does NOT
  *     detach tags removed from the note since the first export.
+ *   - A connection drop MID-EXPORT (create succeeded, then attachTags/asset
+ *     push died with status 0, before the karakeepId stamp) reads as
+ *     failed+unreachable, so the pending-sync queue (lib/pendingSync.ts)
+ *     retries an UNSTAMPED note and creates a duplicate bookmark. Bounded to
+ *     one duplicate per mid-export drop, and identical to what a manual
+ *     re-tap always did — the queue just automates that retry. Fixing it
+ *     means stamping the id immediately after create/update instead of after
+ *     the asset push.
  */
 export async function exportNoteToKarakeep(input: {
   body: string;
