@@ -933,6 +933,46 @@ describe("moveToArchive", () => {
     expect(_files.has(mdPath)).toBe(false);
   });
 
+  it("archives a SAF note under its decoded filename, not the URL-encoded document id", async () => {
+    // Observed on-device 2026-07-16: archive-deleting a SAF-vault note landed
+    // the .md in Archive/ as `primary%3Acarnet%2FIdeas%2Fpending-sync-test.md`
+    // — the raw last URI segment is the encoded document id, not the filename.
+    const ROOT = "content://auth/tree/primary%3Acarnet";
+    const doc = (rel: string) =>
+      `${ROOT}/document/primary%3Acarnet%2F${rel.split("/").join("%2F")}`;
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      captureFolderPath: ROOT,
+    } as unknown as Awaited<ReturnType<typeof getSettings>>);
+    const saf = FileSystem.StorageAccessFramework;
+    vi.mocked(saf.readDirectoryAsync).mockImplementation(async (uri: string) => {
+      if (uri === ROOT) return [doc("Archive")];
+      return []; // Archive/ empty → no collision bump
+    });
+    vi.mocked(saf.readAsStringAsync).mockResolvedValue(
+      "---\nkind: shared-file\n---\n# T\n",
+    );
+    const createdNames: string[] = [];
+    vi.mocked(saf.createFileAsync).mockImplementation(
+      async (_dir: string, name: string) => {
+        createdNames.push(name);
+        return doc(`Archive/${name}`);
+      },
+    );
+    vi.mocked(saf.writeAsStringAsync).mockResolvedValue(undefined as never);
+
+    const { archivedMdPath } = await moveToArchive(
+      doc("Ideas/pending-sync-test.md"),
+    );
+
+    expect(createdNames).toEqual(["pending-sync-test.md"]);
+    expect(archivedMdPath).toBe(doc("Archive/pending-sync-test.md"));
+
+    vi.mocked(saf.readDirectoryAsync).mockReset();
+    vi.mocked(saf.readAsStringAsync).mockReset();
+    vi.mocked(saf.createFileAsync).mockReset();
+    vi.mocked(saf.writeAsStringAsync).mockReset();
+  });
+
   it("collision-bumps the archive name when an entry with the same stem already exists there", async () => {
     const m1 = await writeIdea("dup", "# v1\n");
     await moveToArchive(m1.filepath);

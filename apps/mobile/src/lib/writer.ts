@@ -1006,8 +1006,14 @@ export async function moveToArchive(
 
   const content = await readByUri(filepath);
 
-  // Build collision-free archive name for the .md.
-  const mdName = filepath.split("/").pop() ?? "note.md";
+  // Build collision-free archive name for the .md. The URI's raw last path
+  // segment is only the filename on file:// paths — a SAF document URI ends in
+  // the URL-ENCODED document id (primary%3Acarnet%2FIdeas%2Fnote.md), which
+  // used to archive verbatim as the display name (observed on-device
+  // 2026-07-16). safLastSegment decodes SAF ids to the real filename.
+  const mdName = filepath.startsWith("content://")
+    ? safLastSegment(filepath)
+    : (filepath.split("/").pop() ?? "note.md");
   const mdDot = mdName.lastIndexOf(".");
   const mdStem = mdDot >= 0 ? mdName.slice(0, mdDot) : mdName;
   const mdExt = mdDot >= 0 ? mdName.slice(mdDot) : ".md";
