@@ -79,10 +79,12 @@ dead end, don't retry it; use Files app → Share → Carnet).
 
 ## New findings (small, unfixed)
 
-- **Archive rename quirk**: archive-deleting the paired share note moved its `.md` into
-  `Archive/` as `primary%3Acarnet%2FIdeas%2Fpending-sync-test.md` (SAF-URL-encoded
-  document id as display name) while the paired `.txt` archived under its correct name.
-  Look at `moveToArchive`'s display-name handling in `writer.ts` when convenient.
+- **Archive rename quirk — FIXED same session (`c896d9d`)**: archive-deleting a
+  SAF-vault note landed the `.md` in `Archive/` as
+  `primary%3Acarnet%2FIdeas%2Fpending-sync-test.md` — `moveToArchive` took the URI's
+  raw last segment, which on SAF is the URL-encoded document id. Now uses
+  `safLastSegment` for `content://` URIs (+ regression test). NOT yet on-device
+  verified (device build predates it); next archive-delete on the phone will confirm.
 - QA-agent operational note: the qa-tester subagent stalled twice waiting on its own
   sleep timers during the pending-sync run; steps 7–9 were finished by driving adb
   directly from the main session. Fine to do that — uiautomator dump + input tap/swipe
