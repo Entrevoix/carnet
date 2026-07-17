@@ -433,7 +433,18 @@ export default function AudioCaptureScreen({ navigation }: Props) {
         setAutoTranscribeError(
           "Couldn't start the download automatically. Opening Speech Services by Google in the Play Store — install/update it, then tap Retry.",
         );
-        Linking.openURL(market).catch(() => Linking.openURL(web));
+        // Both store URLs guarded — the message above already tells the user
+        // what to install; an unhandled rejection here helps nobody.
+        Linking.openURL(market).catch(() =>
+          Linking.openURL(web).catch(() => {}),
+        );
+      }
+    } catch (e: unknown) {
+      // A rejected download trigger previously reset the button silently —
+      // no message, and the Play Store fallback never ran.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (mountedRef.current) {
+        setAutoTranscribeError(`Voice-model download failed: ${msg}`);
       }
     } finally {
       if (mountedRef.current) setDownloadingModel(false);

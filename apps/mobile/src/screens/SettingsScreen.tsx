@@ -194,16 +194,28 @@ export default function SettingsScreen() {
     }
   };
 
+  // Both clears flip UI state only AFTER the keychain write confirms — a
+  // reject must not show "cleared" while the key is still stored.
   const clearKey = async () => {
-    await setOmniRouteApiKey("");
-    setKeyConfigured(false);
-    setPendingKey("");
+    try {
+      await setOmniRouteApiKey("");
+      setKeyConfigured(false);
+      setPendingKey("");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPickerError(`Failed to clear the key: ${msg.slice(0, 120)}`);
+    }
   };
 
   const clearKarakeepKey = async () => {
-    await setKarakeepApiKey("");
-    setKarakeepKeyConfigured(false);
-    setPendingKarakeepKey("");
+    try {
+      await setKarakeepApiKey("");
+      setKarakeepKeyConfigured(false);
+      setPendingKarakeepKey("");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPickerError(`Failed to clear the key: ${msg.slice(0, 120)}`);
+    }
   };
 
   /**

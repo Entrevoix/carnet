@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlatList, Pressable, RefreshControl, StyleSheet, View } from "react-native";
-import { Searchbar, Text } from "react-native-paper";
+import { Searchbar, Snackbar, Text } from "react-native-paper";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 
@@ -43,6 +43,7 @@ export default function SearchScreen({ route, navigation }: Props) {
   const [index, setIndex] = useState<NoteIndex | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [modeFilter, setModeFilter] = useState<CaptureMode | null>(null);
   const [tagFilters, setTagFilters] = useState<string[]>(
@@ -77,8 +78,14 @@ export default function SearchScreen({ route, navigation }: Props) {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
+    setRefreshError(null);
     try {
       setIndex(await refreshNoteIndex());
+    } catch (e: unknown) {
+      // A failed rebuild previously just stopped the spinner and showed
+      // stale results with no signal (and escaped as an unhandled rejection).
+      const msg = e instanceof Error ? e.message : String(e);
+      setRefreshError(`Refresh failed — showing cached results: ${msg}`);
     } finally {
       setRefreshing(false);
     }
@@ -268,6 +275,14 @@ export default function SearchScreen({ route, navigation }: Props) {
           }
         />
       )}
+
+      <Snackbar
+        visible={refreshError !== null}
+        onDismiss={() => setRefreshError(null)}
+        duration={5000}
+      >
+        {refreshError ?? ""}
+      </Snackbar>
     </View>
   );
 }

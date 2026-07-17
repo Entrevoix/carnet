@@ -11,7 +11,7 @@
  */
 import { useCallback, useLayoutEffect, useState } from "react";
 import { RefreshControl, ScrollView, StyleSheet, View } from "react-native";
-import { ActivityIndicator, Divider, List, Text, useTheme } from "react-native-paper";
+import { ActivityIndicator, Divider, List, Snackbar, Text, useTheme } from "react-native-paper";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 
@@ -38,6 +38,7 @@ export default function TagBrowserScreen({ route, navigation }: Props) {
   const tag = route.params?.tag;
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [tagEntries, setTagEntries] = useState<TagIndexEntry[]>([]);
   const [notes, setNotes] = useState<CaptureEntry[]>([]);
 
@@ -70,8 +71,14 @@ export default function TagBrowserScreen({ route, navigation }: Props) {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
+    setRefreshError(null);
     try {
       await apply(await refreshTagIndex());
+    } catch (e: unknown) {
+      // A failed rebuild previously just stopped the spinner and showed
+      // stale tags with no signal (and escaped as an unhandled rejection).
+      const msg = e instanceof Error ? e.message : String(e);
+      setRefreshError(`Refresh failed — showing cached tags: ${msg}`);
     } finally {
       setRefreshing(false);
     }
@@ -129,6 +136,14 @@ export default function TagBrowserScreen({ route, navigation }: Props) {
             />
           </View>
         ))}
+
+      <Snackbar
+        visible={refreshError !== null}
+        onDismiss={() => setRefreshError(null)}
+        duration={5000}
+      >
+        {refreshError ?? ""}
+      </Snackbar>
     </ScrollView>
   );
 }

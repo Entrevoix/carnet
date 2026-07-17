@@ -83,9 +83,14 @@ export default function ShareReceiveScreen({ navigation }: Props) {
   const theme = useCarnetTheme();
   const { shareIntent, resetShareIntent } = useShareIntentContext();
 
-  // If the screen ever opens without a shareIntent (deep link mishap), bail.
+  // If the screen OPENS without a shareIntent (deep link mishap), bail.
+  // Scoped to the opening state only: cancel()/Done call resetShareIntent()
+  // (nulling the context) and then goBack() themselves — without this guard
+  // the null re-renders the still-mounted screen and this effect fires a
+  // SECOND goBack(), popping past Home (timing-dependent).
+  const openedEmpty = useRef(shareIntent == null);
   useEffect(() => {
-    if (!shareIntent) {
+    if (openedEmpty.current && !shareIntent) {
       navigation.goBack();
     }
   }, [shareIntent, navigation]);

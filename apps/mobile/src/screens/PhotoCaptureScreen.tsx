@@ -91,9 +91,14 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
   }, [context, transcript]);
 
   const grant = async (): Promise<void> => {
-    const result = await requestPermission();
-    if (!result.granted) {
-      setError("Camera permission denied");
+    try {
+      const result = await requestPermission();
+      if (!result.granted) {
+        setError("Camera permission denied");
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Permission request failed: ${msg}`);
     }
   };
 
