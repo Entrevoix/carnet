@@ -23,6 +23,7 @@ import {
   type NoteFileRef,
 } from "../lib/writer";
 import { pairConflicts, type ConflictPair } from "../lib/syncConflicts";
+import { reportColdStart } from "../lib/startupTiming";
 import {
   loadCachedNoteIndex,
   refreshNoteIndex,
@@ -229,6 +230,12 @@ export default function HomeScreen({ navigation }: Props) {
       ),
     });
   }, [navigation, syncStatus]);
+
+  // Cold-start metric: Home's first mount is "the user can capture now".
+  // reportColdStart latches once per process, so re-mounts are no-ops.
+  useEffect(() => {
+    reportColdStart();
+  }, []);
 
   // Auto-exit selection mode when the user deselects the last row.
   // Kept as an effect (rather than inside the updater above) so the side

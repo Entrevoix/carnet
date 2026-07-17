@@ -48,6 +48,17 @@ device-only (voice/OCR, real share-sheet, Syncthing, Karakeep network calls).
       AsyncStorage — `carnet:settings:v1` holds the URLs + non-secret prefs but
       **no API-key/token field**.
 
+## Cold-start budget
+
+(Automated: `src/lib/startupTiming.test.ts` covers the classifier/latch;
+this device check verifies the real number.)
+
+- [ ] Force-stop the app, relaunch from the launcher, then
+      `adb logcat -d | grep "\[startup\]"`. **No line containing `EXCEEDS`**
+      may appear (release builds only log on a budget breach). A breach means
+      a recent change regressed launch speed — capture latency is the
+      product's moat; treat it like a failing test, not a note.
+
 ## Capture — Idea (golden path)
 
 _(automated coverage: `npm run verify:capture-flow` — frontmatter shape via

@@ -91,11 +91,17 @@ vi.mock("../voice/VoiceReadinessBanner", () => ({
   VoiceReadinessBanner: () => null,
 }));
 
+// Mocked for two reasons: the real module's breach warn can fire as noise on
+// a slow CI collect phase (>3s between module eval and first render), and
+// mocking lets the wiring test below pin that Home actually reports.
+vi.mock("../lib/startupTiming", () => ({ reportColdStart: vi.fn() }));
+
 import HomeScreen from "./HomeScreen";
 import { getRecentCaptures } from "../lib/storage";
 import { getPendingExportCount } from "../lib/pendingSync";
 import { drainPendingKarakeepExports } from "../lib/pendingSyncRunner";
 import { listNoteFiles, listSyncConflictFiles } from "../lib/writer";
+import { reportColdStart } from "../lib/startupTiming";
 
 type ScreenProps = Parameters<typeof HomeScreen>[0];
 
@@ -197,6 +203,12 @@ describe("HomeScreen", () => {
     await waitFor(() =>
       expect(screen.queryByText(/waiting for Karakeep/)).toBeNull(),
     );
+  });
+
+  it("reports cold-start completion on first mount", async () => {
+    renderScreen();
+    await screen.findByText("Jack's Baseball Team");
+    expect(reportColdStart).toHaveBeenCalled();
   });
 
   it("shows no conflict banner when the vault has no sync conflicts", async () => {

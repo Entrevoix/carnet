@@ -1,4 +1,8 @@
 import "react-native-gesture-handler";
+// FIRST app-code import on purpose: stamps BOOT_TIMESTAMP_MS as close to
+// JS-bundle evaluation start as app code can get (cold-start budget,
+// lib/startupTiming.ts). Home reports against it on first mount.
+import "./src/lib/startupTiming";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, AppState, useColorScheme, View } from "react-native";
 import {
