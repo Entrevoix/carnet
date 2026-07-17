@@ -42,15 +42,30 @@ const {
     type SafEntry = { kind: "file"; content: string } | { kind: "dir" };
     const _saf: Map<string, SafEntry> = new Map();
 
-    /** Mime types DocumentsContract enforces a canonical extension for, restricted
-     * to what writer.ts actually passes to createFileAsync (text/markdown for
-     * every note write, plus whatever mime the caller hands writeBinary). Anything
-     * else (notably "application/octet-stream", used by moveToArchive's binary
-     * copy) is left alone — matching the real behavior that only triggered
-     * 9171376 for well-known mimes. */
+    /** Mime types DocumentsContract enforces a canonical extension for. Real
+     * Android appends the system-registered extension for ANY well-known mime
+     * whose display name lacks it, so this covers every mime writeBinary can
+     * receive from the share/capture paths (mirrors writer.ts extFromMime /
+     * mimeFromFilename), not just the ones current tests use — a narrower
+     * allowlist would let a future test pass against the mock while real SAF
+     * renames the file and breaks note↔file pairing (the 9171376 class).
+     * "application/octet-stream" is deliberately absent: no registered
+     * extension, real SAF leaves the name alone. */
     const SAF_CANONICAL_EXT: Record<string, string> = {
       "text/markdown": ".md",
+      "text/plain": ".txt",
+      "text/csv": ".csv",
       "image/jpeg": ".jpg",
+      "image/png": ".png",
+      "image/webp": ".webp",
+      "image/gif": ".gif",
+      "image/heic": ".heic",
+      "audio/mpeg": ".mp3",
+      "audio/mp4": ".m4a",
+      "audio/wav": ".wav",
+      "application/pdf": ".pdf",
+      "application/zip": ".zip",
+      "application/json": ".json",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     };
 
@@ -172,6 +187,7 @@ import {
   writePerson,
   readNote,
   updateNote,
+  updateNoteIfUnchanged,
   moveToArchive,
   listNoteFiles,
   safLastSegment,
@@ -225,6 +241,45 @@ describe("writeIdea (SAF)", () => {
     expect(nameOf(fp1)).toBe("test-slug.md");
     expect(nameOf(fp2)).toBe("test-slug-2.md");
     expect(nameOf(fp3)).toBe("test-slug-3.md");
+  });
+});
+
+// ── updateNoteIfUnchanged (SAF divergence) ────────────────────────────────────
+
+describe("updateNoteIfUnchanged (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("mtime guard is INERT over content:// — a stale baseline still overwrites", async () => {
+    // Backend-divergent by design (writer.ts getModificationTime returns null
+    // for content://): over SAF a concurrent external edit cannot be detected,
+    // so the guard never fires and cross-device races fall back to Syncthing
+    // conflict files. Pin that here so a future "fix" that starts failing SAF
+    // writes on a stale baseline is caught as the behavior change it is.
+    const { filepath } = await writeIdea("guarded", "# v1\n");
+    const staleBaseline = 12345; // any non-null baseline
+    const result = await updateNoteIfUnchanged(filepath, "# v2\n", staleBaseline);
+    expect(result).toEqual({ ok: true });
+    await expect(readNote(filepath)).resolves.toBe("# v2\n");
+  });
+});
+
+// ── writePerson ───────────────────────────────────────────────────────────────
+
+describe("writePerson (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("writes People/First-Last.md and collision-bumps a second card", async () => {
+    const md = "---\nkind: person\n---\n# Ada Lovelace\n";
+    const { filepath: fp1 } = await writePerson("Ada", "Lovelace", md);
+    const { filepath: fp2 } = await writePerson("Ada", "Lovelace", md);
+    expect(nameOf(fp1)).toBe("Ada-Lovelace.md");
+    expect(nameOf(fp2)).toBe("Ada-Lovelace-2.md");
   });
 });
 
