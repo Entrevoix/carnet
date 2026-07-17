@@ -8,22 +8,17 @@
  *   Journal/YYYY-MM-DD.md      — daily journal, append-on-existing
  *   People/{Firstname-Lastname}.md — one file per contact
  *
- * Storage paths come in two flavors:
- *   - `file://...` — direct filesystem path inside the app sandbox or a
- *     legacy raw Android path. Uses the regular expo-file-system API.
- *   - `content://...tree/...` — Android Storage Access Framework URI granted
- *     persistently by the OS document picker. Uses StorageAccessFramework
- *     API (createFileAsync, readDirectoryAsync, etc.) because raw
- *     concatenation doesn't work on SAF URIs.
- *
- * The branching is concentrated in resolveRoot/findOrCreateSubdir/
- * findFileInDir/writeNewFile/readByUri/writeByUri so the public API
- * (writeIdea, appendJournal, writePerson, readNote, updateNote) stays the
- * same shape callers depend on.
+ * Storage paths come in two flavors — `file://...` (expo-file-system legacy)
+ * and `content://...tree/...` (Storage Access Framework). The per-backend
+ * branching lives behind the `VaultFs` seam in ./vaultFs; this module selects
+ * a backend ONCE in resolveRoot (or fsForUri for a caller-supplied URI) and
+ * calls its primitives, so the public API (writeIdea, appendJournal,
+ * writePerson, readNote, updateNote) stays the same shape callers depend on.
  */
 
 import * as FileSystem from "expo-file-system/legacy";
 import { getSettings } from "./settings";
+import { fsForUri, safLastSegment, vaultFsFor, type VaultFs } from "./vaultFs";
 // Pure frontmatter helpers used internally; the full set is re-exported below.
 import {
   extractFrontmatterField,
@@ -33,8 +28,6 @@ import {
   upsertFrontmatterField,
 } from "./frontmatter";
 
-const { StorageAccessFramework } = FileSystem;
-
 /** Upper bound on collision-bumped filename variants ({stem}-2.md … {stem}-99.md).
  * If 99 variants are taken, the user has a real cleanup problem and we throw
  * rather than silently overwriting. Same ceiling for ideas / people / binaries. */
@@ -43,8 +36,8 @@ const MAX_COLLISION_VARIANTS = 100;
 interface Root {
   /** Either a `file://` URI or a `content://...tree/...` SAF tree URI. */
   uri: string;
-  /** True when `uri` is a SAF URI and SAF APIs must be used. */
-  isSaf: boolean;
+  /** The filesystem backend selected for `uri` (SAF vs file://). */
+  fs: VaultFs;
 }
 
 /**
@@ -58,14 +51,14 @@ async function resolveRoot(): Promise<Root> {
   const trimmed = captureFolderPath.trim();
   if (!trimmed) {
     const base = FileSystem.documentDirectory ?? "file:///data/user/0/carnet/files/";
-    return { uri: `${base.replace(/\/$/, "")}/carnet`, isSaf: false };
+    return { uri: `${base.replace(/\/$/, "")}/carnet`, fs: vaultFsFor(false) };
   }
   if (trimmed.startsWith("content://")) {
-    return { uri: trimmed, isSaf: true };
+    return { uri: trimmed, fs: vaultFsFor(true) };
   }
   // Best-effort: file:// or raw path. Ensure file:// prefix for FileSystem API.
   const uri = trimmed.startsWith("file://") ? trimmed : `file://${trimmed}`;
-  return { uri, isSaf: false };
+  return { uri, fs: vaultFsFor(false) };
 }
 
 /** Map a MIME type to a sensible file extension for binary writes. Covers
@@ -105,71 +98,23 @@ export function extFromMime(mime?: string): string {
   return slash >= 0 ? m.slice(slash + 1) : "bin";
 }
 
-/**
- * Extract the filename/subdir name from a SAF document or tree URI. SAF URIs:
- *   tree:     content://authority/tree/{encoded-tree-id}
- *   document: content://authority/tree/{encoded-tree-id}/document/{encoded-document-id}
- *
- * The encoded id (after `/document/` or `/tree/`) decodes into something like
- * `primary:Download/Carnet/Ideas/myidea.md` — the filename is the last `/`
- * segment of that decoded id. We deliberately do NOT decode the whole URI,
- * which would mangle the authority component that contains its own `/`s.
- */
-export function safLastSegment(uri: string): string {
-  const docMarker = uri.indexOf("/document/");
-  const treeMarker = uri.indexOf("/tree/");
-  let encodedId: string;
-  if (docMarker >= 0) {
-    encodedId = uri.slice(docMarker + "/document/".length);
-  } else if (treeMarker >= 0) {
-    encodedId = uri.slice(treeMarker + "/tree/".length);
-  } else {
-    return uri;
-  }
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(encodedId);
-  } catch {
-    decoded = encodedId;
-  }
-  const slash = decoded.lastIndexOf("/");
-  if (slash >= 0) return decoded.slice(slash + 1);
-  // No slash — handle root-of-volume case like "primary:foldername"
-  const colon = decoded.indexOf(":");
-  return colon >= 0 ? decoded.slice(colon + 1) : decoded;
-}
-
-/**
- * List the names of all children in `parentUri`. Single IPC call on SAF
- * (vs. one per collision probe), single readDirectory on file://. Callers
- * use the returned Set to probe many candidate names in O(1) each.
- */
-async function listChildNames(parentUri: string, isSaf: boolean): Promise<Set<string>> {
-  if (isSaf) {
-    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
-    return new Set(children.map(safLastSegment));
-  }
-  try {
-    const names = await FileSystem.readDirectoryAsync(parentUri);
-    return new Set(names);
-  } catch {
-    // Directory may not exist yet — first write into a fresh subdir.
-    return new Set();
-  }
-}
+// safLastSegment (SAF URI → filename decoder) now lives in ./vaultFs alongside
+// the backends that use it; re-exported below so importers of ./writer are
+// unaffected.
 
 /**
  * Resolve a collision-free filename of shape `{base}{ext}` or `{base}-N{ext}`.
  * Lists the directory once and probes against an in-memory Set so the SAF
- * branch doesn't pay one IPC round-trip per probe.
+ * backend doesn't pay one IPC round-trip per probe.
  */
 async function findCollisionFreeName(
   parentUri: string,
   base: string,
   ext: string,
-  isSaf: boolean,
+  fs: VaultFs,
 ): Promise<string> {
-  const existing = await listChildNames(parentUri, isSaf);
+  const children = await fs.listChildren(parentUri);
+  const existing = new Set(children.map((c) => c.name));
   const first = `${base}${ext}`;
   if (!existing.has(first)) return first;
   for (let n = 2; n < MAX_COLLISION_VARIANTS; n++) {
@@ -181,156 +126,42 @@ async function findCollisionFreeName(
   );
 }
 
-/** Find an existing child file in `parentUri` whose name matches, or null.
- * Used by appendJournal where we need the URI to read+rewrite. Other
- * collision checks should use findCollisionFreeName which lists once. */
-async function findFileInDir(
-  parentUri: string,
-  filename: string,
-  isSaf: boolean,
-): Promise<string | null> {
-  if (isSaf) {
-    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
-    return children.find((u) => safLastSegment(u) === filename) ?? null;
-  }
-  const fileUri = `${parentUri.replace(/\/$/, "")}/${filename}`;
-  const info = await FileSystem.getInfoAsync(fileUri);
-  return info.exists ? fileUri : null;
-}
-
-/** Find an existing named subdirectory, returning its URI, or null when it does
- * not exist. The read-only counterpart of findOrCreateSubdir — used by
- * resolvePairedUri so resolving a (possibly broken) link never creates an empty
- * Photos/Files directory as a side effect of a pure lookup. */
-async function findSubdir(root: Root, name: string): Promise<string | null> {
-  if (root.isSaf) {
-    const children = await StorageAccessFramework.readDirectoryAsync(root.uri);
-    return children.find((u) => safLastSegment(u) === name) ?? null;
-  }
-  const dir = `${root.uri.replace(/\/$/, "")}/${name}`;
-  const info = await FileSystem.getInfoAsync(dir);
-  return info.exists ? dir : null;
-}
-
-/** Get or create a named subdirectory, returning its URI. */
-async function findOrCreateSubdir(root: Root, name: string): Promise<string> {
-  if (root.isSaf) {
-    const children = await StorageAccessFramework.readDirectoryAsync(root.uri);
-    const existing = children.find((u) => safLastSegment(u) === name);
-    if (existing) return existing;
-    return await StorageAccessFramework.makeDirectoryAsync(root.uri, name);
-  }
-  const dir = `${root.uri.replace(/\/$/, "")}/${name}`;
-  const info = await FileSystem.getInfoAsync(dir);
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-  }
-  return dir;
-}
-
-/** Create a new file in `parentUri` with `filename` and write `content`.
- * Returns the URI of the new file. Caller must guarantee `filename` is
- * collision-free (i.e. has already been verified via findFileInDir). */
+/** Create a new markdown file in `parentUri` with `filename` and write
+ * `content`. Returns the URI of the new file (SAF may hand back a renamed URI,
+ * but a `.md` name already carries the canonical extension, so it doesn't
+ * here). Caller must guarantee `filename` is collision-free. */
 async function writeNewFile(
   parentUri: string,
   filename: string,
   content: string,
-  isSaf: boolean,
+  fs: VaultFs,
 ): Promise<string> {
-  if (isSaf) {
-    const fileUri = await StorageAccessFramework.createFileAsync(
-      parentUri,
-      filename,
-      "text/markdown",
-    );
-    await StorageAccessFramework.writeAsStringAsync(fileUri, content, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
-    return fileUri;
-  }
-  const fileUri = `${parentUri.replace(/\/$/, "")}/${filename}`;
-  await FileSystem.writeAsStringAsync(fileUri, content, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  const fileUri = await fs.createFile(parentUri, filename, "text/markdown");
+  await fs.writeString(fileUri, content);
   return fileUri;
 }
 
 /** Read a file by its URI (handles both file:// and content://). */
 async function readByUri(uri: string): Promise<string> {
-  if (uri.startsWith("content://")) {
-    return await StorageAccessFramework.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
-  }
-  return await FileSystem.readAsStringAsync(uri, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  return fsForUri(uri).readString(uri);
 }
 
 /** Overwrite a file by its URI. */
 async function writeByUri(uri: string, content: string): Promise<void> {
-  if (uri.startsWith("content://")) {
-    await StorageAccessFramework.writeAsStringAsync(uri, content, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
-    return;
-  }
-  await FileSystem.writeAsStringAsync(uri, content, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
+  await fsForUri(uri).writeString(uri, content);
 }
 
-/** Read a binary file (image, audio, generic file) as base64 from either
- * storage backend. Used by the archive flow when relocating a paired binary. */
-async function readBinaryByUri(uri: string, isSaf: boolean): Promise<string> {
-  if (isSaf) {
-    return StorageAccessFramework.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-  }
-  return FileSystem.readAsStringAsync(uri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-}
-
-/** Write a base64-encoded binary into `parentUri/filename`. Mime is generic
- * — Android attaches it but the file extension is what consumers actually
- * use. SAF requires createFileAsync first; file:// can write directly. */
+/** Write a base64-encoded binary into `parentUri/filename` (generic mime).
+ * Used by the archive flow when relocating a paired binary. */
 async function writeBinaryBytes(
   parentUri: string,
   filename: string,
   base64: string,
-  isSaf: boolean,
+  fs: VaultFs,
 ): Promise<string> {
-  if (isSaf) {
-    const fileUri = await StorageAccessFramework.createFileAsync(
-      parentUri,
-      filename,
-      "application/octet-stream",
-    );
-    await StorageAccessFramework.writeAsStringAsync(fileUri, base64, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    return fileUri;
-  }
-  const fileUri = `${parentUri.replace(/\/$/, "")}/${filename}`;
-  await FileSystem.writeAsStringAsync(fileUri, base64, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
+  const fileUri = await fs.createFile(parentUri, filename, "application/octet-stream");
+  await fs.writeBinaryBytes(fileUri, base64);
   return fileUri;
-}
-
-/** Delete a file by URI. The file:// branch passes `idempotent: true` so a
- * retry after a partial archive doesn't crash. SAF deleteAsync is NOT
- * idempotent — it throws when the user revoked the tree permission AND
- * when the file is already gone. Callers should wrap in try/catch and
- * accept a stranded source (the archive copy still exists). */
-async function deleteByUri(uri: string, isSaf: boolean): Promise<void> {
-  if (isSaf) {
-    await StorageAccessFramework.deleteAsync(uri);
-    return;
-  }
-  await FileSystem.deleteAsync(uri, { idempotent: true });
 }
 
 /**
@@ -503,9 +334,9 @@ export async function resolvePairedUri(
   filename: string,
 ): Promise<{ uri: string; mime: string } | null> {
   const root = await resolveRoot();
-  const subdirUri = await findSubdir(root, subdir);
+  const subdirUri = await root.fs.findSubdir(root.uri, subdir);
   if (!subdirUri) return null; // subdir absent — broken link, don't create it
-  const binaryUri = await findFileInDir(subdirUri, filename, root.isSaf);
+  const binaryUri = await root.fs.findChild(subdirUri, filename);
   if (!binaryUri) return null;
   return { uri: binaryUri, mime: mimeFromFilename(filename) };
 }
@@ -667,6 +498,10 @@ export {
   rewriteFrontmatterField,
 } from "./frontmatter";
 
+// SAF URI → filename decoder lives in ./vaultFs; re-exported so existing
+// importers of ./writer (and the writer test suites) keep their import path.
+export { safLastSegment } from "./vaultFs";
+
 /**
  * Per-filepath promise chain. Used to serialize concurrent reads-then-writes
  * to the same file (the offline drain may process two journal entries for
@@ -700,9 +535,9 @@ export async function writeIdea(
   markdown: string,
 ): Promise<{ filepath: string }> {
   const root = await resolveRoot();
-  const ideasUri = await findOrCreateSubdir(root, "Ideas");
-  const filename = await findCollisionFreeName(ideasUri, slug, ".md", root.isSaf);
-  const filepath = await writeNewFile(ideasUri, filename, markdown, root.isSaf);
+  const ideasUri = await root.fs.findOrCreateSubdir(root.uri, "Ideas");
+  const filename = await findCollisionFreeName(ideasUri, slug, ".md", root.fs);
+  const filepath = await writeNewFile(ideasUri, filename, markdown, root.fs);
   return { filepath };
 }
 
@@ -724,7 +559,7 @@ export async function appendJournal(
   markdown: string,
 ): Promise<{ filepath: string; markdown: string }> {
   const root = await resolveRoot();
-  const journalUri = await findOrCreateSubdir(root, "Journal");
+  const journalUri = await root.fs.findOrCreateSubdir(root.uri, "Journal");
   const filename = `${date}.md`;
 
   // Serialize per (journalUri + filename) so two concurrent appends to today's
@@ -734,7 +569,7 @@ export async function appendJournal(
   const lockKey = `${journalUri}/${filename}`;
 
   return serialize(lockKey, async () => {
-    const existingUri = await findFileInDir(journalUri, filename, root.isSaf);
+    const existingUri = await root.fs.findChild(journalUri, filename);
 
     if (existingUri) {
       const existing = await readByUri(existingUri);
@@ -757,7 +592,7 @@ export async function appendJournal(
       return { filepath: existingUri, markdown: finalMarkdown };
     }
 
-    const filepath = await writeNewFile(journalUri, filename, markdown, root.isSaf);
+    const filepath = await writeNewFile(journalUri, filename, markdown, root.fs);
     return { filepath, markdown };
   });
 }
@@ -777,7 +612,7 @@ export async function writePerson(
   markdown: string,
 ): Promise<{ filepath: string }> {
   const root = await resolveRoot();
-  const peopleUri = await findOrCreateSubdir(root, "People");
+  const peopleUri = await root.fs.findOrCreateSubdir(root.uri, "People");
 
   // Use provided names if non-empty; fall back to frontmatter/H1.
   let stem: string;
@@ -791,8 +626,8 @@ export async function writePerson(
   }
   if (!stem) stem = "Unknown-Person";
 
-  const filename = await findCollisionFreeName(peopleUri, stem, ".md", root.isSaf);
-  const filepath = await writeNewFile(peopleUri, filename, markdown, root.isSaf);
+  const filename = await findCollisionFreeName(peopleUri, stem, ".md", root.fs);
+  const filepath = await writeNewFile(peopleUri, filename, markdown, root.fs);
   return { filepath };
 }
 
@@ -814,20 +649,17 @@ export async function writeBinary(
   mimeType: string,
 ): Promise<{ filepath: string; finalName: string }> {
   const root = await resolveRoot();
-  const dirUri = await findOrCreateSubdir(root, subdir);
+  const dirUri = await root.fs.findOrCreateSubdir(root.uri, subdir);
 
   const dot = filename.lastIndexOf(".");
   const stem = dot >= 0 ? filename.slice(0, dot) : filename;
   const ext = dot >= 0 ? filename.slice(dot) : "";
 
-  const finalName = await findCollisionFreeName(dirUri, stem, ext, root.isSaf);
+  const finalName = await findCollisionFreeName(dirUri, stem, ext, root.fs);
 
-  let filepath: string;
-  if (root.isSaf) {
-    filepath = await StorageAccessFramework.createFileAsync(dirUri, finalName, mimeType);
-    await StorageAccessFramework.writeAsStringAsync(filepath, base64, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+  const filepath = await root.fs.createFile(dirUri, finalName, mimeType);
+  await root.fs.writeBinaryBytes(filepath, base64);
+  if (root.fs.isSaf) {
     // SAF may RENAME on create: DocumentsContract appends the mime-canonical
     // extension when the display name doesn't already end with it (observed
     // on-device 2026-07-14: requested `agenda-test.vnd.…document`, created
@@ -837,11 +669,6 @@ export async function writeBinary(
     // orphaned on archive). Derive it from the returned document URI.
     const created = safLastSegment(filepath);
     if (created) return { filepath, finalName: created };
-  } else {
-    filepath = `${dirUri.replace(/\/$/, "")}/${finalName}`;
-    await FileSystem.writeAsStringAsync(filepath, base64, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
   }
   return { filepath, finalName };
 }
@@ -929,29 +756,6 @@ export interface NoteFileRef {
 }
 
 /**
- * List `{ uri, name }` for every child of `parentUri`, preserving the FULL
- * URI (SAF readDirectory returns document URIs; file:// builds them from the
- * basename). Unlike listChildNames, this keeps the URI so callers can read the
- * file. A missing directory yields `[]`.
- */
-async function listDirEntries(
-  parentUri: string,
-  isSaf: boolean,
-): Promise<Array<{ uri: string; name: string }>> {
-  if (isSaf) {
-    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
-    return children.map((uri) => ({ uri, name: safLastSegment(uri) }));
-  }
-  try {
-    const names = await FileSystem.readDirectoryAsync(parentUri);
-    const base = parentUri.replace(/\/$/, "");
-    return names.map((name) => ({ uri: `${base}/${name}`, name }));
-  } catch {
-    return [];
-  }
-}
-
-/**
  * Enumerate every markdown note across the vault's note subdirs (Ideas,
  * Journal, People). Binaries (Photos/Audio/Files) are excluded. This is the
  * source the tag index scans — Recents (AsyncStorage, max 20) is a capture
@@ -961,8 +765,8 @@ export async function listNoteFiles(): Promise<NoteFileRef[]> {
   const root = await resolveRoot();
   const out: NoteFileRef[] = [];
   for (const subdir of NOTE_SUBDIRS) {
-    const subdirUri = await findOrCreateSubdir(root, subdir);
-    const entries = await listDirEntries(subdirUri, root.isSaf);
+    const subdirUri = await root.fs.findOrCreateSubdir(root.uri, subdir);
+    const entries = await root.fs.listChildren(subdirUri);
     for (const { uri, name } of entries) {
       if (name.toLowerCase().endsWith(".md")) {
         out.push({ uri, name, subdir });
@@ -1002,7 +806,7 @@ export async function moveToArchive(
   archivedBinaryPaths: string[];
 }> {
   const root = await resolveRoot();
-  const archiveUri = await findOrCreateSubdir(root, "Archive");
+  const archiveUri = await root.fs.findOrCreateSubdir(root.uri, "Archive");
 
   const content = await readByUri(filepath);
 
@@ -1021,13 +825,13 @@ export async function moveToArchive(
     archiveUri,
     mdStem,
     mdExt,
-    root.isSaf,
+    root.fs,
   );
   const archivedMdPath = await writeNewFile(
     archiveUri,
     mdArchiveName,
     content,
-    root.isSaf,
+    root.fs,
   );
 
   // Archive every paired binary referenced by the body (each resolvable one).
@@ -1037,8 +841,8 @@ export async function moveToArchive(
   const archivedBinaryPaths: string[] = [];
   const binaryOriginals: string[] = [];
   for (const pb of listPairedBinaries(content)) {
-    const subdirUri = await findOrCreateSubdir(root, pb.subdir);
-    const binUri = await findFileInDir(subdirUri, pb.filename, root.isSaf);
+    const subdirUri = await root.fs.findOrCreateSubdir(root.uri, pb.subdir);
+    const binUri = await root.fs.findChild(subdirUri, pb.filename);
     if (!binUri) continue; // broken link — archive the .md, accept the orphan
     const binDot = pb.filename.lastIndexOf(".");
     const binStem = binDot >= 0 ? pb.filename.slice(0, binDot) : pb.filename;
@@ -1047,14 +851,14 @@ export async function moveToArchive(
       archiveUri,
       binStem,
       binExt,
-      root.isSaf,
+      root.fs,
     );
-    const binBase64 = await readBinaryByUri(binUri, root.isSaf);
+    const binBase64 = await root.fs.readBinary(binUri);
     const archived = await writeBinaryBytes(
       archiveUri,
       binArchiveName,
       binBase64,
-      root.isSaf,
+      root.fs,
     );
     archivedBinaryPaths.push(archived);
     binaryOriginals.push(binUri);
@@ -1062,13 +866,13 @@ export async function moveToArchive(
 
   // Best-effort delete of the originals — see jsdoc.
   try {
-    await deleteByUri(filepath, root.isSaf);
+    await root.fs.delete(filepath);
   } catch {
     /* leave the original; archive copy is canonical */
   }
   for (const orig of binaryOriginals) {
     try {
-      await deleteByUri(orig, root.isSaf);
+      await root.fs.delete(orig);
     } catch {
       /* leave the original binary */
     }
@@ -1180,11 +984,8 @@ export async function readPairedBinaryFromNote(
   if (!resolved) {
     throw new Error(`Paired binary not found: ${subdir}/${filename}`);
   }
-  // content:// vs file:// is the same discriminator resolveRoot uses; derive it
-  // from the resolved URI so this reader doesn't need the Root back.
-  const base64 = await readBinaryByUri(
-    resolved.uri,
-    resolved.uri.startsWith("content://"),
-  );
+  // The resolved URI's scheme is the same discriminator resolveRoot uses, so
+  // pick the backend from the URI directly — this reader doesn't need the Root.
+  const base64 = await fsForUri(resolved.uri).readBinary(resolved.uri);
   return { base64, mime: resolved.mime };
 }
