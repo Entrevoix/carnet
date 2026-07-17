@@ -83,8 +83,13 @@ dead end, don't retry it; use Files app → Share → Carnet).
   SAF-vault note landed the `.md` in `Archive/` as
   `primary%3Acarnet%2FIdeas%2Fpending-sync-test.md` — `moveToArchive` took the URI's
   raw last segment, which on SAF is the URL-encoded document id. Now uses
-  `safLastSegment` for `content://` URIs (+ regression test). NOT yet on-device
-  verified (device build predates it); next archive-delete on the phone will confirm.
+  `safLastSegment` for `content://` URIs (+ regression test). **On-device VERIFIED
+  2026-07-16 (~9:30pm)**: rebuilt + installed (device now runs the `c896d9d` tree,
+  `lastUpdateTime=2026-07-16 21:30:41` — supersedes the 07-14 22:54 build mentioned
+  above), then share → save → archive-delete produced plain `archive-fix-test.md` +
+  `.txt` in `Archive/`, no encoded names, note content byte-identical. This build also
+  carries the pending-sync queue and the share contentUri fix — the device is current
+  with `main`.
 - QA-agent operational note: the qa-tester subagent stalled twice waiting on its own
   sleep timers during the pending-sync run; steps 7–9 were finished by driving adb
   directly from the main session. Fine to do that — uiautomator dump + input tap/swipe
