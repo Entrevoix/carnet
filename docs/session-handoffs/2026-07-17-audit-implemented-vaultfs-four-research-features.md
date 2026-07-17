@@ -47,8 +47,14 @@ two loops each caught real issues (below). Follow this for all future work.
   `- [ ]` checkboxes, faithful-only ("NEVER invent tasks"), section OMITTED when none
   (was a free-text "None" placeholder); person Follow-up → checkboxes. First
   `prompts.test.ts` (structural invariants: delimiters, injection guard, skeletons).
-  **Live-capture verification still pending**: dictate a journal with a "remind me
-  to…" — expect a tappable checkbox; an actionless entry must have NO Actions section.
+  **Live-capture VERIFIED on-device (both directions)**: commitments capture produced
+  a faithful two-checkbox `## Actions` section verbatim; the no-commitments control
+  enriched with NO Actions section and no placeholder. During testing OmniRoute
+  briefly went unreachable — the save-first fallback + pending banner behaved exactly
+  as built — possibly correlated with the device's local LLM host app ("Relais",
+  com.ventouxlabs.relais.izzy) foregrounding itself; user to confirm whether
+  OmniRoute routes through it. One orphaned enrichment-queue row may exist from a
+  note deleted while pending — self-limiting (drains to failed), ignorable.
 - `bf132fd` **related-notes card** (RecentDetail) — `lib/relatedNotes.ts`, pure lexical
   scoring over the cached index (tags 3 > title terms 2 > excerpt 1; zero-score = no
   card; top 3). Devils-advocate loop caught: self-exclusion had to be made robust to
