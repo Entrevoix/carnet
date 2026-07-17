@@ -1,5 +1,5 @@
 diff --git a/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt b/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
-index 0153c89..2ccb8e2 100644
+index 0153c89..360e0df 100644
 --- a/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
 +++ b/node_modules/expo-share-intent/android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt
 @@ -66,37 +66,76 @@ class ExpoShareIntentModule : Module() {
@@ -118,7 +118,7 @@ index 0153c89..2ccb8e2 100644
 +                    val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
 +                    val streamUri = intent.parcelable<Uri>(Intent.EXTRA_STREAM)
 +                    if (sharedText == null && streamUri != null) {
-+                        notifyShareIntent(mapOf( "files" to arrayOf(getFileInfo(streamUri), "type" to "file")))
++                        notifyShareIntent(mapOf("files" to arrayOf(getFileInfo(streamUri)), "type" to "file"))
 +                    } else {
                      notifyShareIntent(mapOf(
 -                        "text" to intent.getStringExtra(Intent.EXTRA_TEXT),

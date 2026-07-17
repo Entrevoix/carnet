@@ -39,6 +39,7 @@ import {
   writeIdea,
 } from "../lib/writer";
 import { enrichSharedImage, enrichSharedLink } from "../lib/dispatcher";
+import { sanitizeMarkdown } from "../lib/enrichSanitize";
 import {
   assertBase64UnderLimit,
   autoTranscribeIfEnabled,
@@ -205,7 +206,12 @@ export default function ShareReceiveScreen({ navigation }: Props) {
           const reason = e instanceof Error ? e.message : String(e);
           console.warn("[ShareReceive] vision enrichment failed:", reason);
           setDegradedReason(reason);
-          enrichedMd = `---\ncreated: ${new Date().toISOString()}\nkind: shared-image\ntags: [shared, image]\n---\n# Shared image ${slugFallback}\n\n## What's in this\n(Vision enrichment unavailable — see image.)\n\n## Context\n${ctx || "(none provided)"}`;
+          // sanitizeMarkdown runs on the LLM path inside executeChat; this
+          // degraded stub skips the LLM, so it must sanitize here — the vault
+          // is a Dataview/Templater execution surface (see enrichSanitize.ts).
+          enrichedMd = sanitizeMarkdown(
+            `---\ncreated: ${new Date().toISOString()}\nkind: shared-image\ntags: [shared, image]\n---\n# Shared image ${slugFallback}\n\n## What's in this\n(Vision enrichment unavailable — see image.)\n\n## Context\n${ctx || "(none provided)"}`,
+          );
         }
 
         title = deriveTitle(enrichedMd) || `Shared image ${slugFallback}`;
@@ -281,7 +287,15 @@ export default function ShareReceiveScreen({ navigation }: Props) {
           `## File\n[${fileName}](../Audio/${finalName})\n\n` +
           `## Context\n${ctx || "(none provided)"}\n`;
 
-        const { filepath: mdPath } = await writeIdea(sharedStem, mdNote);
+        // No LLM on this branch, so the executeChat sanitizer never runs —
+        // fileName comes from an arbitrary sharing app and reaches the H1 and
+        // link text (sanitizeShareString only strips CR/LF; a Templater
+        // `<%…%>` filename would execute in Obsidian). The link TARGET
+        // (finalName) is slugified, so pairing survives sanitization.
+        const { filepath: mdPath } = await writeIdea(
+          sharedStem,
+          sanitizeMarkdown(mdNote),
+        );
         filepath = mdPath;
         wasAudioBranch = true;
       } else if (otherFile) {
@@ -329,7 +343,12 @@ export default function ShareReceiveScreen({ navigation }: Props) {
           `## File\n[${fileName}](../Files/${finalName})\n\n` +
           `## Context\n${ctx || "(none provided)"}\n`;
 
-        const { filepath: mdPath } = await writeIdea(sharedStem, mdNote);
+        // Same rule as the audio branch: non-LLM body with an untrusted
+        // filename in H1/link text — sanitize before it reaches the vault.
+        const { filepath: mdPath } = await writeIdea(
+          sharedStem,
+          sanitizeMarkdown(mdNote),
+        );
         filepath = mdPath;
       } else if (url || text) {
         // URL/text share: text-only enrichment.
@@ -354,7 +373,13 @@ export default function ShareReceiveScreen({ navigation }: Props) {
           console.warn("[ShareReceive] link enrichment failed:", reason);
           setDegradedReason(reason);
           const head = url ? "Shared link" : "Shared text";
-          enrichedMd = `---\ncreated: ${new Date().toISOString()}\nkind: ${url ? "shared-link" : "shared-text"}\ntags: [shared]\n---\n# ${head} ${slugFallback}\n\n${url ? `## Source\n<${url}>\n\n` : ""}${text && text !== url ? `## Excerpt\n${text}\n\n` : ""}## Context\n${ctx || "(none provided)"}`;
+          // Degraded stub bypasses the LLM (where sanitizeMarkdown normally
+          // runs) and interpolates ATTACKER-CONTROLLED share text into the
+          // body — sanitize here or a shared dataviewjs/Templater payload
+          // lands in the vault verbatim and executes in Obsidian.
+          enrichedMd = sanitizeMarkdown(
+            `---\ncreated: ${new Date().toISOString()}\nkind: ${url ? "shared-link" : "shared-text"}\ntags: [shared]\n---\n# ${head} ${slugFallback}\n\n${url ? `## Source\n<${url}>\n\n` : ""}${text && text !== url ? `## Excerpt\n${text}\n\n` : ""}## Context\n${ctx || "(none provided)"}`,
+          );
         }
 
         title = deriveTitle(enrichedMd) || (url ? `Shared link ${slugFallback}` : `Shared text ${slugFallback}`);

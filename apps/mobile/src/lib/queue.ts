@@ -24,6 +24,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Haptics from "expo-haptics";
 
+import { createLock, localId, sanitizeError } from "./asyncQueueUtils";
+
 import {
   enrichIdea,
   enrichJournal,
@@ -52,12 +54,6 @@ function injectLocation(markdown: string, location?: string): string {
 
 export type CaptureMode = "idea" | "journal" | "person";
 
-/** Strip Bearer tokens from any error string before it's persisted or shown. */
-function sanitizeError(raw: string): string {
-  return raw
-    .replace(/Bearer\s+[A-Za-z0-9._\-+/=]+/g, "Bearer [redacted]")
-    .replace(/Authorization:\s*[^\s,;]+/gi, "Authorization: [redacted]");
-}
 
 /** Raw user input stored in the queue — no credentials. Attachments carry only
  * their `../{subdir}/{name}` rel-paths: the binaries are written to disk before
@@ -153,16 +149,8 @@ async function saveRows(rows: QueueRow[]): Promise<void> {
 
 /** Serialize read-modify-write so a concurrent enqueue during a drain pass
  * (CaptureScreen mount drains while a new failed capture enqueues) can't lose a
- * row. SQLite gave per-statement atomicity for free; AsyncStorage RMW does not. */
-let _lock: Promise<unknown> = Promise.resolve();
-function withLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = _lock.then(fn, fn);
-  _lock = run.then(
-    () => {},
-    () => {},
-  );
-  return run;
-}
+ * row. This queue's own lock instance (see asyncQueueUtils.createLock). */
+const withLock = createLock();
 
 /** Remove a row by id (locked read-modify-write). */
 function removeRow(id: string): Promise<void> {
@@ -223,14 +211,6 @@ export async function getQueueCounts(): Promise<{
   return { pending, failed };
 }
 
-/** Non-crypto, unique-enough row id. uuid v11 needs crypto.getRandomValues,
- * which RN/Hermes lacks without the (uninstalled) react-native-get-random-values
- * polyfill — calling it here threw and left offline captures stuck on the
- * spinner. A queue-row id only needs local uniqueness, so timestamp + random
- * base36 is plenty. Mirrors CaptureScreen's localId. */
-function localId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
 
 /** Enqueue a failed capture for later retry. */
 export async function enqueue(payload: QueuePayload): Promise<void> {

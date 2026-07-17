@@ -167,19 +167,31 @@ export default function SettingsScreen() {
     // NOT in form state — we thread the currently-stored keys through so
     // saveSettings doesn't wipe them, then write any newly-typed key
     // separately below (see composeSettingsForSave).
-    const existingKeys = await currentKeysOrEmpty();
-    await saveSettings(composeSettingsForSave(form, existingKeys));
-    if (pendingKey.length > 0) {
-      await setOmniRouteApiKey(pendingKey);
-      setPendingKey("");
-      setKeyConfigured(true);
+    //
+    // Guarded end-to-end: this is the ONLY way to enter config in a no-.env
+    // app, and an unguarded reject (AsyncStorage or either SecureStore write)
+    // previously failed SILENTLY — worst case persisting settings while
+    // dropping a newly-typed API key, so later captures fail auth with no
+    // signal. Pending keys clear only after their write confirms, so a
+    // failed save keeps the typed key in the field for retry.
+    try {
+      const existingKeys = await currentKeysOrEmpty();
+      await saveSettings(composeSettingsForSave(form, existingKeys));
+      if (pendingKey.length > 0) {
+        await setOmniRouteApiKey(pendingKey);
+        setPendingKey("");
+        setKeyConfigured(true);
+      }
+      if (pendingKarakeepKey.length > 0) {
+        await setKarakeepApiKey(pendingKarakeepKey);
+        setPendingKarakeepKey("");
+        setKarakeepKeyConfigured(true);
+      }
+      setSaved(true);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPickerError(`Save failed: ${msg.slice(0, 120)}`);
     }
-    if (pendingKarakeepKey.length > 0) {
-      await setKarakeepApiKey(pendingKarakeepKey);
-      setPendingKarakeepKey("");
-      setKarakeepKeyConfigured(true);
-    }
-    setSaved(true);
   };
 
   const clearKey = async () => {

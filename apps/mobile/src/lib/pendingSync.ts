@@ -22,6 +22,8 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { createLock, localId, sanitizeError } from "./asyncQueueUtils";
+
 /** A queued export. `kind` is future-proofing — only Karakeep exports queue
  * today, but the drain/storage layer doesn't care what the item means. */
 export interface PendingExport {
@@ -60,29 +62,8 @@ async function saveItems(items: PendingExport[]): Promise<void> {
 }
 
 /** Serialize read-modify-write — an enqueue during a drain pass must not lose
- * an item. Same promise-chain lock as queue.ts. */
-let _lock: Promise<unknown> = Promise.resolve();
-function withLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = _lock.then(fn, fn);
-  _lock = run.then(
-    () => {},
-    () => {},
-  );
-  return run;
-}
-
-/** Non-crypto row id — same rationale as queue.ts's localId (Hermes has no
- * crypto.getRandomValues without a polyfill; local uniqueness is enough). */
-function localId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-/** Strip Bearer tokens before an error string is persisted. */
-function sanitizeError(raw: string): string {
-  return raw
-    .replace(/Bearer\s+[A-Za-z0-9._\-+/=]+/g, "Bearer [redacted]")
-    .replace(/Authorization:\s*[^\s,;]+/gi, "Authorization: [redacted]");
-}
+ * an item. This queue's own lock instance (see asyncQueueUtils.createLock). */
+const withLock = createLock();
 
 // WHAT queues: only a status-0 network failure that isn't a blank-URL
 // misconfig — the "VPN/Tailscale is down" class, where no HTTP response ever
