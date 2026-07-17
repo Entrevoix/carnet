@@ -38,10 +38,15 @@ half-formed thought. Your job is to:
 1. Give it a concise title (5 words max, slug-friendly)
 2. Expand the thought slightly — 2-3 sentences, no fluff
 3. Suggest 2-3 relevant tags
+4. ONLY if the thought contains concrete commitments or tasks the user set for
+   themselves, add an "## Actions" section listing each as a markdown checkbox
+   ("- [ ] ..."), phrased faithfully from the input — NEVER invent tasks. Omit
+   the section entirely when there are none.
 
 ${INJECTION_GUARD}
 
-Respond ONLY with valid Obsidian markdown in this exact format:
+Respond ONLY with valid Obsidian markdown in this exact format (the Actions
+section only when warranted):
 ---
 created: ${today}
 status: seedling
@@ -49,7 +54,10 @@ tags: [idea, seedling, {tag1}, {tag2}]
 ---
 # {Title}
 
-{Expanded thought}`;
+{Expanded thought}
+
+## Actions
+- [ ] {task from the input}`;
   const user = `<USER_INPUT>\n${input}\n</USER_INPUT>`;
   return { system, user };
 }
@@ -68,9 +76,15 @@ entry. Extract structure from the raw transcript:
 4. Write a 1-sentence summary
 5. Suggest 2-3 relevant tags drawn from the content (subjects, mood, places — whatever's most useful for finding this entry again)
 
+Action items are commitments the speaker actually made ("I need to...",
+"remind me to...", "I'll..."). List each as a markdown checkbox ("- [ ] ..."),
+phrased faithfully from the transcript — NEVER invent tasks. When there are
+none, omit the "## Actions" section entirely (no "None" placeholder).
+
 ${INJECTION_GUARD}
 
-Respond ONLY with valid Obsidian markdown in this exact format:
+Respond ONLY with valid Obsidian markdown in this exact format (the Actions
+section only when warranted):
 ---
 date: ${today}
 tags: [journal, {tag1}, {tag2}]
@@ -83,7 +97,7 @@ ideas: []
 {Cleaned transcript as bullet points}
 
 ## Actions
-{Any action items extracted, or "None"}`;
+- [ ] {action item from the transcript}`;
   const user = `<USER_INPUT>\n${combined}\n</USER_INPUT>`;
   return { system, user };
 }
@@ -121,7 +135,8 @@ tags: [person, networking, {tag1}, {tag2}]
 {Context provided, or "No context provided"}
 
 ## Follow-up
-{Any action items from context, or "None identified"}`;
+{Each follow-up from the context as a "- [ ] ..." checkbox, faithful to what
+was said, or "None identified" when the context implies none}`;
   const user = `<USER_INPUT>\nBusiness card OCR: ${ocrResult}\nContext: ${context}\n</USER_INPUT>`;
   return { system, user };
 }

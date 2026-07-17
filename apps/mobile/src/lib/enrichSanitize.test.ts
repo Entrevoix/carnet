@@ -145,6 +145,21 @@ describe("sanitizeMarkdown — templater / html / links", () => {
 // ── False-positive guards: legitimate captured content must survive ───────────
 
 describe("sanitizeMarkdown — false-positive guards", () => {
+  it("leaves an ## Actions checkbox section byte-for-byte untouched", () => {
+    // The idea/journal prompts emit action items as GFM task checkboxes
+    // (2026-07-17); the sanitizer must never mangle them or Obsidian stops
+    // treating them as tasks.
+    const section = [
+      "# Note",
+      "",
+      "## Actions",
+      "- [ ] email Sam about the venue",
+      "- [x] book the flight",
+      "- [ ] follow up on [[Ada Lovelace]]",
+    ].join("\n");
+    expect(sanitizeMarkdown(section)).toBe(section);
+  });
+
   it("(6) leaves a legitimate ```js code snippet byte-for-byte untouched", () => {
     const snippet = [
       "```js",
