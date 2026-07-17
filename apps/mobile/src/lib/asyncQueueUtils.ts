@@ -39,9 +39,8 @@ export function localId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Strip Bearer tokens from any error string before it's persisted or shown. */
-export function sanitizeError(raw: string): string {
-  return raw
-    .replace(/Bearer\s+[A-Za-z0-9._\-+/=]+/g, "Bearer [redacted]")
-    .replace(/Authorization:\s*[^\s,;]+/gi, "Authorization: [redacted]");
-}
+/** Strip Bearer tokens from any error string before it's persisted or shown.
+ * Thin re-export of the ONE canonical redactor (lib/httpClient.ts) so the
+ * queues, OmniRoute, and Karakeep can never drift apart on what counts as a
+ * credential. */
+export { sanitizeErrorMessage as sanitizeError } from "./httpClient";

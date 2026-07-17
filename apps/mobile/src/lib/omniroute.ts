@@ -24,6 +24,12 @@ import {
   type PromptPair,
 } from "./prompts";
 import { isCredentialSafeUrl } from "./netAllowlist";
+import {
+  HttpError,
+  parseErrorBody,
+  sanitizeErrorMessage,
+  withTimeout,
+} from "./httpClient";
 import { fetchUrlPreview, type UrlPreview } from "./urlpreview";
 import {
   readNote,
@@ -88,22 +94,14 @@ interface OpenAIResponse {
  * user, do NOT retry blindly). Status `0` means a network-level failure
  * (DNS, TLS, connection refused, abort).
  */
-export class OmniRouteError extends Error {
-  readonly status: number;
-  /** True when the failure is a missing/blank configuration (no URL set), not
-   * a network failure. Status is still 0 (no HTTP response), but unlike a real
-   * timeout this will NEVER succeed by retrying — the caller must surface it so
-   * the user fixes Settings, rather than silently queuing it for retry. */
-  readonly notConfigured: boolean;
+export class OmniRouteError extends HttpError {
   constructor(
     message: string,
     status: number,
     opts?: { notConfigured?: boolean },
   ) {
-    super(message);
+    super(message, status, opts);
     this.name = "OmniRouteError";
-    this.status = status;
-    this.notConfigured = opts?.notConfigured ?? false;
   }
 }
 
@@ -161,15 +159,6 @@ export function assertBase64UnderLimit(base64: string): void {
   }
 }
 
-/** Strip any "Bearer ..." substring from an error message so the API key
- * never lands in stored error logs or on-screen toasts. Also strip the
- * Authorization header form just in case. */
-function sanitizeErrorMessage(raw: string): string {
-  return raw
-    .replace(/Bearer\s+[A-Za-z0-9._\-+/=]+/g, "Bearer [redacted]")
-    .replace(/Authorization:\s*[^\s,;]+/gi, "Authorization: [redacted]");
-}
-
 /**
  * Reject non-HTTPS OmniRoute URLs to prevent the API key from being sent
  * over cleartext. HTTPS is always allowed; plain http:// is allowed only for
@@ -187,64 +176,14 @@ function assertHttpsOrLocal(trimmed: string): void {
   );
 }
 
-/**
- * Build a sanitized HTTP-error detail string from a failing Response. Reads
- * the body as JSON and appends `error.message` if present; swallows parse
- * failures because the status alone is enough signal in that case.
- *
- * Extracted from three call sites (executeChat, listModels, transcribeAudio).
- */
-async function parseErrorBody(response: Response): Promise<string> {
-  let detail = `HTTP ${response.status}`;
-  try {
-    const errBody = (await response.json()) as OpenAIResponse;
-    if (errBody.error?.message) {
-      detail += `: ${sanitizeErrorMessage(errBody.error.message)}`;
-    }
-  } catch {
-    // ignore parse failure — status alone is enough
-  }
-  return detail;
-}
-
-/**
- * Run a network operation with a HARD timeout that ALWAYS settles.
- *
- * Covers the WHOLE operation — connect AND body read — not just fetch().
- * Two ways the request can hang past a bare fetch timeout: RN's fetch ignores
- * AbortController.abort() on a stuck TCP connect (unreachable tailnet host),
- * AND response.json() on a never-closing body (LiteLLM SSE) hangs after the
- * connect succeeds. Racing the entire `run()` against an independent
- * reject-timer bounds both; abort() is still fired best-effort to release the
- * socket. Rejects with a status-0 OmniRouteError on timeout so callers'
- * network-error / offline-queue paths fire.
- */
-async function withTimeout<T>(
-  ms: number,
-  run: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      try {
-        controller.abort();
-      } catch {
-        /* best-effort cancel */
-      }
-      reject(
-        new OmniRouteError(
-          `OmniRoute unreachable — timed out after ${Math.round(ms / 1000)}s. Check your connection (Tailscale?).`,
-          0,
-        ),
-      );
-    }, ms);
-  });
-  try {
-    return await Promise.race([run(controller.signal), timeout]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+/** Status-0 timeout error for {@link withTimeout} — the user-facing message
+ * (with its Tailscale hint) is this client's own; the timeout MECHANISM is
+ * shared (lib/httpClient.ts), so hardening fixes reach both clients. */
+function omniRouteTimeoutError(ms: number): OmniRouteError {
+  return new OmniRouteError(
+    `OmniRoute unreachable — timed out after ${Math.round(ms / 1000)}s. Check your connection (Tailscale?).`,
+    0,
+  );
 }
 
 /**
@@ -270,7 +209,7 @@ async function executeChat(
   const url = `${trimmed}/v1/chat/completions`;
   const body = JSON.stringify({ model, messages, stream: false });
 
-  return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
+  return await withTimeout(FETCH_TIMEOUT_MS, omniRouteTimeoutError, async (signal) => {
     let response: Response;
     try {
       response = await fetch(url, {
@@ -416,7 +355,7 @@ export async function listModels(
 
   const url = `${trimmed}/v1/models`;
 
-  return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
+  return await withTimeout(FETCH_TIMEOUT_MS, omniRouteTimeoutError, async (signal) => {
     let response: Response;
     try {
       response = await fetch(url, {
@@ -607,7 +546,7 @@ export async function ocrCardViaVision(input: {
   // raw text rather than a sanitized note.
   const body = JSON.stringify({ model, messages, stream: false, temperature: 0 });
 
-  return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
+  return await withTimeout(FETCH_TIMEOUT_MS, omniRouteTimeoutError, async (signal) => {
     let response: Response;
     try {
       response = await fetch(url, {

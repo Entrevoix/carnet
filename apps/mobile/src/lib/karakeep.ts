@@ -18,6 +18,12 @@
 
 import { isCredentialSafeUrl } from "./netAllowlist";
 import { getSettings } from "./settings";
+import {
+  HttpError,
+  parseErrorBody,
+  sanitizeErrorMessage,
+  withTimeout,
+} from "./httpClient";
 
 /**
  * Error thrown by the Karakeep client. Carries the HTTP status so callers can
@@ -25,22 +31,14 @@ import { getSettings } from "./settings";
  * means a network-level failure (DNS, TLS, connection refused, abort, or a
  * blank URL — see `notConfigured`).
  */
-export class KarakeepError extends Error {
-  readonly status: number;
-  /** True when the failure is a missing/blank configuration (no URL set), not
-   * a network failure. Status is still 0 (no HTTP response), but unlike a real
-   * timeout this will NEVER succeed by retrying — the caller must surface it so
-   * the user fixes Settings. */
-  readonly notConfigured: boolean;
+export class KarakeepError extends HttpError {
   constructor(
     message: string,
     status: number,
     opts?: { notConfigured?: boolean },
   ) {
-    super(message);
+    super(message, status, opts);
     this.name = "KarakeepError";
-    this.status = status;
-    this.notConfigured = opts?.notConfigured ?? false;
   }
 }
 
@@ -87,15 +85,6 @@ export function assetContentPath(assetId: string): string {
   return `/api/assets/${encodeURIComponent(assetId)}`;
 }
 
-/** Strip any "Bearer ..." substring from an error message so the API key
- * never lands in stored error logs or on-screen toasts. Also strip the
- * Authorization header form just in case. */
-function sanitizeErrorMessage(raw: string): string {
-  return raw
-    .replace(/Bearer\s+[A-Za-z0-9._\-+/=]+/g, "Bearer [redacted]")
-    .replace(/Authorization:\s*[^\s,;]+/gi, "Authorization: [redacted]");
-}
-
 /**
  * Reject non-HTTPS Karakeep URLs to prevent the API key from being sent over
  * cleartext. HTTPS is always allowed; plain http:// is allowed only for the
@@ -111,61 +100,13 @@ function assertHttpsOrLocal(trimmed: string): void {
   );
 }
 
-/**
- * Build a sanitized HTTP-error detail string from a failing Response. Reads
- * the body as JSON and appends a message field if present; swallows parse
- * failures because the status alone is enough signal in that case.
- */
-async function parseErrorBody(response: Response): Promise<string> {
-  let detail = `HTTP ${response.status}`;
-  try {
-    const errBody = (await response.json()) as {
-      error?: string;
-      message?: string;
-    };
-    const message = errBody.error ?? errBody.message;
-    if (message) {
-      detail += `: ${sanitizeErrorMessage(message)}`;
-    }
-  } catch {
-    // ignore parse failure — status alone is enough
-  }
-  return detail;
-}
-
-/**
- * Run a network operation with a HARD timeout that ALWAYS settles. Covers the
- * WHOLE operation — connect AND body read — by racing `run()` against an
- * independent reject-timer; abort() is fired best-effort to release the
- * socket. Rejects with a status-0 KarakeepError on timeout so callers'
- * network-error paths fire.
- */
-async function withTimeout<T>(
-  ms: number,
-  run: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      try {
-        controller.abort();
-      } catch {
-        /* best-effort cancel */
-      }
-      reject(
-        new KarakeepError(
-          `Karakeep unreachable — timed out after ${Math.round(ms / 1000)}s. Check your connection.`,
-          0,
-        ),
-      );
-    }, ms);
-  });
-  try {
-    return await Promise.race([run(controller.signal), timeout]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+/** Status-0 timeout error for {@link withTimeout} — message is this client's
+ * own; the timeout MECHANISM is shared (lib/httpClient.ts). */
+function karakeepTimeoutError(ms: number): KarakeepError {
+  return new KarakeepError(
+    `Karakeep unreachable — timed out after ${Math.round(ms / 1000)}s. Check your connection.`,
+    0,
+  );
 }
 
 /**
@@ -216,7 +157,7 @@ async function karakeepFetch(
 
   // Only the small JSON calls go through here now; the multipart asset upload
   // uses karakeepUpload (XHR) with its own longer ceiling.
-  return await withTimeout(FETCH_TIMEOUT_MS, async (signal) => {
+  return await withTimeout(FETCH_TIMEOUT_MS, karakeepTimeoutError, async (signal) => {
     let response: Response;
     try {
       response = await fetch(endpoint, {
