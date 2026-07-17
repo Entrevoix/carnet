@@ -25,6 +25,7 @@ npm run build:shared   # build shared first — mobile & desktop import @carnet/
 | `npm run mobile` | Start the Expo dev server (Metro) |
 | `npm run desktop` | Desktop app in Vite dev (web) mode |
 | `npm run desktop:tauri` | Desktop app in the Tauri native-shell dev mode |
+| `postinstall` (automatic) | `patch-package` — applies `patches/*.patch` (expo-speech-recognition, expo-share-intent); runs on every `npm ci`/`install` |
 
 **apps/mobile**
 | Command | Description |

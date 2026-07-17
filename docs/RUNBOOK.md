@@ -27,7 +27,9 @@ cd apps/mobile && ANDROID_HOME="$HOME/Android/Sdk" npm run android:release
 ## Health & monitoring
 N/A — there is no service to monitor. "Healthy" = captures land in the vault and Syncthing
 reports the folder in sync. Offline captures buffer in the on-device queue (AsyncStorage,
-`lib/queue.ts`) and drain automatically on reconnect.
+`lib/queue.ts`) and drain automatically on reconnect. Karakeep exports attempted while the
+host is unreachable buffer separately (`lib/pendingSync.ts`) and auto-send on app
+foreground once a reachability probe answers.
 
 ## Common issues
 | Symptom | Cause / fix |
@@ -39,6 +41,8 @@ reports the folder in sync. Offline captures buffer in the on-device queue (Asyn
 | Dictation stops by itself after ~20s of silence | By design: two consecutive quiet windows auto-stop and commit (`SILENCE_AUTO_STOP_AFTER` in `voice/sttErrorPolicy.ts`); 3-min hard cap regardless. |
 | "Not configured" on capture | OmniRoute base URL / creds are blank in Settings — re-enter on the device. NB: an app reinstall or `pm clear` wipes ALL settings incl. SecureStore keys and the vault-folder path; captures then land in app-private `files/carnet/` until the folder is re-set. |
 | Karakeep export fails / "not configured" | Karakeep URL or key blank, or URL not `https://` (loopback/`10.x` HTTP excepted). Set both in Settings. Attachments sync incrementally per bookmark; a lost on-device record can re-upload a duplicate asset (harmless). |
+| Karakeep export shows "unreachable — export queued" | Expected when the host doesn't answer (VPN/Tailscale down): the export waits in the pending-sync queue (`lib/pendingSync.ts`) and auto-sends on app foreground once the host is reachable. Home shows an "N exports waiting for Karakeep — Retry" banner; the banner count can lag a background drain until the screen refocuses. |
+| "…is a file type Karakeep doesn't accept — kept in the vault only" | Not an error: the bookmark was created, but the server's asset allowlist (~images + PDF; `.txt`/`.docx` confirmed refused 2026-07-14/16) rejected the attachment. The file stays paired in the vault. Changing this means changing the server's allowlist, not the app. |
 
 ## Rollback
 - **App:** install the previous release APK — every CI run's advisory `apk` job keeps a

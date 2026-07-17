@@ -144,6 +144,24 @@ across body-only edits via `markdownRoundTrip.test.ts`)_
       (incremental asset sync).
 - [ ] With the Karakeep URL blank, **Send to Karakeep** surfaces a "not configured"
       error instead of failing silently.
+- [ ] Sharing/attaching a non-image, non-PDF file (e.g. `.txt`) and exporting →
+      snackbar notes *"…is a file type Karakeep doesn't accept — kept in the vault
+      only"*; the bookmark exists without the attachment (server allowlist, expected).
+
+## Karakeep pending-sync queue (host unreachable)
+
+(Device-verified end-to-end 2026-07-16; automated coverage:
+`src/lib/pendingSync.test.ts`, `pendingSyncRunner.test.ts`, `hostReachability.test.ts`.)
+
+- [ ] With the Karakeep host unreachable (airplane mode, or Tailscale off for a
+      tailnet host): **Send to Karakeep** → after the ~20s timeout, snackbar
+      *"Karakeep is unreachable — export queued…"* (NOT the red error banner).
+- [ ] Home shows *"N export(s) waiting for Karakeep — will send when the server is
+      reachable"* with a **Retry** button; tapping Retry while still offline is a
+      fast no-op (~4s) and the banner stays.
+- [ ] Restore connectivity → background then re-foreground the app → the queue
+      drains automatically (no Retry tap); the note gains a `karakeepId` and the
+      banner clears on the next Home focus (count may lag one focus — known).
 
 ## Voice setup (STT onboarding)
 
