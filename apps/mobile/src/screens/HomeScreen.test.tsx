@@ -39,6 +39,8 @@ vi.mock("../lib/storage", () => ({
 // writer.ts imports expo-file-system at module scope — never load the real one.
 vi.mock("../lib/writer", () => ({
   moveToArchive: vi.fn(async () => {}),
+  listNoteFiles: vi.fn(async () => []),
+  listSyncConflictFiles: vi.fn(async () => []),
 }));
 
 vi.mock("../lib/vault", () => ({
@@ -58,6 +60,7 @@ vi.mock("../lib/vault", () => ({
     ],
   })),
   refreshNoteIndex: vi.fn(async () => ({ builtAt: 2, notes: [] })),
+  resolveNoteEntry: vi.fn(async () => null),
 }));
 
 vi.mock("../lib/syncStatus", () => ({
@@ -92,6 +95,7 @@ import HomeScreen from "./HomeScreen";
 import { getRecentCaptures } from "../lib/storage";
 import { getPendingExportCount } from "../lib/pendingSync";
 import { drainPendingKarakeepExports } from "../lib/pendingSyncRunner";
+import { listNoteFiles, listSyncConflictFiles } from "../lib/writer";
 
 type ScreenProps = Parameters<typeof HomeScreen>[0];
 
@@ -193,6 +197,36 @@ describe("HomeScreen", () => {
     await waitFor(() =>
       expect(screen.queryByText(/waiting for Karakeep/)).toBeNull(),
     );
+  });
+
+  it("shows no conflict banner when the vault has no sync conflicts", async () => {
+    renderScreen();
+    await screen.findByText("Jack's Baseball Team");
+    expect(screen.queryByText(/sync conflict/)).toBeNull();
+  });
+
+  it("shows the sync-conflict banner and pairs copies to originals in the review dialog", async () => {
+    const conflict = {
+      uri: "file:///v/Ideas/note.sync-conflict-20260716-093012-ABC123X.md",
+      name: "note.sync-conflict-20260716-093012-ABC123X.md",
+      subdir: "Ideas" as const,
+    };
+    const original = { uri: "file:///v/Ideas/note.md", name: "note.md", subdir: "Ideas" as const };
+    vi.mocked(listSyncConflictFiles).mockResolvedValue([conflict]);
+    vi.mocked(listNoteFiles).mockResolvedValue([original]);
+    renderScreen();
+
+    expect(
+      await screen.findByText(
+        "1 sync conflict in the vault — two versions of the same note exist",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Review"));
+    // Pairing (real pairConflicts) joins the copy to Ideas/note.md.
+    expect(await screen.findByText("Ideas/note.md")).toBeTruthy();
+    expect(screen.getByText("Open copy")).toBeTruthy();
+    expect(screen.getByText("Open original")).toBeTruthy();
   });
 
   it("installs the header actions (sync dot, search, settings) once sync status loads", async () => {

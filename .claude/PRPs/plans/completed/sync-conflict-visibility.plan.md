@@ -1,6 +1,6 @@
 # Plan: Sync-conflict visibility
 
-Status: draft (awaiting CONFIRM)
+Status: shipped (2026-07-17, same-day)
 Date: 2026-07-17
 Origin: 2026-07-17 market research finding #2 — sync-conflict clutter is a top
 validated Obsidian-mobile pain; Syncthing resolves conflicts by writing

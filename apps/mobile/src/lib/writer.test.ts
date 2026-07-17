@@ -101,6 +101,7 @@ import {
   resolvePairedUri,
   stripPairedBinaryLinks,
   listNoteFiles,
+  listSyncConflictFiles,
   type AttachmentRef,
 } from "./writer";
 import * as FileSystem from "expo-file-system/legacy";
@@ -491,6 +492,22 @@ describe("listNoteFiles", () => {
     const notes = await listNoteFiles();
     expect(notes.every((n) => n.name.toLowerCase().endsWith(".md"))).toBe(true);
     expect(notes.some((n) => n.name === "keeper.md")).toBe(true);
+  });
+
+  it("excludes Syncthing conflict copies; listSyncConflictFiles returns them instead", async () => {
+    await writeIdea("note", "# Note\n");
+    const conflictName = "note.sync-conflict-20260716-093012-ABC123X.md";
+    _files.set(`file:///data/carnet/Ideas/${conflictName}`, { content: "# stale\n" });
+
+    // Before this filter the copy was indexed as a regular note — visible in
+    // Search and inflating tag counts.
+    const notes = await listNoteFiles();
+    expect(notes.some((n) => n.name === conflictName)).toBe(false);
+    expect(notes.some((n) => n.name === "note.md")).toBe(true);
+
+    const conflicts = await listSyncConflictFiles();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({ name: conflictName, subdir: "Ideas" });
   });
 
   it("lists notes over a SAF (content://) vault, preserving document URIs", async () => {

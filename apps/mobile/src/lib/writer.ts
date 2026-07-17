@@ -19,6 +19,9 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { getSettings } from "./settings";
 import { fsForUri, safLastSegment, vaultFsFor, type VaultFs } from "./vaultFs";
+// Pure predicate only — syncConflicts.ts stays filesystem-free, so this import
+// cannot form a cycle (its NoteFileRef import back is type-only).
+import { isSyncConflictName } from "./syncConflicts";
 // Pure frontmatter helpers used internally; the full set is re-exported below.
 import {
   extractFrontmatterField,
@@ -755,13 +758,9 @@ export interface NoteFileRef {
   subdir: NoteSubdir;
 }
 
-/**
- * Enumerate every markdown note across the vault's note subdirs (Ideas,
- * Journal, People). Binaries (Photos/Audio/Files) are excluded. This is the
- * source the tag index scans — Recents (AsyncStorage, max 20) is a capture
- * history, NOT a vault scan, so it cannot back tag enumeration.
- */
-export async function listNoteFiles(): Promise<NoteFileRef[]> {
+/** Enumerate every `.md` across the note subdirs, unfiltered. Internal — the
+ * public listings split it into canonical notes vs Syncthing conflict copies. */
+async function listNoteDirMarkdown(): Promise<NoteFileRef[]> {
   const root = await resolveRoot();
   const out: NoteFileRef[] = [];
   for (const subdir of NOTE_SUBDIRS) {
@@ -774,6 +773,25 @@ export async function listNoteFiles(): Promise<NoteFileRef[]> {
     }
   }
   return out;
+}
+
+/**
+ * Enumerate every CANONICAL markdown note across the vault's note subdirs
+ * (Ideas, Journal, People). Binaries (Photos/Audio/Files) are excluded, and so
+ * are Syncthing `*.sync-conflict-*` copies — before that filter they were
+ * indexed as regular notes, appearing in Search and inflating tag counts.
+ * This is the source the tag index scans — Recents (AsyncStorage, max 20) is a
+ * capture history, NOT a vault scan, so it cannot back tag enumeration.
+ */
+export async function listNoteFiles(): Promise<NoteFileRef[]> {
+  return (await listNoteDirMarkdown()).filter((f) => !isSyncConflictName(f.name));
+}
+
+/** Enumerate the Syncthing conflict copies in the note subdirs — the review
+ * surface's source (Home banner). Markdown only, matching listNoteFiles'
+ * scope; binary-subdir conflicts are out of scope (see the plan). */
+export async function listSyncConflictFiles(): Promise<NoteFileRef[]> {
+  return (await listNoteDirMarkdown()).filter((f) => isSyncConflictName(f.name));
 }
 
 /**

@@ -16,10 +16,17 @@ import {
   removeManyFromHistory,
   type CaptureEntry,
 } from "../lib/storage";
-import { moveToArchive } from "../lib/writer";
+import {
+  listNoteFiles,
+  listSyncConflictFiles,
+  moveToArchive,
+  type NoteFileRef,
+} from "../lib/writer";
+import { pairConflicts, type ConflictPair } from "../lib/syncConflicts";
 import {
   loadCachedNoteIndex,
   refreshNoteIndex,
+  resolveNoteEntry,
   type NoteIndex,
   type NoteIndexEntry,
 } from "../lib/vault";
@@ -57,6 +64,13 @@ export default function HomeScreen({ navigation }: Props) {
   // drives the "waiting for Karakeep" banner and its Retry action.
   const [karakeepPending, setKarakeepPending] = useState(0);
   const [karakeepRetrying, setKarakeepRetrying] = useState(false);
+  // Syncthing conflict copies found in the vault (lib/syncConflicts.ts) —
+  // drives the "N sync conflicts — Review" banner + its review dialog. The
+  // refs are cheap (directory listing only); pairing to originals happens
+  // when the dialog opens.
+  const [conflictFiles, setConflictFiles] = useState<NoteFileRef[]>([]);
+  const [conflictDialogVisible, setConflictDialogVisible] = useState(false);
+  const [conflictPairs, setConflictPairs] = useState<ConflictPair[]>([]);
   // Selection mode: enter via long-press, toggle rows via tap, auto-exit
   // when selection empties or the screen blurs.
   const [selectionMode, setSelectionMode] = useState(false);
@@ -119,7 +133,36 @@ export default function HomeScreen({ navigation }: Props) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[Home] pending-sync count read failed:", msg);
     }
+    try {
+      setConflictFiles(await listSyncConflictFiles());
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[Home] sync-conflict scan failed:", msg);
+    }
   }, [applyNoteIndex]);
+
+  // Review dialog: pair each conflict copy to its canonical note on open (the
+  // extra listNoteFiles enumeration is deferred to here — the banner itself
+  // only needs the count).
+  const openConflictReview = useCallback(async () => {
+    setConflictDialogVisible(true);
+    try {
+      setConflictPairs(pairConflicts(conflictFiles, await listNoteFiles()));
+    } catch {
+      setConflictPairs(pairConflicts(conflictFiles, []));
+    }
+  }, [conflictFiles]);
+
+  // Open a conflict copy or its original in RecentDetail — the user compares
+  // there and archive-deletes the loser via the existing Delete flow.
+  const openConflictNote = useCallback(
+    async (uri: string) => {
+      setConflictDialogVisible(false);
+      const entry = await resolveNoteEntry(uri);
+      if (entry) navigation.navigate("RecentDetail", { entry });
+    },
+    [navigation],
+  );
 
   // Banner Retry: run a pending-export drain pass now (reachability probe
   // included — a tap while the VPN is still down is a fast no-op), then
@@ -314,6 +357,23 @@ export default function HomeScreen({ navigation }: Props) {
                 } waiting for Karakeep — will send when the server is reachable`}
               </Banner>
             ) : null}
+            {conflictFiles.length > 0 ? (
+              <Banner
+                visible
+                icon="file-compare"
+                style={{ borderRadius: theme.carnet.radius.md }}
+                actions={[
+                  {
+                    label: "Review",
+                    onPress: () => void openConflictReview(),
+                  },
+                ]}
+              >
+                {`${conflictFiles.length} sync conflict${
+                  conflictFiles.length === 1 ? "" : "s"
+                } in the vault — two versions of the same note exist`}
+              </Banner>
+            ) : null}
             {selectionMode ? (
               <View
                 style={[
@@ -449,6 +509,56 @@ export default function HomeScreen({ navigation }: Props) {
         </Dialog>
 
         <Dialog
+          visible={conflictDialogVisible}
+          onDismiss={() => setConflictDialogVisible(false)}
+          style={{ borderRadius: theme.carnet.radius.sheet }}
+        >
+          <Dialog.Title>Sync conflicts</Dialog.Title>
+          <Dialog.Content style={{ gap: theme.carnet.spacing.md }}>
+            <Text variant="bodyMedium">
+              Syncthing kept both versions of these notes after concurrent
+              edits. Open each pair, keep the right one, and delete the other
+              (Delete moves it to Archive).
+            </Text>
+            {conflictPairs.map((pair) => (
+              <View key={pair.conflict.uri} style={{ gap: theme.carnet.spacing.xs }}>
+                <Text variant="bodySmall" numberOfLines={1}>
+                  {`${pair.conflict.subdir}/${pair.originalName}`}
+                </Text>
+                <View style={styles.conflictActions}>
+                  <Button
+                    compact
+                    onPress={() => void openConflictNote(pair.conflict.uri)}
+                  >
+                    Open copy
+                  </Button>
+                  {pair.original ? (
+                    <Button
+                      compact
+                      onPress={() => void openConflictNote(pair.original!.uri)}
+                    >
+                      Open original
+                    </Button>
+                  ) : (
+                    <Text
+                      variant="labelSmall"
+                      style={{ color: theme.colors.onSurfaceVariant }}
+                    >
+                      original missing — the copy is the only version
+                    </Text>
+                  )}
+                </View>
+              </View>
+            ))}
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setConflictDialogVisible(false)}>
+              Close
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+
+        <Dialog
           visible={confirmVisible}
           onDismiss={() => setConfirmVisible(false)}
           style={{ borderRadius: theme.carnet.radius.sheet }}
@@ -489,5 +599,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+  },
+  conflictActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
   },
 });

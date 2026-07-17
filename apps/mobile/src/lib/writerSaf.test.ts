@@ -190,6 +190,7 @@ import {
   updateNoteIfUnchanged,
   moveToArchive,
   listNoteFiles,
+  listSyncConflictFiles,
   safLastSegment,
 } from "./writer";
 import * as FileSystem from "expo-file-system/legacy";
@@ -482,6 +483,21 @@ describe("listNoteFiles (SAF)", () => {
     expect(notes.every((n) => n.name.toLowerCase().endsWith(".md"))).toBe(true);
     expect(notes.some((n) => n.name === "keeper.md")).toBe(true);
     expect(notes.some((n) => n.name === "cover.png")).toBe(false);
+  });
+
+  it("excludes Syncthing conflict copies; listSyncConflictFiles returns them", async () => {
+    await writeIdea("note", "# Note\n");
+    const conflictName = "note.sync-conflict-20260716-093012-ABC123X.md";
+    _saf.set(`Ideas/${conflictName}`, { kind: "file", content: "# stale\n" });
+
+    const notes = await listNoteFiles();
+    expect(notes.some((n) => n.name === conflictName)).toBe(false);
+    expect(notes.some((n) => n.name === "note.md")).toBe(true);
+
+    const conflicts = await listSyncConflictFiles();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].name).toBe(conflictName);
+    expect(conflicts[0].uri.startsWith("content://")).toBe(true);
   });
 });
 
