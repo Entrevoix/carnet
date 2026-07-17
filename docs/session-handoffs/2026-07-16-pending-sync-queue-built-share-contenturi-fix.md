@@ -60,9 +60,13 @@ dead end, don't retry it; use Files app → Share → Carnet).
    Karakeep doesn't accept — kept in the vault only." Bookmark created without the
    attachment — the handled skip path, matching the user's original 2026-07-12
    `.txt → HTTP 400` report. The server genuinely rejects `.txt`; NOT a client bug.
-   Also saved to auto-memory (`karakeep-txt-attachments-refused`). `.docx` acceptance
-   remains UNTESTED (the 2026-07-13 docx "success" predated the pairing fix and proves
-   nothing).
+   Also saved to auto-memory (`karakeep-txt-attachments-refused`).
+   **Late-session addendum: `.docx` is ALSO refused** — same retest procedure, same
+   skip snackbar ("karakeep-docx-test.docx is a file type Karakeep doesn't accept —
+   kept in the vault only"), bookmark created without the attachment. The 2026-07-13
+   docx "success" is conclusively explained as a pairing artifact. This server's
+   accept-list is likely ~images + PDF; don't re-test client-side — changing it is a
+   server-side allowlist question.
 2. **Pending-sync queue: full lifecycle PASS.** Airplane mode on → export → queued
    snackbar (exact designed text, no error banner) → Home banner with Retry → offline
    Retry = fast no-op, no attempt burned → airplane off → app foregrounded →
@@ -87,12 +91,12 @@ dead end, don't retry it; use Files app → Share → Carnet).
 ## User action needed (tailnet-only, agents can't reach Karakeep's UI)
 
 Delete leftover test bookmarks in Karakeep: **"Shared file: karakeep-retest.txt"**,
-**"Shared file: pending-sync-test.txt"**, plus the two 2026-07-13 stragglers if still
-present ("Shared file: agenda-test.docx", "Shared file: planning-notes.txt").
+**"Shared file: pending-sync-test.txt"**, **"Shared file: karakeep-docx-test.docx"**,
+plus the two 2026-07-13 stragglers if still present ("Shared file: agenda-test.docx",
+"Shared file: planning-notes.txt").
 
 ## Open / backlog (mostly unchanged)
 
-- `.docx` Karakeep-acceptance test (same retest procedure, one docx share) — quick win.
 - Duplicate-bookmark real fix (stamp karakeepId immediately after create/update) — small.
 - Stale Home banner count after a background drain — cosmetic, has a clear fix
   (re-read count on an AppState listener or after App.tsx drains).
