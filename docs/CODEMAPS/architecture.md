@@ -1,5 +1,5 @@
 # Architecture — Carnet
-<!-- Generated: 2026-07-16 | Files scanned: ~140 (81 src + tests) | Token estimate: ~800 -->
+<!-- Generated: 2026-07-17 | Files scanned: ~152 (87 src + tests) | Token estimate: ~820 -->
 
 Mobile-first knowledge capture. The Android app writes Markdown into a local folder;
 Syncthing replicates it peer-to-peer into an Obsidian vault on the workstation.
@@ -33,10 +33,13 @@ Export (opt-in, per note, from RecentDetail)
 
 ## Layer boundaries
 - **UI** `screens/` (9), `components/` (14) — capture + review + search
-- **Domain** `lib/` (47 modules, each with co-located tests) — enrichment, sanitize,
-  markdown/frontmatter, vault IO + tag/search index, offline queue + pending-sync
-  (Karakeep) queue, save-first flows, settings, net allowlist (B0 SSRF/host hardening),
-  Karakeep export, host reachability, notification capture
+- **Domain** `lib/` (53 modules, each with co-located tests) — enrichment (dispatcher
+  seam covers ALL backend-divergent calls incl. transcribe/OCR/listModels), sanitize,
+  markdown/frontmatter, vault IO behind the `VaultFs` seam (SAF/file:// selected once)
+  + tag/search index + sync-conflict detection, offline queue + pending-sync (Karakeep)
+  queue over shared scaffolding, shared HTTP-client security core (`httpClient.ts`),
+  save-first flows, related-notes scoring, cold-start budget, settings, net allowlist
+  (B0 SSRF/host hardening), Karakeep export, host reachability, notification capture
 - **Voice** `voice/` — on-device STT: recognizer detection/failover (`recognizerSelect`),
   pure error-decision ladder (`sttErrorPolicy` — restart latching, silence auto-stop,
   mic-revoked classification), onboarding/readiness

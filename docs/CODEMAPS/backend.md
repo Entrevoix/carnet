@@ -1,5 +1,5 @@
 # Device Pipeline & Integrations
-<!-- Generated: 2026-07-16 | Files scanned: ~140 (81 src + tests) | Token estimate: ~840 -->
+<!-- Generated: 2026-07-17 | Files scanned: ~152 (87 src + tests) | Token estimate: ~880 -->
 
 No HTTP server. The "backend" is the **on-device enrichment + persistence pipeline**,
 plus an opt-in **Karakeep export** REST client.
@@ -22,7 +22,24 @@ Share    ShareReceive    → enrichSharedImage / Link / raw file → writeIdea /
 `transcribeAudio` `autoTranscribeIfEnabled` `promoteIdea` `listModels`
 errors: `isNotConfiguredError` `isPermanentError`; `withSystemOverride` `assertBase`.
 
-## Persistence — `lib/writer.ts` (1190 ln)
+## Shared HTTP core — `lib/httpClient.ts` (118 ln)
+The security surface BOTH network clients share (was hand-duplicated):
+`HttpError` base (status + notConfigured; OmniRouteError/KarakeepError are thin
+subclasses), `sanitizeErrorMessage` (THE canonical Bearer redactor — the queues
+re-export it via asyncQueueUtils), `withTimeout(ms, makeTimeoutError, run)`,
+unified `parseErrorBody`. Per-client: error names, user-facing messages, the
+3-line HTTPS-or-LAN wrappers (policy lives in netAllowlist).
+
+## Persistence — `lib/writer.ts` (~1000 ln) + `lib/vaultFs.ts` (243 ln)
+Storage backends live behind the `VaultFs` seam (vaultFs.ts: SafFs/FileFs,
+selected ONCE in resolveRoot / fsForUri) — writer.ts is branch-free logic on
+top (collision naming, enumeration, archiving). SAF quirks the seam owns:
+create-time rename (finalName from the URI actually created), decoded
+safLastSegment names, throwing (non-idempotent) SAF delete. Test parity:
+writer.test.ts (file://) + writerSaf.test.ts (SAF harness).
+`listNoteFiles` excludes Syncthing `*.sync-conflict-*` copies;
+`listSyncConflictFiles` enumerates them (lib/syncConflicts.ts pairs them —
+Home banner + review dialog).
 `writeIdea` `writePerson` `writeBinary` `appendJournal` `updateNote` `moveToArchive`
 `readNote` `listNoteFiles`; attachments `injectAttachments` `listPairedBinaries`
 `resolvePairedUri` (read-only `findSubdir` — never creates dirs) `stripPairedBinaryLinks`;
@@ -40,6 +57,8 @@ time. `drainPendingExports` takes INJECTED deps (unit-testable); runner binds se
 `isHostReachable` (4s HEAD probe, ANY http response = up) + `exportNoteToKarakeep`.
 Triggers: App.tsx cold start + AppState→active (30s throttle), Home banner Retry.
 Distinct from `queue.ts` (raw captures awaiting enrichment) — do not merge.
+Shared queue scaffolding (createLock/localId/sanitizeError) lives in
+`lib/asyncQueueUtils.ts`.
 
 ## Karakeep export — `lib/karakeep.ts` (390) · `lib/karakeepExport.ts` (75) · `lib/karakeepAssetSync.ts` (76)
 Opt-in REST client to a self-hosted Karakeep (`{url}/api/v1`, Bearer key, HTTPS-or-LAN).
@@ -53,6 +72,22 @@ create-vs-update/404-recovery/tag+title derivation; failed outcome carries `unre
 for the pending-sync queue); `karakeepId` frontmatter gives idempotency. NOTE: the user's
 server refuses non-image/PDF attachments (.txt/.docx confirmed) — handled as an
 informational skip, not an error.
+
+## Enrichment dispatch — `lib/dispatcher.ts` (B7 seam, COMPLETE)
+ALL backend-divergent calls cross it now: the 6 enrich fns + predicates PLUS
+`transcribeAudio` / `autoTranscribeIfEnabled` / `ocrCardViaVision` /
+`listModels`. Screens/components import from dispatcher only; payload caps
+(`assertBase64UnderLimit`, `MAX_*`) stay omniroute imports by design.
+Prompts (`lib/prompts.ts`, tested): idea/journal emit `## Actions` as `- [ ]`
+checkboxes, faithful-only, section omitted when none.
+
+## Review-surface intelligence
+- `lib/relatedNotes.ts` (pure) — lexical related-note scoring over the cached
+  note index (tags > title terms > excerpt terms); RecentDetail's "Related"
+  card. Self-exclusion is SAF-encoding-robust (decoded basename + subdir).
+- `lib/startupTiming.ts` — cold-start budget tripwire (BOOT_TIMESTAMP_MS at
+  first app-code import; Home's first mount reports; breach → console.warn
+  which survives release stripping; see docs/smoke-test.md).
 
 ## On-device extras
 STT `voice/VoiceButton.tsx` + `voice/recognizerSelect.ts`; STT onboarding `voice/sttReadiness.ts`

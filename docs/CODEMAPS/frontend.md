@@ -1,5 +1,5 @@
 # Frontend — screens & components
-<!-- Generated: 2026-07-16 | Files scanned: ~140 (81 src + tests) | Token estimate: ~780 -->
+<!-- Generated: 2026-07-17 | Files scanned: ~152 (87 src + tests) | Token estimate: ~800 -->
 
 ## Navigation — `apps/mobile/App.tsx` (native-stack)
 ```
@@ -12,11 +12,11 @@ behind the "more modes" chevron sheet).
 ## Screens (`apps/mobile/src/screens`) — smoke tests exist for all (headless)
 | screen | ln | role |
 |---|---|---|
-| `HomeScreen` | 493 | recents list + `CaptureFab`; `VoiceReadinessBanner`; pending-Karakeep banner + Retry |
+| `HomeScreen` | ~600 | recents + `CaptureFab`; voice/pending-Karakeep/sync-conflict banners; conflict review dialog; cold-start report |
 | `CaptureScreen` | 803 | Idea/Journal/Contact text capture; dictation; Tags+Location; save-first |
 | `PhotoCaptureScreen` | 507 | camera → vision enrichment (Photo) |
 | `AudioCaptureScreen` | 629 | record → on-device transcribe → journal |
-| `RecentDetailScreen` | 1469 | note view + WYSIWYG edit, tags, geo, attachments, Karakeep export (unreachable → pending-sync queue) |
+| `RecentDetailScreen` | ~1560 | note view + WYSIWYG edit, tags, geo, attachments, Related card (lib/relatedNotes), Karakeep export (unreachable → pending-sync queue) |
 | `ShareReceiveScreen` | 633 | Android share-sheet intake (image / audio / link / any file; reads via content:// grant) |
 | `SearchScreen` | 284 | vault full-text/tag search (B6), stamp-based filters |
 | `TagBrowserScreen` | 140 | tags + counts → routes into Search |
