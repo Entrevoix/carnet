@@ -47,12 +47,16 @@ vi.mock("../lib/writer", async () => {
   };
 });
 
+// relatedNotes is pure — imported real; the index feed below controls it.
 vi.mock("../lib/vault", async () => {
   const fm = await import("../lib/frontmatter");
   return {
     getTagIndex: vi.fn(async () => ({ builtAt: 1, tags: [] })),
     invalidateNoteIndex: vi.fn(async () => {}),
     tagsForNote: (md: string) => fm.getFrontmatterTags(md),
+    // null index → the Related card stays hidden in existing tests.
+    loadCachedNoteIndex: vi.fn(async () => null),
+    resolveNoteEntry: vi.fn(async () => null),
   };
 });
 
@@ -121,6 +125,8 @@ import { removeFromHistory } from "../lib/storage";
 
 type ScreenProps = Parameters<typeof RecentDetailScreen>[0];
 
+import { loadCachedNoteIndex, resolveNoteEntry } from "../lib/vault";
+
 const ENTRY: CaptureEntry = {
   id: "r1",
   mode: "idea",
@@ -133,6 +139,7 @@ function makeNavigation() {
   return {
     setOptions: vi.fn(),
     navigate: vi.fn(),
+    push: vi.fn(),
     goBack: vi.fn(),
     addListener: vi.fn(() => vi.fn()),
     dispatch: vi.fn(),
@@ -176,6 +183,40 @@ describe("RecentDetailScreen", () => {
     expect(screen.queryByText(ENTRY.filepath)).toBeNull();
     // Single primary action.
     expect(screen.getByLabelText("Edit note")).toBeTruthy();
+  });
+
+  it("renders the Related card from the cached index and opens a hit with push (Back-able)", async () => {
+    const relatedEntry = {
+      uri: "file:///v/Ideas/other-qa-note.md",
+      subdir: "Ideas" as const,
+      title: "Other QA note",
+      createdOrDate: 5,
+      tags: ["qa-test"],
+      mode: "idea" as const,
+      excerpt: "",
+    };
+    vi.mocked(loadCachedNoteIndex).mockResolvedValue({
+      builtAt: 1,
+      notes: [relatedEntry],
+    } as Awaited<ReturnType<typeof loadCachedNoteIndex>>);
+    const target = {
+      id: "r2",
+      mode: "idea" as const,
+      title: "Other QA note",
+      filepath: relatedEntry.uri,
+      createdAt: 1,
+    };
+    vi.mocked(resolveNoteEntry).mockResolvedValue(target);
+
+    const { navigation } = renderScreen();
+    // Shares the #qa-test tag with the open note → scores → card renders.
+    expect(await screen.findByText("Related")).toBeTruthy();
+    fireEvent.click(screen.getByText("Other QA note"));
+    await waitFor(() =>
+      expect(navigation.push).toHaveBeenCalledWith("RecentDetail", {
+        entry: target,
+      }),
+    );
   });
 
   it("tag stamp opens pre-filtered Search", async () => {

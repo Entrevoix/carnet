@@ -154,12 +154,16 @@ export default function HomeScreen({ navigation }: Props) {
   }, [conflictFiles]);
 
   // Open a conflict copy or its original in RecentDetail — the user compares
-  // there and archive-deletes the loser via the existing Delete flow.
+  // there and archive-deletes the loser via the existing Delete flow. Resolve
+  // FIRST and close the dialog only on success: if the note vanished between
+  // scan and tap, the dialog stays up so the user can pick another row
+  // instead of being dumped back to Home with nothing.
   const openConflictNote = useCallback(
     async (uri: string) => {
-      setConflictDialogVisible(false);
       const entry = await resolveNoteEntry(uri);
-      if (entry) navigation.navigate("RecentDetail", { entry });
+      if (!entry) return;
+      setConflictDialogVisible(false);
+      navigation.navigate("RecentDetail", { entry });
     },
     [navigation],
   );

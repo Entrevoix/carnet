@@ -56,6 +56,7 @@ tags: [idea, seedling, {tag1}, {tag2}]
 
 {Expanded thought}
 
+{ONLY when the input contains real commitments:}
 ## Actions
 - [ ] {task from the input}`;
   const user = `<USER_INPUT>\n${input}\n</USER_INPUT>`;
@@ -96,6 +97,7 @@ ideas: []
 ## Notes
 {Cleaned transcript as bullet points}
 
+{ONLY when the speaker made real commitments:}
 ## Actions
 - [ ] {action item from the transcript}`;
   const user = `<USER_INPUT>\n${combined}\n</USER_INPUT>`;

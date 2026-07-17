@@ -70,7 +70,15 @@ import { caretProps, MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
 import { makeImageRule } from "../components/markdownImageRule";
 import { WysiwygEditor, type WysiwygEditorRef } from "../components/WysiwygEditor";
 import { TagInput } from "../components/TagInput";
-import { getTagIndex, invalidateNoteIndex, tagsForNote } from "../lib/vault";
+import {
+  getTagIndex,
+  invalidateNoteIndex,
+  loadCachedNoteIndex,
+  resolveNoteEntry,
+  tagsForNote,
+  type NoteIndexEntry,
+} from "../lib/vault";
+import { findRelatedNotes } from "../lib/relatedNotes";
 import { exportNoteToKarakeep } from "../lib/karakeepNoteExport";
 import { enqueuePendingExport } from "../lib/pendingSync";
 import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
@@ -754,6 +762,65 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     };
   }, [body]);
 
+  // ── Related notes (lexical, over the cached index) ─────────────────────────
+  // Cache-first and best-effort: a missing/stale index just means an empty
+  // Related card, never a block on rendering the note. Recomputed when the
+  // body changes (an edit can change tags/title). Lives above the rich-edit
+  // early return like every other hook.
+  const [related, setRelated] = useState<NoteIndexEntry[]>([]);
+  useEffect(() => {
+    let active = true;
+    if (missing || !body) {
+      setRelated([]);
+      return;
+    }
+    loadCachedNoteIndex()
+      .then((index) => {
+        if (!active || !index) return;
+        setRelated(
+          findRelatedNotes(
+            {
+              uri: entry.filepath,
+              // Sharpen the encoding-independent self-exclusion (see
+              // RelatedQuery docs) — the mode maps 1:1 onto the subdir.
+              subdir:
+                entry.mode === "journal"
+                  ? "Journal"
+                  : entry.mode === "person"
+                    ? "People"
+                    : "Ideas",
+              title: deriveTitle(body) || entry.title,
+              tags: tagsForNote(body),
+            },
+            index,
+          ),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [body, missing, entry.filepath, entry.title]);
+
+  // Push (not navigate) so the related note stacks on top and Back returns
+  // here — hopping through a chain of related notes stays reversible. Ref
+  // guard matches the screen's other async actions: a double-tap must not
+  // stack the target twice.
+  const openingRelatedRef = useRef(false);
+  const openRelated = useCallback(
+    async (uri: string) => {
+      if (openingRelatedRef.current) return;
+      openingRelatedRef.current = true;
+      try {
+        const target = await resolveNoteEntry(uri);
+        if (target) navigation.push("RecentDetail", { entry: target });
+      } finally {
+        openingRelatedRef.current = false;
+      }
+    },
+    [navigation],
+  );
+
   // Map each resolved IMAGE embed's relative link (`../Photos/x.jpg`) to its
   // device URI so the markdown renderer can draw it inline (see makeImageRule).
   // Non-image files stay out — they render as tappable rows in the card below.
@@ -1148,6 +1215,27 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
                 {renderBody}
               </Markdown>
             </View>
+
+            {/* "You've thought about this before" — lexical matches from the
+                cached index (lib/relatedNotes.ts). Hidden when nothing scores. */}
+            {related.length > 0 ? (
+              <Card style={styles.card}>
+                <Card.Title title="Related" />
+                <Card.Content style={styles.attachmentList}>
+                  {related.map((r) => (
+                    <Button
+                      key={r.uri}
+                      mode="text"
+                      icon={modeStamp(r.mode).icon}
+                      onPress={() => void openRelated(r.uri)}
+                      contentStyle={styles.attachmentFileContent}
+                    >
+                      {r.title}
+                    </Button>
+                  ))}
+                </Card.Content>
+              </Card>
+            ) : null}
           </>
         ) : null}
       </ScrollView>
