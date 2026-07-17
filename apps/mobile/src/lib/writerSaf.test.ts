@@ -1,0 +1,537 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * SAF (Storage Access Framework) test-parity suite.
+ *
+ * writer.ts has two storage backends selected by whether Settings.captureFolderPath
+ * is a content://...tree/... URI (see resolveRoot in writer.ts). PRODUCTION runs the
+ * SAF branch — every real install picks a SAF folder via the document picker — but
+ * writer.test.ts almost exclusively exercises the file:// branch (empty
+ * captureFolderPath), with only 3 bespoke SAF tests. Both writer bugs shipped this
+ * month (9171376, c896d9d) were SAF-branch-only. This file mirrors writer.test.ts's
+ * core behavior families against a REUSABLE in-memory SAF mock so the two backends
+ * get comparable coverage.
+ *
+ * The harness below models the two SAF quirks that actually bit us in production:
+ *   1. readDirectoryAsync returns full document URIs, never basenames — callers
+ *      must run them through safLastSegment (writer.ts already does this; the mock
+ *      would silently paper over a regression if it returned basenames instead).
+ *   2. createFileAsync may RENAME the file: DocumentsContract appends the mime's
+ *      canonical extension when the requested display name doesn't already end
+ *      with it. This is the root cause of 9171376 (writeBinary's finalName
+ *      contract) — the mock reproduces it for the mime types writer.ts actually
+ *      creates files with.
+ */
+
+// vi.mock factories are hoisted above ordinary const/function declarations in this
+// file, so everything the factories close over must live inside vi.hoisted().
+const {
+  SAF_ROOT,
+  SAF_CANONICAL_EXT,
+  _saf,
+  safRelPath,
+  safUri,
+  safParent,
+  safChildRelPath,
+  clearSaf,
+} = vi.hoisted(() => {
+    const SAF_AUTHORITY = "com.android.externalstorage.documents";
+    const TREE_ID = "primary:Carnet";
+    const SAF_ROOT = `content://${SAF_AUTHORITY}/tree/${encodeURIComponent(TREE_ID)}`;
+
+    type SafEntry = { kind: "file"; content: string } | { kind: "dir" };
+    const _saf: Map<string, SafEntry> = new Map();
+
+    /** Mime types DocumentsContract enforces a canonical extension for, restricted
+     * to what writer.ts actually passes to createFileAsync (text/markdown for
+     * every note write, plus whatever mime the caller hands writeBinary). Anything
+     * else (notably "application/octet-stream", used by moveToArchive's binary
+     * copy) is left alone — matching the real behavior that only triggered
+     * 9171376 for well-known mimes. */
+    const SAF_CANONICAL_EXT: Record<string, string> = {
+      "text/markdown": ".md",
+      "image/jpeg": ".jpg",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    };
+
+    function safRelPath(uri: string): string {
+      if (uri === SAF_ROOT) return "";
+      const marker = "/document/";
+      const idx = uri.indexOf(marker);
+      if (idx < 0) throw new Error(`Not a SAF document URI: ${uri}`);
+      const decoded = decodeURIComponent(uri.slice(idx + marker.length));
+      return decoded === TREE_ID ? "" : decoded.slice(TREE_ID.length + 1);
+    }
+
+    function safUri(relPath: string): string {
+      if (relPath === "") return SAF_ROOT;
+      const id = `${TREE_ID}/${relPath}`;
+      return `${SAF_ROOT}/document/${encodeURIComponent(id)}`;
+    }
+
+    function safParent(relPath: string): string {
+      const slash = relPath.lastIndexOf("/");
+      return slash < 0 ? "" : relPath.slice(0, slash);
+    }
+
+    function safChildRelPath(parentRelPath: string, name: string): string {
+      return parentRelPath ? `${parentRelPath}/${name}` : name;
+    }
+
+    function clearSaf(): void {
+      _saf.clear();
+    }
+
+    return {
+      SAF_ROOT,
+      SAF_CANONICAL_EXT,
+      _saf,
+      safRelPath,
+      safUri,
+      safParent,
+      safChildRelPath,
+      clearSaf,
+    };
+  });
+
+// Mock ./settings so every resolveRoot() call in this file picks the SAF branch —
+// this file's whole point is exercising that branch, unlike writer.test.ts where
+// SAF is the exception.
+vi.mock("./settings", () => ({
+  getSettings: vi.fn().mockResolvedValue({
+    omniRouteUrl: "",
+    omniRouteApiKey: "",
+    omniRouteModel: "",
+    captureFolderPath: SAF_ROOT,
+  }),
+}));
+
+vi.mock("expo-file-system/legacy", () => {
+  return {
+    documentDirectory: "file:///data/",
+    EncodingType: { UTF8: "utf8", Base64: "base64" },
+    // The SAF branch never calls these directly — getModificationTime
+    // short-circuits to null for any content:// URI before reaching getInfoAsync —
+    // but they're stubbed so the module loads without a real native binding.
+    getInfoAsync: vi.fn(async () => ({ exists: false, isDirectory: false })),
+    makeDirectoryAsync: vi.fn(),
+    readDirectoryAsync: vi.fn(),
+    readAsStringAsync: vi.fn(),
+    writeAsStringAsync: vi.fn(),
+    deleteAsync: vi.fn(),
+    StorageAccessFramework: {
+      readDirectoryAsync: vi.fn(async (parentUri: string): Promise<string[]> => {
+        const parentRel = safRelPath(parentUri);
+        const out: string[] = [];
+        for (const relPath of _saf.keys()) {
+          if (safParent(relPath) === parentRel) out.push(safUri(relPath));
+        }
+        return out;
+      }),
+      makeDirectoryAsync: vi.fn(async (parentUri: string, name: string): Promise<string> => {
+        const relPath = safChildRelPath(safRelPath(parentUri), name);
+        if (!_saf.has(relPath)) _saf.set(relPath, { kind: "dir" });
+        return safUri(relPath);
+      }),
+      createFileAsync: vi.fn(
+        async (parentUri: string, displayName: string, mimeType: string): Promise<string> => {
+          const canonicalExt = SAF_CANONICAL_EXT[mimeType];
+          const finalName =
+            canonicalExt && !displayName.toLowerCase().endsWith(canonicalExt)
+              ? `${displayName}${canonicalExt}`
+              : displayName;
+          const relPath = safChildRelPath(safRelPath(parentUri), finalName);
+          _saf.set(relPath, { kind: "file", content: "" });
+          return safUri(relPath);
+        },
+      ),
+      readAsStringAsync: vi.fn(async (uri: string): Promise<string> => {
+        const entry = _saf.get(safRelPath(uri));
+        if (!entry || entry.kind !== "file") throw new Error(`SAF file not found: ${uri}`);
+        return entry.content;
+      }),
+      writeAsStringAsync: vi.fn(async (uri: string, content: string): Promise<void> => {
+        const relPath = safRelPath(uri);
+        const entry = _saf.get(relPath);
+        if (!entry || entry.kind !== "file") {
+          throw new Error(`SAF write to missing file: ${uri}`);
+        }
+        entry.content = content;
+      }),
+      deleteAsync: vi.fn(async (uri: string): Promise<void> => {
+        _saf.delete(safRelPath(uri));
+      }),
+    },
+  };
+});
+
+import {
+  writeIdea,
+  writeBinary,
+  appendJournal,
+  writePerson,
+  readNote,
+  updateNote,
+  moveToArchive,
+  listNoteFiles,
+  safLastSegment,
+} from "./writer";
+import * as FileSystem from "expo-file-system/legacy";
+
+const saf = FileSystem.StorageAccessFramework;
+
+function nameOf(uri: string): string {
+  return safLastSegment(uri);
+}
+
+// ── harness sanity ────────────────────────────────────────────────────────────
+
+describe("SAF harness sanity", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("readDirectoryAsync returns full content:// document URIs, not basenames", async () => {
+    const { filepath } = await writeIdea("harness-check", "# T\n");
+    expect(filepath.startsWith("content://")).toBe(true);
+
+    const children = await saf.readDirectoryAsync(safUri("Ideas"));
+    expect(children).toEqual([filepath]);
+    // Guard against a regression that would make the mock (and thus the tests
+    // built on it) silently accept basenames — the real API never does.
+    expect(children[0]).not.toBe("harness-check.md");
+  });
+});
+
+// ── writeIdea ─────────────────────────────────────────────────────────────────
+
+describe("writeIdea (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("creates Ideas/slug.md in an empty SAF vault", async () => {
+    const { filepath } = await writeIdea("my-idea", "# My Idea\n\nbody\n");
+    expect(nameOf(filepath)).toBe("my-idea.md");
+    await expect(readNote(filepath)).resolves.toBe("# My Idea\n\nbody\n");
+  });
+
+  it("appends -2 on collision, -3 on second collision", async () => {
+    const { filepath: fp1 } = await writeIdea("test-slug", "# First\n");
+    const { filepath: fp2 } = await writeIdea("test-slug", "# Second\n");
+    const { filepath: fp3 } = await writeIdea("test-slug", "# Third\n");
+    expect(nameOf(fp1)).toBe("test-slug.md");
+    expect(nameOf(fp2)).toBe("test-slug-2.md");
+    expect(nameOf(fp3)).toBe("test-slug-3.md");
+  });
+});
+
+// ── appendJournal ─────────────────────────────────────────────────────────────
+
+describe("appendJournal (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("creates Journal/date.md on first call", async () => {
+    const md = "---\ndate: 2026-05-16\n---\n# Entry\n\n## Notes\n- one\n";
+    const { filepath } = await appendJournal("2026-05-16", md);
+    expect(nameOf(filepath)).toBe("2026-05-16.md");
+    await expect(readNote(filepath)).resolves.toBe(md);
+  });
+
+  it("appends with HH:MM heading on second call same day", async () => {
+    const first = "---\ndate: 2026-05-16\n---\n# First entry\n\n## Notes\n- one\n";
+    const second = "---\ndate: 2026-05-16\n---\n# Second entry\n\n## Notes\n- two\n";
+
+    const { filepath } = await appendJournal("2026-05-16", first);
+    await appendJournal("2026-05-16", second);
+
+    const content = await readNote(filepath);
+    expect(content).toContain("# First entry");
+    expect(content).toContain("# Second entry");
+    expect(content).toMatch(/## \d{2}:\d{2}/);
+    expect(content.match(/^date:/gm)?.length).toBe(1);
+  });
+
+  it("merges a second same-day entry's tags into the day file", async () => {
+    const first = "---\ndate: 2026-05-16\ntags: [journal, morning]\n---\n# First\n\n## Notes\n- a\n";
+    const second = "---\ndate: 2026-05-16\ntags: [journal, errand]\n---\n# Second\n\n## Notes\n- b\n";
+
+    const { filepath } = await appendJournal("2026-05-16", first);
+    await appendJournal("2026-05-16", second);
+
+    const content = await readNote(filepath);
+    expect(content).toContain("tags: [journal, morning, errand]");
+    expect(content.match(/^date:/gm)?.length).toBe(1);
+  });
+
+  it("carries a 2nd same-day entry's location onto the day file (latest wins)", async () => {
+    const first = "---\ndate: 2026-05-16\nlocation: 38.90000,-77.00000\n---\n# First\n\n## Notes\n- a\n";
+    const second = "---\ndate: 2026-05-16\nlocation: 40.00000,-74.00000\n---\n# Second\n\n## Notes\n- b\n";
+
+    const { filepath } = await appendJournal("2026-05-16", first);
+    await appendJournal("2026-05-16", second);
+
+    const content = await readNote(filepath);
+    expect(content).toContain("location: 40.00000,-74.00000");
+    expect(content.match(/^location:/gm)?.length).toBe(1);
+  });
+
+  it("returns the day file's full accumulated markdown, not just the new fragment", async () => {
+    // Callers (the tag index) index off the returned markdown, not the just-written
+    // fragment — a SAF-branch regression here would silently drop earlier same-day
+    // tags from the index without any write-path test catching it.
+    const first = "---\ndate: 2026-05-16\ntags: [a]\n---\n# First\n\nbody\n";
+    const second = "---\ndate: 2026-05-16\ntags: [b]\n---\n# Second\n\nbody\n";
+    await appendJournal("2026-05-16", first);
+    const { markdown } = await appendJournal("2026-05-16", second);
+    expect(markdown).toContain("# First");
+    expect(markdown).toContain("# Second");
+    expect(markdown).toContain("tags: [a, b]");
+  });
+
+  it("serializes two concurrent same-day appends so neither clobbers the other", async () => {
+    // The offline drain can process two journal entries for the same day
+    // back-to-back; serialize() in writer.ts must queue the second read-then-write
+    // behind the first even over the SAF backend's IPC round-trips.
+    const first = "---\ndate: 2026-05-16\n---\n# Alpha\n\nalpha body\n";
+    const second = "---\ndate: 2026-05-16\n---\n# Beta\n\nbeta body\n";
+
+    const [r1] = await Promise.all([
+      appendJournal("2026-05-16", first),
+      appendJournal("2026-05-16", second),
+    ]);
+
+    const content = await readNote(r1.filepath);
+    expect(content).toContain("# Alpha");
+    expect(content).toContain("# Beta");
+    // Both entries landed exactly once — no lost update.
+    expect(content.match(/# Alpha/g)?.length).toBe(1);
+    expect(content.match(/# Beta/g)?.length).toBe(1);
+  });
+});
+
+// ── writeBinary ───────────────────────────────────────────────────────────────
+
+describe("writeBinary (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("writes a binary whose display name already carries the canonical extension unchanged", async () => {
+    const { filepath, finalName } = await writeBinary("Photos", "shot.jpg", "dGVzdA==", "image/jpeg");
+    expect(finalName).toBe("shot.jpg");
+    expect(nameOf(filepath)).toBe("shot.jpg");
+    await expect(readNote(filepath)).resolves.toBe("dGVzdA==");
+  });
+
+  it("bumps -2, -3 on collision, preserving the extension", async () => {
+    const { finalName: n1 } = await writeBinary("Photos", "p.jpg", "AAA", "image/jpeg");
+    const { finalName: n2 } = await writeBinary("Photos", "p.jpg", "BBB", "image/jpeg");
+    const { finalName: n3 } = await writeBinary("Photos", "p.jpg", "CCC", "image/jpeg");
+    expect(n1).toBe("p.jpg");
+    expect(n2).toBe("p-2.jpg");
+    expect(n3).toBe("p-3.jpg");
+  });
+
+  it("handles extensionless input by bumping the bare stem", async () => {
+    const { finalName: n1 } = await writeBinary("Photos", "raw", "X", "application/octet-stream");
+    const { finalName: n2 } = await writeBinary("Photos", "raw", "Y", "application/octet-stream");
+    expect(n1).toBe("raw");
+    expect(n2).toBe("raw-2");
+  });
+
+  it("returns the SAF-renamed finalName when createFileAsync appends the mime's canonical extension", async () => {
+    // The 9171376 regression: DocumentsContract appended ".docx" to a display name
+    // that didn't already end with it. finalName is what gets linked in the note
+    // body, so it must reflect the rename or the note<->file pairing breaks.
+    const { filepath, finalName } = await writeBinary(
+      "Files",
+      "report.vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "QUFB",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    expect(finalName).toBe(
+      "report.vnd.openxmlformats-officedocument.wordprocessingml.document.docx",
+    );
+    expect(nameOf(filepath)).toBe(finalName);
+  });
+
+  it("auto-creates the subdir on first write into a fresh SAF folder", async () => {
+    expect(await saf.readDirectoryAsync(SAF_ROOT)).toEqual([]);
+    await writeBinary("Photos", "first.jpg", "AAA", "image/jpeg");
+    const rootChildren = await saf.readDirectoryAsync(SAF_ROOT);
+    expect(rootChildren.map(nameOf)).toContain("Photos");
+  });
+
+  it("keeps identically-named binaries in different subdirs independent (no cross-dir collision)", async () => {
+    const { finalName: photoName } = await writeBinary("Photos", "dup.jpg", "AAA", "image/jpeg");
+    const { finalName: fileName } = await writeBinary("Files", "dup.jpg", "BBB", "image/jpeg");
+    expect(photoName).toBe("dup.jpg");
+    expect(fileName).toBe("dup.jpg");
+  });
+});
+
+// ── readNote / updateNote ─────────────────────────────────────────────────────
+
+describe("readNote / updateNote (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("round-trips content through readNote → updateNote → readNote over a SAF URI", async () => {
+    const { filepath } = await writeIdea("round-trip", "# Original\n");
+    expect(filepath.startsWith("content://")).toBe(true);
+
+    await expect(readNote(filepath)).resolves.toBe("# Original\n");
+    await updateNote(filepath, "# Updated\n");
+    await expect(readNote(filepath)).resolves.toBe("# Updated\n");
+  });
+});
+
+// ── listNoteFiles ─────────────────────────────────────────────────────────────
+
+describe("listNoteFiles (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("enumerates .md notes across Ideas/Journal/People with subdir + full SAF document URI", async () => {
+    await writeIdea("my-idea", "# My Idea\n");
+    await appendJournal("2026-05-16", "---\ndate: 2026-05-16\n---\n# Entry\n");
+    await writePerson("Jane", "Doe", "---\nname: Jane Doe\n---\n# Jane Doe\n");
+
+    const notes = await listNoteFiles();
+    const byName = Object.fromEntries(notes.map((n) => [n.name, n]));
+    expect(byName["my-idea.md"].subdir).toBe("Ideas");
+    expect(byName["2026-05-16.md"].subdir).toBe("Journal");
+    expect(byName["Jane-Doe.md"].subdir).toBe("People");
+    for (const n of notes) {
+      expect(n.uri.startsWith("content://")).toBe(true);
+      expect(nameOf(n.uri)).toBe(n.name);
+    }
+  });
+
+  it("excludes non-markdown files sitting in a note subdir", async () => {
+    await writeIdea("keeper", "# Keeper\n");
+    await writeBinary("Ideas", "cover.png", "AAA", "image/png");
+
+    const notes = await listNoteFiles();
+    expect(notes.every((n) => n.name.toLowerCase().endsWith(".md"))).toBe(true);
+    expect(notes.some((n) => n.name === "keeper.md")).toBe(true);
+    expect(notes.some((n) => n.name === "cover.png")).toBe(false);
+  });
+});
+
+// ── moveToArchive (soft-delete) ───────────────────────────────────────────────
+
+describe("moveToArchive (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("archives a standalone idea note and removes the source", async () => {
+    const { filepath } = await writeIdea("standalone", "# Standalone\n\nbody\n");
+
+    const { archivedMdPath, archivedBinaryPath } = await moveToArchive(filepath);
+    expect(nameOf(archivedMdPath)).toBe("standalone.md");
+    expect(archivedBinaryPath).toBeNull();
+    await expect(readNote(filepath)).rejects.toThrow();
+    await expect(readNote(archivedMdPath)).resolves.toBe("# Standalone\n\nbody\n");
+  });
+
+  it("archives a note under its decoded filename, not the URL-encoded document id", async () => {
+    // Observed on-device 2026-07-16: the raw last URI segment on a SAF document is
+    // the URL-encoded document id, not the filename — archiving verbatim produced
+    // Archive/primary%3Acarnet%2FIdeas%2Fnote.md. safLastSegment must be used.
+    const { filepath } = await writeIdea("pending-sync-test", "# T\n");
+    const { archivedMdPath } = await moveToArchive(filepath);
+    // The archive copy's display name must be the decoded filename — not the raw
+    // URL-encoded document id verbatim (which is what the pre-fix bug produced).
+    expect(nameOf(archivedMdPath)).toBe("pending-sync-test.md");
+    expect(nameOf(archivedMdPath)).not.toContain("%2F");
+    expect(nameOf(archivedMdPath)).not.toContain("%3A");
+  });
+
+  it("archives a note + its paired Audio binary", async () => {
+    const { filepath: binPath } = await writeBinary("Audio", "meeting.mp3", "QkFTRTY0", "audio/mpeg");
+    const md =
+      "---\nkind: shared-audio\n---\n# Shared audio: meeting.mp3\n\n## File\n[meeting.mp3](../Audio/meeting.mp3)\n";
+    const { filepath: mdPath } = await writeIdea("shared-audio-1", md);
+
+    const result = await moveToArchive(mdPath);
+    expect(nameOf(result.archivedMdPath)).toBe("shared-audio-1.md");
+    expect(nameOf(result.archivedBinaryPath!)).toBe("meeting.mp3");
+    await expect(readNote(mdPath)).rejects.toThrow();
+    await expect(readNote(binPath)).rejects.toThrow();
+    await expect(readNote(result.archivedBinaryPath!)).resolves.toBe("QkFTRTY0");
+  });
+
+  it("archives just the .md when the paired binary link is broken", async () => {
+    const md = "---\nkind: shared-audio\n---\n# Lost\n\n## File\n[ghost.mp3](../Audio/ghost.mp3)\n";
+    const { filepath: mdPath } = await writeIdea("orphan", md);
+
+    const result = await moveToArchive(mdPath);
+    expect(nameOf(result.archivedMdPath)).toBe("orphan.md");
+    expect(result.archivedBinaryPath).toBeNull();
+    await expect(readNote(mdPath)).rejects.toThrow();
+  });
+
+  it("collision-bumps the archive name when an entry with the same stem already exists there", async () => {
+    const m1 = await writeIdea("dup", "# v1\n");
+    await moveToArchive(m1.filepath);
+
+    const m2 = await writeIdea("dup", "# v2\n");
+    const result = await moveToArchive(m2.filepath);
+    expect(nameOf(result.archivedMdPath)).toBe("dup-2.md");
+  });
+
+  it("archives ALL paired binaries when a note has several attachments", async () => {
+    const { filepath: imgPath } = await writeBinary("Photos", "sketch.jpg", "SU1H", "image/jpeg");
+    const { filepath: pdfPath } = await writeBinary("Files", "spec.pdf", "UERG", "application/pdf");
+    const md =
+      "---\nkind: idea\n---\n# Multi\n\n![](../Photos/sketch.jpg)\n\n## Files\n[spec.pdf](../Files/spec.pdf)\n";
+    const { filepath: mdPath } = await writeIdea("multi", md);
+
+    const result = await moveToArchive(mdPath);
+    expect(result.archivedBinaryPaths).toHaveLength(2);
+    expect(result.archivedBinaryPaths.map(nameOf).sort()).toEqual(["sketch.jpg", "spec.pdf"]);
+    await expect(readNote(imgPath)).rejects.toThrow();
+    await expect(readNote(pdfPath)).rejects.toThrow();
+  });
+
+  it("collision-bumps when two paired binaries would land on the same Archive name", async () => {
+    await writeBinary("Photos", "a.jpg", "UEhP", "image/jpeg");
+    await writeBinary("Files", "a.jpg", "RklM", "image/jpeg");
+    const md =
+      "---\nkind: idea\n---\n# Dup names\n\n![](../Photos/a.jpg)\n\n## Files\n[a.jpg](../Files/a.jpg)\n";
+    const { filepath: mdPath } = await writeIdea("dupnames", md);
+
+    const result = await moveToArchive(mdPath);
+    expect(result.archivedBinaryPaths.map(nameOf).sort()).toEqual(["a-2.jpg", "a.jpg"]);
+  });
+
+  it("swallows a delete failure on the original (revoked SAF permission) and still returns archived paths", async () => {
+    // deleteByUri's SAF branch is NOT idempotent — it throws on a revoked tree
+    // permission or an already-gone file. moveToArchive's jsdoc guarantees the
+    // archive copy is treated as canonical and the failure is swallowed.
+    const { filepath } = await writeIdea("stranded", "# Stranded\n\nbody\n");
+    vi.mocked(saf.deleteAsync).mockImplementationOnce(async () => {
+      throw new Error("Permission denied: tree access revoked");
+    });
+
+    const { archivedMdPath } = await moveToArchive(filepath);
+    expect(nameOf(archivedMdPath)).toBe("stranded.md");
+    await expect(readNote(archivedMdPath)).resolves.toBe("# Stranded\n\nbody\n");
+    // The original was never actually removed since deleteAsync threw.
+    await expect(readNote(filepath)).resolves.toBe("# Stranded\n\nbody\n");
+  });
+});

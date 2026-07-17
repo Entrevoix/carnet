@@ -1,47 +1,23 @@
-Codemap regeneration — 2026-07-12
-==================================
+Codemap refresh 2026-07-16 (previous: 2026-07-12) — in-place update, diff ~12% (<30%, no approval gate)
 
-Status: REWRITE (previous scan 2026-06-14; a month of shipped work — Stage 2 B0-B7,
-screen decomposition, voice-subsystem overhaul — put architecture/frontend/data well
-past the 30% threshold). backend/dependencies had content updated by B2 earlier today
-but carried stale headers and a few dead rows.
+Files added since last scan:
+  apps/mobile/src/lib/pendingSync.ts (+test)        — pending Karakeep-export queue (carnet:pendingsync:v1)
+  apps/mobile/src/lib/pendingSyncRunner.ts (+test)  — real drain bindings
+  apps/mobile/src/lib/hostReachability.ts (+test)   — VPN/Tailscale-aware 4s HEAD probe
 
-Scan: 78 source files + ~57 test files under apps/mobile/src (was ~53 total in June).
+Modified:
+  lib/karakeepNoteExport.ts   — failed outcome carries `unreachable`
+  lib/shareHelpers.ts         — shareFileReadUri (content:// grant preferred over raw path)
+  lib/writer.ts               — moveToArchive decodes SAF document ids (1074→1190 ln)
+  screens/ShareReceiveScreen  — three read sites via shareFileReadUri
+  screens/HomeScreen          — pending-Karakeep banner + Retry (445→493 ln)
+  screens/RecentDetailScreen  — unreachable→queue + queued snackbar (1416→1469 ln)
+  App.tsx                     — pending-sync drain trigger (AppState, 30s throttle)
+  patches/expo-share-intent+5.1.1.patch — grew JS hunks (contentUri through parser)
 
-Rewritten:
-  ~ architecture.md   dispatcher seam (B7), enrichSanitize chokepoint (B3), save-first
-                      flow (B4), voice as first-class layer, netAllowlist invariants
-                      (B0), notification capture surface; desktop marked deferred stub
-  ~ frontend.md       +SearchScreen (B6) + CaptureFab routing; screen line counts
-                      refreshed post-decomposition (Capture 830→803, Home 349→445,
-                      Settings 882→794, Audio 549→629); components list completed
-                      (CaptureFab/CaptureModeInput/CaptureViews/NoteCard/StampChip/
-                      SyncStatusDot/PromptOverridesSection were missing); voice section
-                      rewritten around sttErrorPolicy; settings key carnet:settings:v2
-  ~ data.md           settings blob v1→v2; +capture-draft keys, note-index key,
-                      recognizer pkg/label keys, native SharedPreferences mirror;
-                      documented blank-captureFolderPath fallback to app-private
-                      files/carnet/ and the reinstall-wipes-stores caveat (both bit us
-                      on-device this week)
-
-Touched (headers + targeted rows):
-  ~ dependencies.md   OmniRoute row rewritten (stale navetted/desktop-token reference);
-                      +expo-intent-launcher ~13 (requireOptionalNativeModule-only
-                      access); expo-speech-recognition patch note; Whisper removal;
-                      CI section now matches the real pipeline (shared → mobile/
-                      desktop/mobile-android → gate, + advisory apk, + release.yml)
-  ~ backend.md        freshness header only (content updated by B2 today)
-
-New dependencies since last scan: expo-intent-launcher ~13.
-Removed since last scan: Whisper endpoint/key config (5090f33); lib/ocr.ts + the
-bespoke /v1/ocr client (1ec18e0 — OCR folded into chat vision on visionModel).
-New screens: SearchScreen (B6). New voice module: sttErrorPolicy.ts (pure, 50 tests).
-
-Architecture changes:
-  - Stage 2 complete: B0 net hardening, B1 chat/vision model split, B2 OCR fold,
-    B3 sanitizer, B4 save-first, B5 notification inline-reply, B6 browse/search,
-    B7 backend dispatcher seam.
-  - Screens decomposed into tested lib/*.ts modules; screens are mostly UI now.
-  - Still server-less, file-based, no SQL DB — vault remains the source of truth.
-
-Staleness: none remaining; all five maps stamped 2026-07-12.
+New dependencies: none (patch extended, no new packages)
+Architecture changes: second AsyncStorage queue (pending-sync) alongside lib/queue.ts;
+  Karakeep export path now VPN-aware with auto-retry on foreground.
+External-service facts: user's Karakeep refuses non-image/PDF attachments (.txt/.docx confirmed).
+Staleness: none >90 days (repo is ~2 months old; all five maps refreshed today).
+Codemaps updated: architecture.md backend.md frontend.md data.md dependencies.md
