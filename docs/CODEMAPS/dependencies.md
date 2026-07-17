@@ -1,5 +1,5 @@
 # Dependencies & integrations
-<!-- Generated: 2026-07-12 | Files scanned: ~135 (78 src + tests) | Token estimate: ~640 -->
+<!-- Generated: 2026-07-16 | Files scanned: ~140 (81 src + tests) | Token estimate: ~680 -->
 
 ## External services
 | service | role | code |
@@ -15,6 +15,10 @@
 - camera + OCR/vision → `PhotoCaptureScreen`, `CardScannerModal` → `ocrCardViaVision()` in `lib/omniroute.ts`
 - STT — `expo-speech-recognition` (patched: `patches/expo-speech-recognition+3.1.3.patch`
   fixes a native double-settle crash) → `voice/`; no cloud STT fallback (Whisper removed 5090f33)
+- Share intake — `expo-share-intent` 5.1.1 (patched: `patches/expo-share-intent+5.1.1.patch`,
+  Kotlin + JS hunks — crash-proof `getFileInfo`, stream-backed text/plain routing, and
+  `contentUri` threaded through the JS parser; re-verify BOTH hunk sets on any bump) →
+  `App.tsx` ShareIntentRouter, `ShareReceiveScreen`, `lib/shareHelpers.ts`
 - `expo-intent-launcher` ~13 — App-info deep link on the mic-revoked recovery sheet;
   accessed ONLY via `requireOptionalNativeModule` (static import crashes pre-rebuild clients)
 - `@10play/tentap-editor` 1.0.1 — WYSIWYG (editor-web bundle + `MarkdownBridge`)

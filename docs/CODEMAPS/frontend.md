@@ -1,5 +1,5 @@
 # Frontend — screens & components
-<!-- Generated: 2026-07-12 | Files scanned: ~135 (78 src + tests) | Token estimate: ~760 -->
+<!-- Generated: 2026-07-16 | Files scanned: ~140 (81 src + tests) | Token estimate: ~780 -->
 
 ## Navigation — `apps/mobile/App.tsx` (native-stack)
 ```
@@ -12,15 +12,18 @@ behind the "more modes" chevron sheet).
 ## Screens (`apps/mobile/src/screens`) — smoke tests exist for all (headless)
 | screen | ln | role |
 |---|---|---|
-| `HomeScreen` | 445 | recents list + `CaptureFab`; one-shot `VoiceReadinessBanner` |
+| `HomeScreen` | 493 | recents list + `CaptureFab`; `VoiceReadinessBanner`; pending-Karakeep banner + Retry |
 | `CaptureScreen` | 803 | Idea/Journal/Contact text capture; dictation; Tags+Location; save-first |
 | `PhotoCaptureScreen` | 507 | camera → vision enrichment (Photo) |
 | `AudioCaptureScreen` | 629 | record → on-device transcribe → journal |
-| `RecentDetailScreen` | 1416 | note view + WYSIWYG edit, tags, geo, attachments, Karakeep export |
-| `ShareReceiveScreen` | 627 | Android share-sheet intake (image / link) |
+| `RecentDetailScreen` | 1469 | note view + WYSIWYG edit, tags, geo, attachments, Karakeep export (unreachable → pending-sync queue) |
+| `ShareReceiveScreen` | 633 | Android share-sheet intake (image / audio / link / any file; reads via content:// grant) |
 | `SearchScreen` | 284 | vault full-text/tag search (B6), stamp-based filters |
 | `TagBrowserScreen` | 140 | tags + counts → routes into Search |
-| `SettingsScreen` | 794 | OmniRoute URL/key + chat/vision models, Karakeep, voice check, flags |
+| `SettingsScreen` | 802 | OmniRoute URL/key + chat/vision models, Karakeep, voice check, flags |
+
+`App.tsx` (295) also mounts the pending-sync drain trigger (cold start + AppState→active,
+30s throttle) — see backend.md "Pending-sync queue".
 
 Business logic lives in extracted `lib/*.ts` modules (ideaSaveFirst, saveFirstOutcome,
 captureErrorDecision, attachmentPersistence, promoteIdeaOnDisk, noteReprocess,

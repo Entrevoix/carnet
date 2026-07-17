@@ -1,5 +1,5 @@
 # Architecture — Carnet
-<!-- Generated: 2026-07-12 | Files scanned: ~135 (78 src + tests) | Token estimate: ~780 -->
+<!-- Generated: 2026-07-16 | Files scanned: ~140 (81 src + tests) | Token estimate: ~800 -->
 
 Mobile-first knowledge capture. The Android app writes Markdown into a local folder;
 Syncthing replicates it peer-to-peer into an Obsidian vault on the workstation.
@@ -25,14 +25,18 @@ Capture (Idea / Journal / Contact / Photo / Audio / Share / notification inline-
   ~/Obsidian/Carnet/              workstation vault (Obsidian opens it directly)
 
 Export (opt-in, per note, from RecentDetail)
-  → lib/karakeep*.ts (HTTPS REST) → self-hosted Karakeep: bookmark + tags + assets
+  → lib/karakeepNoteExport.ts → lib/karakeep*.ts (HTTPS REST)
+  → self-hosted Karakeep: bookmark + tags + assets
+        │  (host unreachable, status-0 → lib/pendingSync.ts queues; drains on app
+        │   foreground once lib/hostReachability.ts probe answers — VPN/Tailscale-aware)
 ```
 
 ## Layer boundaries
 - **UI** `screens/` (9), `components/` (14) — capture + review + search
-- **Domain** `lib/` (44 modules, each with co-located tests) — enrichment, sanitize,
-  markdown/frontmatter, vault IO + tag/search index, offline queue, save-first flows,
-  settings, net allowlist (B0 SSRF/host hardening), Karakeep export, notification capture
+- **Domain** `lib/` (47 modules, each with co-located tests) — enrichment, sanitize,
+  markdown/frontmatter, vault IO + tag/search index, offline queue + pending-sync
+  (Karakeep) queue, save-first flows, settings, net allowlist (B0 SSRF/host hardening),
+  Karakeep export, host reachability, notification capture
 - **Voice** `voice/` — on-device STT: recognizer detection/failover (`recognizerSelect`),
   pure error-decision ladder (`sttErrorPolicy` — restart latching, silence auto-stop,
   mic-revoked classification), onboarding/readiness

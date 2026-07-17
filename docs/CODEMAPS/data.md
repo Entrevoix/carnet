@@ -1,5 +1,5 @@
 # Data Model — vault & local stores
-<!-- Generated: 2026-07-12 | Files scanned: ~135 (78 src + tests) | Token estimate: ~700 -->
+<!-- Generated: 2026-07-16 | Files scanned: ~140 (81 src + tests) | Token estimate: ~720 -->
 
 **No SQL database.** Data = Markdown files + binaries in the Syncthing-synced vault,
 plus AsyncStorage/SecureStore keys on the device. (`expo-sqlite` is ABI-broken on
@@ -32,6 +32,8 @@ LLM output passes `lib/enrichSanitize.ts` (B3) before any write.
 - Settings blob — `lib/settings.ts` (`carnet:settings:v2`, AsyncStorage); API keys
   (OmniRoute, Karakeep) in SecureStore, never in the blob
 - Offline queue rows — `lib/queue.ts` (`carnet:queue:v1`)
+- Pending Karakeep exports — `lib/pendingSync.ts` (`carnet:pendingsync:v1`; filepath
+  pointers only, note body re-read at drain; deduped by filepath, 10-attempt cap)
 - Capture drafts — `carnet:capture_draft:v1:{mode}` (survives app restarts)
 - Note/tag index cache — `lib/vault.ts` (`carnet:noteindex:v1`; scans Ideas/Journal/
   People with bounded concurrency; feeds Search + TagBrowser + `suggestTags`)
