@@ -17,7 +17,7 @@ import {
   upsertSection,
 } from "./writer";
 import { enrichSharedImage } from "./dispatcher";
-import { transcribeAudio } from "./omniroute";
+import { transcribeAudio } from "./dispatcher";
 
 /**
  * Locate the first paired-binary filename of a given subdir in a note body.

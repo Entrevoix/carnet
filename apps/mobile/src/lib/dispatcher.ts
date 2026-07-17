@@ -33,6 +33,17 @@ export {
   promoteIdea,
   isPermanentError,
   isNotConfiguredError,
+  // The backend-DIVERGENT calls (2026-07-16 audit finding #1): audio
+  // transcription, vision OCR, and model listing are exactly what an
+  // on-device backend would implement differently, so they must cross the
+  // seam too or "only this module changes" is false when it matters. The
+  // payload caps/validators (assertBase64UnderLimit, MAX_*) deliberately
+  // stay omniroute imports — they're provider-limit utilities, not
+  // dispatchable behavior.
+  transcribeAudio,
+  autoTranscribeIfEnabled,
+  ocrCardViaVision,
+  listModels,
 } from "./omniroute";
 
 export type { EnrichResult } from "./omniroute";

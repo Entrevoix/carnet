@@ -35,7 +35,7 @@ import {
   type FormState,
 } from "../lib/settingsForm";
 import { filterAndSplitModels } from "../lib/modelBrowser";
-import { listModels } from "../lib/omniroute";
+import { listModels } from "../lib/dispatcher";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { caretProps, spacing, useCarnetTheme } from "../lib/theme";
 import {

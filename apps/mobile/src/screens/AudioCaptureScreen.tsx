@@ -38,7 +38,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import type { RootStackParamList } from "../../App";
 import { recordCapture } from "../lib/storage";
 import { writeBinary, writeIdea } from "../lib/writer";
-import { autoTranscribeIfEnabled } from "../lib/omniroute";
+import { autoTranscribeIfEnabled } from "../lib/dispatcher";
 import {
   BASE64_EXPANSION,
   formatElapsed,

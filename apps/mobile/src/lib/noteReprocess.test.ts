@@ -14,13 +14,14 @@ vi.mock("./writer", () => ({
     (md: string, heading: string, body: string) => `${md}\n\n## ${heading}\n\n${body}\n`,
   ),
 }));
-vi.mock("./dispatcher", () => ({ enrichSharedImage: vi.fn() }));
-vi.mock("./omniroute", () => ({ transcribeAudio: vi.fn() }));
+vi.mock("./dispatcher", () => ({
+  enrichSharedImage: vi.fn(),
+  transcribeAudio: vi.fn(),
+}));
 
 import { findPairedLink, reEnrichNote, transcribeNote } from "./noteReprocess";
 import { readPairedBinaryFromNote, updateNote } from "./writer";
-import { enrichSharedImage } from "./dispatcher";
-import { transcribeAudio } from "./omniroute";
+import { enrichSharedImage, transcribeAudio } from "./dispatcher";
 
 const mockRead = vi.mocked(readPairedBinaryFromNote);
 const mockUpdateNote = vi.mocked(updateNote);

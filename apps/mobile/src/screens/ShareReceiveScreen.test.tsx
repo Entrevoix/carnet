@@ -61,13 +61,13 @@ vi.mock("../lib/writer", () => ({
 vi.mock("../lib/dispatcher", () => ({
   enrichSharedImage: vi.fn(),
   enrichSharedLink: vi.fn(),
+  autoTranscribeIfEnabled: vi.fn(async () => null),
 }));
 
 // NOTE: ../lib/enrichSanitize is deliberately NOT mocked.
 
 vi.mock("../lib/omniroute", () => ({
   assertBase64UnderLimit: vi.fn(),
-  autoTranscribeIfEnabled: vi.fn(async () => null),
   MAX_SHARED_IMAGE_BYTES: 8 * 1024 * 1024,
 }));
 

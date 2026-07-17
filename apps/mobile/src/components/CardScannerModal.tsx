@@ -11,7 +11,7 @@ import {
 } from "react-native-paper";
 import { CameraView, useCameraPermissions } from "expo-camera";
 
-import { ocrCardViaVision } from "../lib/omniroute";
+import { ocrCardViaVision } from "../lib/dispatcher";
 
 interface Props {
   visible: boolean;

@@ -83,8 +83,10 @@ vi.mock("../lib/karakeepAssetSync", () => ({ clearPushedAssets: vi.fn() }));
 // pendingSync pulls AsyncStorage's native binding — never load the real one.
 vi.mock("../lib/pendingSync", () => ({ enqueuePendingExport: vi.fn() }));
 
-vi.mock("../lib/dispatcher", () => ({ enrichSharedImage: vi.fn() }));
-vi.mock("../lib/omniroute", () => ({ transcribeAudio: vi.fn() }));
+vi.mock("../lib/dispatcher", () => ({
+  enrichSharedImage: vi.fn(),
+  transcribeAudio: vi.fn(),
+}));
 vi.mock("../lib/attachments", () => ({ pickAttachment: vi.fn() }));
 
 // react-native-markdown-display ships raw JSX in .js files, which vite
