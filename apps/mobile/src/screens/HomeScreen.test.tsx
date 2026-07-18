@@ -79,8 +79,15 @@ vi.mock("../lib/queue", () => ({
 }));
 
 // Pending Karakeep exports (host-unreachable retry queue) — default: empty.
+// The captured subscriber lets tests simulate a background drain mutating
+// the queue while Home is focused (the stale-banner fix under test).
+const pendingSyncListeners = new Set<() => void>();
 vi.mock("../lib/pendingSync", () => ({
   getPendingExportCount: vi.fn(async () => 0),
+  subscribePendingSyncChanges: vi.fn((cb: () => void) => {
+    pendingSyncListeners.add(cb);
+    return () => pendingSyncListeners.delete(cb);
+  }),
 }));
 vi.mock("../lib/pendingSyncRunner", () => ({
   drainPendingKarakeepExports: vi.fn(async () => {}),
@@ -129,6 +136,7 @@ function renderScreen() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  pendingSyncListeners.clear();
 });
 
 afterEach(cleanup);
@@ -209,6 +217,26 @@ describe("HomeScreen", () => {
     renderScreen();
     await screen.findByText("Jack's Baseball Team");
     expect(reportColdStart).toHaveBeenCalled();
+  });
+
+  it("updates the pending-Karakeep banner when a background drain mutates the queue", async () => {
+    // Focus-time read sees 1 waiting export…
+    vi.mocked(getPendingExportCount).mockResolvedValue(1);
+    renderScreen();
+    expect(
+      await screen.findByText(
+        "1 export waiting for Karakeep — will send when the server is reachable",
+      ),
+    ).toBeTruthy();
+
+    // …then the App.tsx foreground drain empties the queue while Home stays
+    // focused. The mutation ping must clear the banner without a refocus.
+    vi.mocked(getPendingExportCount).mockResolvedValue(0);
+    expect(pendingSyncListeners.size).toBeGreaterThan(0);
+    for (const cb of pendingSyncListeners) cb();
+    await waitFor(() =>
+      expect(screen.queryByText(/waiting for Karakeep/)).toBeNull(),
+    );
   });
 
   it("shows no conflict banner when the vault has no sync conflicts", async () => {

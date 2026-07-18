@@ -22,6 +22,7 @@ import {
   enqueuePendingExport,
   getPendingExportCount,
   listPendingExports,
+  subscribePendingSyncChanges,
   MAX_PENDING_EXPORT_ATTEMPTS,
   type PendingExport,
   type PendingExportResult,
@@ -87,6 +88,51 @@ describe("enqueuePendingExport", () => {
     await expect(listPendingExports()).resolves.toEqual([]);
     await enqueuePendingExport({ filepath: "file:///a.md", entryTitle: "A" });
     await expect(getPendingExportCount()).resolves.toBe(1);
+  });
+});
+
+// ── Change notification ──────────────────────────────────────────────────────
+
+describe("subscribePendingSyncChanges", () => {
+  it("pings on enqueue, on drain removal, and on attempt bumps", async () => {
+    const pings: number[] = [];
+    const unsubscribe = subscribePendingSyncChanges(() => pings.push(1));
+
+    await enqueuePendingExport({ filepath: "file:///a.md", entryTitle: "A" });
+    expect(pings).toHaveLength(1);
+
+    await drainPendingExports({
+      isReachable: async () => true,
+      exportOne: async () => ({ kind: "error", message: "HTTP 500" }),
+    });
+    expect(pings).toHaveLength(2); // bump
+
+    await drainPendingExports({
+      isReachable: async () => true,
+      exportOne: async () => ({ kind: "ok" }),
+    });
+    expect(pings).toHaveLength(3); // removal
+
+    unsubscribe();
+    await enqueuePendingExport({ filepath: "file:///b.md", entryTitle: "B" });
+    expect(pings).toHaveLength(3); // unsubscribed — no further pings
+  });
+
+  it("isolates a throwing subscriber from the queue and its siblings", async () => {
+    const seen: string[] = [];
+    const unsubBad = subscribePendingSyncChanges(() => {
+      throw new Error("broken subscriber");
+    });
+    const unsubGood = subscribePendingSyncChanges(() => seen.push("good"));
+
+    await expect(
+      enqueuePendingExport({ filepath: "file:///a.md", entryTitle: "A" }),
+    ).resolves.toBeUndefined();
+    expect(seen).toEqual(["good"]);
+    await expect(getPendingExportCount()).resolves.toBe(1);
+
+    unsubBad();
+    unsubGood();
   });
 });
 

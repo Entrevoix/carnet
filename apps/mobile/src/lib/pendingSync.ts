@@ -73,6 +73,40 @@ const withLock = createLock();
 // outcome carries `unreachable: boolean` (typed against KarakeepError) — so
 // this module stays a pure queue with no client import.
 
+// ── Change notification ──────────────────────────────────────────────────────
+// The Home banner reads the queue count on focus, but the App.tsx foreground
+// drain mutates the queue while Home is ALREADY focused — without a change
+// signal the banner shows a stale count until the next refocus (confirmed
+// on-device 2026-07-16). Mutations notify subscribers after their locked
+// write completes; UI re-reads the count in response. Deliberately a bare
+// "something changed" ping, not a payload — the read path stays the single
+// source of truth.
+
+type PendingSyncListener = () => void;
+const _listeners = new Set<PendingSyncListener>();
+
+/** Subscribe to queue mutations (enqueue / drain removals / attempt bumps).
+ * Returns the unsubscribe function. Callbacks must not throw — they're
+ * invoked best-effort after storage writes and are isolated per listener. */
+export function subscribePendingSyncChanges(
+  listener: PendingSyncListener,
+): () => void {
+  _listeners.add(listener);
+  return () => {
+    _listeners.delete(listener);
+  };
+}
+
+function notifyChanged(): void {
+  for (const listener of _listeners) {
+    try {
+      listener();
+    } catch {
+      // A broken subscriber must not break the queue or its siblings.
+    }
+  }
+}
+
 // ── CRUD ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -107,6 +141,7 @@ export async function enqueuePendingExport(input: {
       },
     ]);
   });
+  notifyChanged();
 }
 
 /** Read-only snapshot, oldest-first — feeds the Home banner + drain pass. */
@@ -120,18 +155,19 @@ export async function getPendingExportCount(): Promise<number> {
   return (await loadItems()).length;
 }
 
-function removeItem(id: string): Promise<void> {
-  return withLock(async () => {
+async function removeItem(id: string): Promise<void> {
+  await withLock(async () => {
     const items = await loadItems();
     await saveItems(items.filter((i) => i.id !== id));
   });
+  notifyChanged();
 }
 
 /** Bump an item's attempt count (computed inside the lock from the fresh row,
  * not the drain's snapshot); drop the item entirely once it hits the cap —
  * the note stays safe in the vault, only the auto-retry gives up. */
-function bumpAttemptsOrDrop(id: string, lastError: string): Promise<void> {
-  return withLock(async () => {
+async function bumpAttemptsOrDrop(id: string, lastError: string): Promise<void> {
+  await withLock(async () => {
     const items = await loadItems();
     const i = items.findIndex((item) => item.id === id);
     if (i === -1) return;
@@ -144,6 +180,7 @@ function bumpAttemptsOrDrop(id: string, lastError: string): Promise<void> {
     next[i] = { ...next[i], attempts, lastError: sanitizeError(lastError) };
     await saveItems(next);
   });
+  notifyChanged();
 }
 
 // ── Drain ────────────────────────────────────────────────────────────────────

@@ -38,7 +38,10 @@ import {
   MAX_AUTO_RETRY_ATTEMPTS,
   type QueueRow,
 } from "../lib/queue";
-import { getPendingExportCount } from "../lib/pendingSync";
+import {
+  getPendingExportCount,
+  subscribePendingSyncChanges,
+} from "../lib/pendingSync";
 import { drainPendingKarakeepExports } from "../lib/pendingSyncRunner";
 import { formatRelative, modeStamp } from "../components/NoteCard";
 import { useCarnetTheme } from "../lib/theme";
@@ -235,6 +238,18 @@ export default function HomeScreen({ navigation }: Props) {
   // reportColdStart latches once per process, so re-mounts are no-ops.
   useEffect(() => {
     reportColdStart();
+  }, []);
+
+  // Live pending-Karakeep count: the App.tsx foreground drain mutates the
+  // queue while this screen is already focused, so focus-time reads alone
+  // left the banner stale until the next refocus (known on-device gap).
+  // Queue mutations ping this subscription; re-read the count in response.
+  useEffect(() => {
+    return subscribePendingSyncChanges(() => {
+      getPendingExportCount()
+        .then(setKarakeepPending)
+        .catch(() => undefined);
+    });
   }, []);
 
   // Auto-exit selection mode when the user deselects the last row.
