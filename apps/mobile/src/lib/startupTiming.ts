@@ -10,11 +10,14 @@
  * (docs/smoke-test.md). No analytics, nothing persisted off-device.
  */
 
-/** Budget for JS-bundle evaluation start → Home interactive. A CONSERVATIVE
- * ceiling pending a measured baseline (read the dev-build `[startup]` metric
- * line to calibrate, then tighten): the point is a regression tripwire that
- * fires on a real JS-side doubling, not on a slow launch day. Competitors'
- * complained-about cold starts are 5-15s; anything past 3s erodes the moat. */
+/** Budget for JS-bundle evaluation start → Home interactive. Calibration
+ * datum (2026-07-17, Pixel Fold, release build, 3× force-stopped launches):
+ * `am start -W` TotalTime 470-545ms — that is ACTIVITY-DRAWN time, a lower
+ * bound on (not the same span as) what this module measures, but it bounds
+ * the whole native launch well under 1s on current hardware. 3000ms is a
+ * regression tripwire with several-× headroom, firing on a real JS-side
+ * doubling rather than a slow launch day. Competitors' complained-about
+ * cold starts are 5-15s; anything past 3s erodes the moat. */
 export const COLD_START_BUDGET_MS = 3_000;
 
 /** Stamped when this module first evaluates. App.tsx imports this module
