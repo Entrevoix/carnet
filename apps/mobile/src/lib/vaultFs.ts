@@ -169,6 +169,16 @@ const fileFs: VaultFs = {
   },
 };
 
+// SAF's makeDirectoryAsync auto-RENAMES on a name collision (e.g. "Journal"
+// -> "Journal (1)") instead of failing, so a naive check-then-create in
+// findOrCreateSubdir is a TOCTOU race: two concurrent callers for the same
+// not-yet-existing folder (a queue flush and a screen refresh, say) can both
+// see "missing" and both call makeDirectoryAsync, silently splitting the
+// vault into two folders. This map de-dupes concurrent creates for the same
+// (parentUri, name) pair onto a single in-flight promise. Module-level state
+// is safe here: all vault writes happen on this one JS thread/process.
+const inFlightSafCreates = new Map<string, Promise<string>>();
+
 /** SAF backend — a content:// tree URI granted by the document picker. */
 const safFs: VaultFs = {
   isSaf: true,
@@ -192,7 +202,20 @@ const safFs: VaultFs = {
     const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
     const existing = children.find((u) => safLastSegment(u) === name);
     if (existing) return existing;
-    return StorageAccessFramework.makeDirectoryAsync(parentUri, name);
+
+    const key = `${parentUri}::${name}`;
+    const inFlight = inFlightSafCreates.get(key);
+    if (inFlight) return inFlight;
+
+    const create = (async () => {
+      try {
+        return await StorageAccessFramework.makeDirectoryAsync(parentUri, name);
+      } finally {
+        inFlightSafCreates.delete(key);
+      }
+    })();
+    inFlightSafCreates.set(key, create);
+    return create;
   },
 
   async createFile(parentUri, name, mime) {
