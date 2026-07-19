@@ -40,6 +40,13 @@ const MODE_FILTERS: readonly CaptureMode[] = ["idea", "journal", "person"];
  * carry most taps; everything else is reachable by typing. */
 const MAX_TAG_PILLS = 6;
 
+/** Max body-search matches rendered as NoteCards in the footer — a common
+ * term across a vault of hundreds/thousands of notes could otherwise stream
+ * hundreds of non-virtualized cards into a plain View, which is a real jank
+ * risk on Android hardware. The "Scanning… N of M" / "Scanned M notes"
+ * progress lines still reflect the true total; only the rendered list caps. */
+const MAX_RENDERED_MATCHES = 50;
+
 export default function SearchScreen({ route, navigation }: Props) {
   const theme = useCarnetTheme();
   const [index, setIndex] = useState<NoteIndex | null>(null);
@@ -273,7 +280,7 @@ export default function SearchScreen({ route, navigation }: Props) {
           </Pressable>
         </View>
       )}
-      {bodyMatches.map((match) => {
+      {bodyMatches.slice(0, MAX_RENDERED_MATCHES).map((match) => {
         const meta = noteForUri(match.uri);
         return (
           <NoteCard
@@ -286,6 +293,11 @@ export default function SearchScreen({ route, navigation }: Props) {
           />
         );
       })}
+      {bodyMatches.length > MAX_RENDERED_MATCHES && (
+        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+          {`+${bodyMatches.length - MAX_RENDERED_MATCHES} more matches — try a more specific search`}
+        </Text>
+      )}
     </View>
   ) : null;
 

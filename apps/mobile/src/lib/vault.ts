@@ -493,13 +493,33 @@ export interface BodyMatch {
   snippet: string;
 }
 
+/** Nudge a slice boundary off a UTF-16 low-surrogate code unit so we never
+ * split a surrogate pair (e.g. an emoji) mid-character. `direction` is which
+ * way to nudge: -1 for a start boundary (move earlier), +1 for an end
+ * boundary (move later). */
+function clampToCodeUnitBoundary(s: string, i: number, direction: -1 | 1): number {
+  if (i > 0 && i < s.length) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xdc00 && code <= 0xdfff) return i + direction;
+  }
+  return i;
+}
+
 /** Extract a snippet around the first case-insensitive match of `query` in
  * `strippedBody`, or null when there's no match. */
 function extractSnippet(strippedBody: string, query: string): string | null {
   const idx = strippedBody.toLowerCase().indexOf(query.toLowerCase());
   if (idx === -1) return null;
-  const start = Math.max(0, idx - SNIPPET_WINDOW);
-  const end = Math.min(strippedBody.length, idx + query.length + SNIPPET_WINDOW);
+  const start = clampToCodeUnitBoundary(
+    strippedBody,
+    Math.max(0, idx - SNIPPET_WINDOW),
+    -1,
+  );
+  const end = clampToCodeUnitBoundary(
+    strippedBody,
+    Math.min(strippedBody.length, idx + query.length + SNIPPET_WINDOW),
+    1,
+  );
   const prefix = start > 0 ? "…" : "";
   const suffix = end < strippedBody.length ? "…" : "";
   return prefix + strippedBody.slice(start, end).replace(/\s+/g, " ").trim() + suffix;

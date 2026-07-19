@@ -413,6 +413,45 @@ describe("searchNoteBodies", () => {
     expect(matches).toEqual(["file:///v/Ideas/fast.md", "file:///v/Ideas/slow.md"]);
   });
 
+  it("never splits a surrogate pair (emoji) when the naive snippet boundary lands mid-character", async () => {
+    // Construct the body so the naive `idx - SNIPPET_WINDOW` (40) start
+    // boundary lands exactly on the low-surrogate half of "🎉" (U+1F389,
+    // a 2-code-unit surrogate pair): 5 "A"s (0-4), then the emoji at
+    // indices 5 (high surrogate) and 6 (low surrogate), then 39 "B"s
+    // (7-45), then "findme" at 46-51, then 40 "C"s as trailing context so
+    // the end boundary lands exactly at the string's length (no clamp
+    // needed there). idx=46, so naive start = 46-40 = 6 — the low
+    // surrogate's own index.
+    const prefix = "A".repeat(5) + "\u{1F389}" + "B".repeat(39);
+    const body = prefix + "findme" + "C".repeat(40);
+    addNote("file:///v/Ideas/emoji.md", "Ideas", `---\n---\n${body}`);
+
+    const matches: BodyMatch[] = [];
+    await searchNoteBodies(
+      "findme",
+      (m) => matches.push(m),
+      () => {},
+      new AbortController().signal,
+    );
+
+    expect(matches).toHaveLength(1);
+    const snippet = matches[0].snippet;
+
+    // The naive boundary (index 6) is a lone low surrogate — slicing there
+    // would produce a snippet starting with an unpaired low surrogate. The
+    // fix must nudge the start back to index 5 so the whole emoji is kept.
+    expect(snippet).toBe(
+      "…" + "\u{1F389}" + "B".repeat(39) + "findme" + "C".repeat(40),
+    );
+    // Belt-and-suspenders: the code UNIT immediately after the "…" prefix
+    // (index 1, the raw UTF-16 unit — not codePointAt, which would already
+    // combine a valid pair) must be a high surrogate (paired), never a lone
+    // low surrogate, confirming the boundary wasn't split mid-character.
+    const firstUnit = snippet.charCodeAt(1);
+    expect(firstUnit).toBeGreaterThanOrEqual(0xd800);
+    expect(firstUnit).toBeLessThanOrEqual(0xdbff);
+  });
+
   it("stops issuing new reads once aborted, keeping only already-issued results", async () => {
     const uris = Array.from({ length: 9 }, (_, i) => `file:///v/Ideas/n${i}.md`);
     for (const uri of uris) addNote(uri, "Ideas", "---\n---\n# T\n\nneedle here\n");

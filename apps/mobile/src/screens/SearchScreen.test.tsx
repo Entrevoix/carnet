@@ -343,6 +343,41 @@ describe("body search", () => {
     expect(screen.queryByText("STALE_MATCH")).toBeNull();
   });
 
+  it("caps rendered body matches at 50, with an overflow indicator for the rest", async () => {
+    let onMatchCb!: (m: { uri: string; snippet: string }) => void;
+    vi.mocked(searchNoteBodies).mockImplementation(
+      (_query, onMatch, _onProgress, _signal) =>
+        new Promise((resolve) => {
+          onMatchCb = onMatch;
+          void resolve;
+        }),
+    );
+
+    renderScreen();
+    await screen.findByText("First idea");
+
+    const input = screen.getByPlaceholderText("Search notes") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hello" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+    fireEvent.click(screen.getByText("Search note contents"));
+    await waitFor(() => expect(searchNoteBodies).toHaveBeenCalled());
+
+    act(() => {
+      for (let i = 0; i < 55; i += 1) {
+        onMatchCb({ uri: `file:///v/Ideas/match-${i}.md`, snippet: `SNIPPET_${i}` });
+      }
+    });
+
+    // The 50th match (index 49) renders; the 51st (index 50) does not.
+    await waitFor(() => expect(screen.getByText("SNIPPET_49")).toBeTruthy());
+    expect(screen.queryByText("SNIPPET_50")).toBeNull();
+    expect(
+      screen.getByText("+5 more matches — try a more specific search"),
+    ).toBeTruthy();
+  });
+
   it("shows an error state (not a stuck spinner) and offers a retry when the scan promise rejects", async () => {
     let rejectA!: (err: Error) => void;
     vi.mocked(searchNoteBodies).mockImplementationOnce(
@@ -372,5 +407,50 @@ describe("body search", () => {
     await waitFor(() => expect(screen.getByText(/Search failed/)).toBeTruthy());
     expect(screen.queryByText(/Scanning/)).toBeNull();
     expect(screen.getByLabelText("Retry note content search")).toBeTruthy();
+  });
+
+  it("recovers from an error state via Retry, starting a fresh successful scan", async () => {
+    let firstReject!: (e: Error) => void;
+    let secondResolve!: (r: { scanned: number; total: number }) => void;
+    vi.mocked(searchNoteBodies)
+      .mockImplementationOnce(
+        (_query, _onMatch, _onProgress, _signal) =>
+          new Promise((_resolve, reject) => {
+            firstReject = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        (_query, _onMatch, _onProgress, _signal) =>
+          new Promise((resolve) => {
+            secondResolve = resolve;
+          }),
+      );
+
+    renderScreen();
+    await screen.findByText("First idea");
+
+    const input = screen.getByPlaceholderText("Search notes") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hello" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+    fireEvent.click(screen.getByText("Search note contents"));
+    await waitFor(() => expect(searchNoteBodies).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      firstReject(new Error("boom"));
+      await Promise.resolve();
+    });
+    expect(screen.getByText(/Search failed/)).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Retry note content search"));
+    await waitFor(() => expect(searchNoteBodies).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(/Scanning…/)).toBeTruthy();
+
+    await act(async () => {
+      secondResolve({ scanned: 1, total: 1 });
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Scanned 1 notes")).toBeTruthy();
   });
 });
