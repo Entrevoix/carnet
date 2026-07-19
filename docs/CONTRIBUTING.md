@@ -35,6 +35,7 @@ npm run build:shared   # build shared first — mobile & desktop import @carnet/
 | `npm -w @carnet/mobile run android:release` | Build + install the release APK (`scripts/build-release-apk.sh`) |
 | `npm -w @carnet/mobile run ios` | `expo run:ios` |
 | `npm -w @carnet/mobile run typecheck` | `tsc --noEmit` |
+| `npm -w @carnet/mobile run lint` | ESLint — deliberately minimal 3-rule scope (hooks correctness + typed no-floating-promises); see CLAUDE.md before widening |
 | `npm -w @carnet/mobile test` | Vitest suite |
 | `npm -w @carnet/mobile run verify:capture-flow` | Automated equivalent of `docs/smoke-test.md`'s capture-flow checks (writer/frontmatter/queue/vault/journal-tag-index/WYSIWYG-roundtrip + fixture repro) |
 | `npm -w @carnet/mobile run editor:build` | Build the TenTap WYSIWYG editor-web bundle (Vite) |

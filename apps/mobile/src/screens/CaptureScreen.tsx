@@ -170,6 +170,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
         setTranscript((cur) => cur || draft.transcript);
         setOcrText((cur) => cur || draft.ocrText);
       })
+      // A failed draft read means starting blank — the benign outcome; the
+      // finally below still unlatches draft persistence either way.
+      .catch(() => undefined)
       .finally(() => {
         if (!cancelled) setDraftLoaded(true);
       });

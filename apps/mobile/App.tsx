@@ -198,6 +198,9 @@ export default function App() {
       .then((stored) => {
         if (!cancelled) setPreferenceState(stored);
       })
+      // A failed read keeps the default scheme — the correct fallback; the
+      // finally below still unblocks first paint either way.
+      .catch(() => undefined)
       .finally(() => {
         if (!cancelled) setReady(true);
       });

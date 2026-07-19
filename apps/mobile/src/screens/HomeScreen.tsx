@@ -209,6 +209,18 @@ export default function HomeScreen({ navigation }: Props) {
     });
   }, []);
 
+  // Declared ABOVE the useLayoutEffect that closes over it — it's in that
+  // effect's dependency array, and a below-declaration reference would be a
+  // TDZ crash at render (the reason the dep was historically omitted).
+  const openSyncDetail = useCallback(async () => {
+    setSyncDialogVisible(true);
+    try {
+      setSyncRows(await listQueueRows());
+    } catch {
+      setSyncRows([]);
+    }
+  }, []);
+
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
@@ -232,7 +244,7 @@ export default function HomeScreen({ navigation }: Props) {
         </View>
       ),
     });
-  }, [navigation, syncStatus]);
+  }, [navigation, syncStatus, openSyncDetail]);
 
   // Cold-start metric: Home's first mount is "the user can capture now".
   // reportColdStart latches once per process, so re-mounts are no-ops.
@@ -308,15 +320,6 @@ export default function HomeScreen({ navigation }: Props) {
       unsubBlur();
     };
   }, [navigation, refresh, exitSelection]);
-
-  const openSyncDetail = useCallback(async () => {
-    setSyncDialogVisible(true);
-    try {
-      setSyncRows(await listQueueRows());
-    } catch {
-      setSyncRows([]);
-    }
-  }, []);
 
   // "Retry now" — run a drain pass immediately instead of waiting for the
   // next capture-screen open, then re-derive the indicator + row list.

@@ -377,8 +377,10 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY).then((pkg) => {
       if (!mounted) return;
       if (pkg && KNOWN_BAD_PKGS.includes(pkg)) {
-        AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
-        AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
+        // Fire-and-forget cache eviction — a failed remove just means the
+        // known-bad pkg gets re-evicted on the next mount.
+        void AsyncStorage.removeItem(STT_RECOGNIZER_PKG_KEY);
+        void AsyncStorage.removeItem(STT_RECOGNIZER_LABEL_KEY);
       }
     }).catch(() => { /* ignore teardown rejections */ });
     return () => { mounted = false; };
@@ -565,7 +567,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     try { ExpoSpeechRecognitionModule.stop(); } catch {}
     setIsListening(false);
     stopPulse();
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -702,7 +704,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       started.current = true;
       setIsListening(true);
       startPulse();
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       startWatchdogRef.current();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1098,9 +1100,16 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
       errorSub.remove();
       endSub.remove();
       lifecycleSubs.forEach((s) => s.remove());
+      // Refs (not deps) on purpose throughout this effect — see below.
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- clearWatchdogRef is a stable function ref; reading .current at cleanup time is the intent
       clearWatchdogRef.current();
       if (started.current) ExpoSpeechRecognitionModule.stop();
     };
+    // Mount-once on purpose: re-running this effect re-subscribes the native
+    // recognizer events mid-session — the exact restart-race minefield
+    // sttErrorPolicy's latching exists to prevent. Everything mutable is
+    // reached through refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handlePickRecognizer = async (option: RecognizerOption) => {

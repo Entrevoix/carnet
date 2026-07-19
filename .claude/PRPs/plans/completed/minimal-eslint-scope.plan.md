@@ -1,6 +1,6 @@
 # Proposal: minimal ESLint scope (decision doc — awaiting CONFIRM)
 
-Status: draft (awaiting CONFIRM)
+Status: approved + shipped (2026-07-18, same-day)
 Date: 2026-07-18
 Origin: the "no lint" gap is deliberate (CLAUDE.md) and gated on a scope
 discussion. This is that discussion's input — a concrete, evidence-based

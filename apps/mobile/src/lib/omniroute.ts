@@ -610,14 +610,18 @@ export async function enrichSharedLink(input: {
     ? fetchUrlPreview(input.url)
     : Promise.resolve(null);
   if (input.onPreviewSettled) {
-    // Fire-and-forget — never let a callback throw bubble up here.
-    previewPromise.finally(() => {
+    // Fire-and-forget settle observer. Deliberately .then(fn, fn) rather than
+    // .finally(fn): .finally RE-REJECTS through its returned promise, so a
+    // preview failure would surface as an unhandled rejection from this
+    // observer chain even though the main await below handles it.
+    const fireSettled = (): void => {
       try {
         input.onPreviewSettled?.();
       } catch {
         // swallow — caller's UI state is best-effort
       }
-    });
+    };
+    void previewPromise.then(fireSettled, fireSettled);
   }
   const [baseUrl, apiKey, model, preview, overrides] = await Promise.all([
     getBaseUrl(),

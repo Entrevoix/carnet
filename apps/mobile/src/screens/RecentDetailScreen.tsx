@@ -237,7 +237,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     let mounted = true;
-    (async () => {
+    // Marked void: every outcome (incl. the missing-file case) is handled
+    // by the try/catch/finally inside — nothing can escape this IIFE.
+    void (async () => {
       try {
         const content = await readNote(entry.filepath);
         if (!mounted) return;
@@ -741,7 +743,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [attachments, setAttachments] = useState<ResolvedAttachment[]>([]);
   useEffect(() => {
     let active = true;
-    (async () => {
+    // Best-effort: a resolution failure (SAF permission hiccup) degrades to
+    // "no attachment rows" — the note body still renders. Previously a
+    // reject here escaped as an unhandled rejection (lint find, 2026-07-18).
+    void (async () => {
       const links = listPairedBinaries(body).filter((b) => b.subdir !== "Audio");
       const resolved: ResolvedAttachment[] = [];
       for (const link of links) {
@@ -756,7 +761,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
         }
       }
       if (active) setAttachments(resolved);
-    })();
+    })().catch((e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[RecentDetail] attachment resolution failed:", msg);
+    });
     return () => {
       active = false;
     };
@@ -800,7 +808,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     return () => {
       active = false;
     };
-  }, [body, missing, entry.filepath, entry.title]);
+  }, [body, missing, entry.filepath, entry.title, entry.mode]);
 
   // Push (not navigate) so the related note stacks on top and Back returns
   // here — hopping through a chain of related notes stays reversible. Ref

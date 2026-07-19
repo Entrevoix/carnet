@@ -50,6 +50,13 @@ jobs:
       - name: Type check
         run: cd apps/mobile && npx tsc --noEmit
 
+      # Minimal, evidence-based lint — exactly three rules (react-hooks x2 +
+      # typed no-floating-promises); scope is change-controlled via
+      # .claude/PRPs/plans/completed/minimal-eslint-scope.plan.md. Joined the
+      # gate 2026-07-18 with the repo already linting clean.
+      - name: Lint
+        run: npm -w @carnet/mobile run lint
+
       - name: Unit tests
         run: npm -w @carnet/mobile test
 

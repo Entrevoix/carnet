@@ -31,6 +31,7 @@ npm run desktop               # desktop app, Vite dev (web) mode
 npm run desktop:tauri         # desktop app, Tauri native-shell dev mode
 
 npm -w @carnet/mobile run typecheck   # tsc --noEmit (apps/mobile)
+npm -w @carnet/mobile run lint        # eslint (apps/mobile only — 3 rules, see below)
 npm -w @carnet/mobile test            # vitest run (apps/mobile)
 npm -w @carnet/mobile run verify:capture-flow  # fixture-backed capture-flow subset (fast repro gate)
 npm -w @carnet/mobile run android              # build + run debug app on attached device
@@ -39,10 +40,14 @@ npm -w @carnet/desktop test           # vitest run --passWithNoTests (apps/deskt
 npm -w @carnet/shared run typecheck   # tsc --noEmit (packages/shared)
 npm -w @carnet/shared test            # vitest run (packages/shared)
 ```
-There is **no lint script anywhere in this repo** (no eslint/biome config). The only
-automated gates are `tsc --noEmit` and vitest, per workspace. Don't assume a lint step
-exists or add one without discussing scope — it's a deliberate gap, not an oversight to
-silently "fix."
+Lint exists ONLY in `apps/mobile` and is **deliberately minimal — exactly three
+rules** (`react-hooks/rules-of-hooks`, `react-hooks/exhaustive-deps` as warn, typed
+`@typescript-eslint/no-floating-promises` with `ignoreVoid`), each mapped to a defect
+class that actually shipped here; scope was change-controlled via
+`.claude/PRPs/plans/completed/minimal-eslint-scope.plan.md` (approved 2026-07-18).
+**Do not widen the rule set, add stylistic/formatting rules, or lint
+desktop/shared without the same scope discussion.** Gates per workspace remain
+`tsc --noEmit` + vitest (+ this lint, in the `mobile` CI job).
 
 `npm ci`/`npm install` runs a `postinstall: patch-package` hook — see `patches/`. Two
 patches, both fixing real, on-device-reproduced upstream native-Kotlin crashes:
