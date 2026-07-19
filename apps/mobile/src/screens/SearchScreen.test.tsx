@@ -6,7 +6,7 @@
 // collapsible filter pills, active-filter dismiss stamps, tag-param
 // seeding, and AND-narrowing by tag.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PaperProvider } from "react-native-paper";
 
 import { carnetLight } from "../lib/theme";
@@ -208,5 +208,79 @@ describe("body search", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
 
     expect(abortSpy).toHaveBeenCalled();
+  });
+
+  it("ignores a superseded scan's callbacks after a new scan has started", async () => {
+    let onMatchA!: (m: { uri: string; snippet: string }) => void;
+    let onProgressA!: (p: { scanned: number; total: number }) => void;
+    let onMatchB!: (m: { uri: string; snippet: string }) => void;
+    let onProgressB!: (p: { scanned: number; total: number }) => void;
+
+    // Scan A: captures its callbacks and never resolves on its own — the
+    // test fires them manually, including AFTER scan B has started.
+    vi.mocked(searchNoteBodies).mockImplementationOnce(
+      (_query, onMatch, onProgress, _signal) =>
+        new Promise(() => {
+          onMatchA = onMatch;
+          onProgressA = onProgress;
+        }),
+    );
+
+    renderScreen();
+    await screen.findByText("First idea");
+
+    const input = screen.getByPlaceholderText("Search notes") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hello" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+    fireEvent.click(screen.getByText("Search note contents"));
+
+    await waitFor(() => expect(searchNoteBodies).toHaveBeenCalledTimes(1));
+
+    // Scan A delivers a match before it gets superseded.
+    onProgressA({ scanned: 1, total: 5 });
+    onMatchA({ uri: "file:///v/Journal/2026-07-08.md", snippet: "STALE_A_MATCH" });
+    await waitFor(() => expect(screen.getByText(/1 of 5 notes/)).toBeTruthy());
+    expect(screen.getByText("STALE_A_MATCH")).toBeTruthy();
+
+    // Editing the query aborts scan A and resets the visible state.
+    fireEvent.change(input, { target: { value: "hello world" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await waitFor(() => expect(screen.queryByText("STALE_A_MATCH")).toBeNull());
+
+    // Scan B: a fresh search on the new query, captured separately.
+    vi.mocked(searchNoteBodies).mockImplementationOnce(
+      (_query, onMatch, onProgress, _signal) =>
+        new Promise(() => {
+          onMatchB = onMatch;
+          onProgressB = onProgress;
+        }),
+    );
+
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+    fireEvent.click(screen.getByText("Search note contents"));
+    await waitFor(() => expect(searchNoteBodies).toHaveBeenCalledTimes(2));
+
+    onProgressB({ scanned: 1, total: 3 });
+    onMatchB({ uri: "file:///v/Ideas/first.md", snippet: "FRESH_B_MATCH" });
+    await waitFor(() => expect(screen.getByText(/1 of 3 notes/)).toBeTruthy());
+    expect(screen.getByText("FRESH_B_MATCH")).toBeTruthy();
+
+    // Scan A's stale callbacks fire late, after B is already the live scan.
+    // Wrapped in act() so any (buggy, unguarded) state update is flushed
+    // synchronously before the assertions below run — otherwise the
+    // assertions could pass by accident just because React hadn't
+    // re-rendered yet, regardless of whether the guard exists.
+    act(() => {
+      onProgressA({ scanned: 5, total: 5 });
+      onMatchA({ uri: "file:///v/Journal/2026-07-08.md", snippet: "STALE_A_LATE_MATCH" });
+    });
+
+    // The stale delivery must not clobber B's progress or inject A's match.
+    expect(screen.getByText(/1 of 3 notes/)).toBeTruthy();
+    expect(screen.queryByText(/5 of 5 notes/)).toBeNull();
+    expect(screen.queryByText("STALE_A_LATE_MATCH")).toBeNull();
+    expect(screen.getByText("FRESH_B_MATCH")).toBeTruthy();
   });
 });

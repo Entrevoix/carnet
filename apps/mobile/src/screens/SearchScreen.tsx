@@ -85,10 +85,17 @@ export default function SearchScreen({ route, navigation }: Props) {
     setBodyScanProgress({ scanned: 0, total: 0 });
     void searchNoteBodies(
       query,
-      (match) => setBodyMatches((prev) => [...prev, match]),
-      (progress) => setBodyScanProgress(progress),
+      (match) => {
+        if (bodyScanController.current !== controller) return;
+        setBodyMatches((prev) => [...prev, match]);
+      },
+      (progress) => {
+        if (bodyScanController.current !== controller) return;
+        setBodyScanProgress(progress);
+      },
       controller.signal,
     ).then((finalProgress) => {
+      if (bodyScanController.current !== controller) return;
       setBodyScanProgress(finalProgress);
       setBodyScan(controller.signal.aborted ? "cancelled" : "done");
     });
