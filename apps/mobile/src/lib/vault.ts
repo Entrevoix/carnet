@@ -88,16 +88,20 @@ export interface NoteIndex {
   notes: NoteIndexEntry[];
 }
 
-/** Run `fn` over `items` with at most `limit` in flight at once. */
+/** Run `fn` over `items` with at most `limit` in flight at once. When `signal`
+ * aborts, no NEW items are started (already-issued `fn` calls are allowed to
+ * finish — there's no read-cancel primitive for file:// or SAF). */
 async function mapWithConcurrency<T>(
   items: readonly T[],
   limit: number,
   fn: (item: T) => Promise<void>,
+  signal?: AbortSignal,
 ): Promise<void> {
   let cursor = 0;
   const workerCount = Math.min(limit, items.length);
   const workers = Array.from({ length: workerCount }, async () => {
     while (cursor < items.length) {
+      if (signal?.aborted) return;
       const index = cursor;
       cursor += 1;
       await fn(items[index]);
@@ -473,4 +477,97 @@ export async function resolveNoteEntry(uri: string): Promise<CaptureEntry | null
     return null;
   }
   return synthesizeEntry(uri, markdown);
+}
+
+// ── On-demand full-text body search (Phase 2) ─────────────────────────────────
+
+/** ~40 chars of context on each side of the match, in the snippet shown to
+ * the user — bounded regardless of the note's line structure (char-based,
+ * not line-based). */
+const SNIPPET_WINDOW = 40;
+
+/** One body-search hit: the note URI and a short window of body text around
+ * the first match, for display without opening the note. */
+export interface BodyMatch {
+  uri: string;
+  snippet: string;
+}
+
+/** Nudge a slice boundary off a UTF-16 low-surrogate code unit so we never
+ * split a surrogate pair (e.g. an emoji) mid-character. `direction` is which
+ * way to nudge: -1 for a start boundary (move earlier), +1 for an end
+ * boundary (move later). */
+function clampToCodeUnitBoundary(s: string, i: number, direction: -1 | 1): number {
+  if (i > 0 && i < s.length) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xdc00 && code <= 0xdfff) return i + direction;
+  }
+  return i;
+}
+
+/** Extract a snippet around the first case-insensitive match of `query` in
+ * `strippedBody`, or null when there's no match. */
+function extractSnippet(strippedBody: string, query: string): string | null {
+  const idx = strippedBody.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return null;
+  const start = clampToCodeUnitBoundary(
+    strippedBody,
+    Math.max(0, idx - SNIPPET_WINDOW),
+    -1,
+  );
+  const end = clampToCodeUnitBoundary(
+    strippedBody,
+    Math.min(strippedBody.length, idx + query.length + SNIPPET_WINDOW),
+    1,
+  );
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < strippedBody.length ? "…" : "";
+  return prefix + strippedBody.slice(start, end).replace(/\s+/g, " ").trim() + suffix;
+}
+
+/**
+ * Stream on-demand body matches for `query` across every vault note — the
+ * Phase 2 "Search note contents" escape hatch for a match Phase 1's indexed
+ * title/tags/excerpt search misses (a hit deeper in the body than the
+ * ~200-char excerpt window). Case-insensitive substring match against the
+ * frontmatter-stripped body. `onMatch` fires immediately per hit (streaming,
+ * not collected into an array) and `onProgress` fires after every note is
+ * processed (match or not) so a caller can render a live "N of M" indicator.
+ * Checks `signal.aborted` before starting each note's read — already-issued
+ * reads are allowed to finish, but no new ones start after cancellation.
+ * Unreadable notes (deleted mid-scan, permission revoked) are skipped,
+ * matching `buildNoteIndex`'s behavior. Callers must guard against an empty
+ * query — it trivially matches every note's body.
+ */
+export async function searchNoteBodies(
+  query: string,
+  onMatch: (match: BodyMatch) => void,
+  onProgress: (progress: { scanned: number; total: number }) => void,
+  signal: AbortSignal,
+): Promise<{ scanned: number; total: number }> {
+  const files = await listNoteFiles();
+  const total = files.length;
+  let scanned = 0;
+
+  await mapWithConcurrency(
+    files,
+    SCAN_CONCURRENCY,
+    async (file) => {
+      let markdown: string | null = null;
+      try {
+        markdown = await readNote(file.uri);
+      } catch {
+        // unreadable — still counts as scanned, no match
+      }
+      scanned += 1;
+      if (markdown !== null) {
+        const snippet = extractSnippet(stripFrontmatter(markdown), query);
+        if (snippet !== null) onMatch({ uri: file.uri, snippet });
+      }
+      onProgress({ scanned, total });
+    },
+    signal,
+  );
+
+  return { scanned, total };
 }

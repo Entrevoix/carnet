@@ -9,7 +9,7 @@
  * Tapping a result resolves the note into a CaptureEntry and opens
  * RecentDetail.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, RefreshControl, StyleSheet, View } from "react-native";
 import { Searchbar, Snackbar, Text } from "react-native-paper";
 import { useFocusEffect } from "@react-navigation/native";
@@ -21,7 +21,9 @@ import {
   getNoteIndex,
   refreshNoteIndex,
   resolveNoteEntry,
+  searchNoteBodies,
   searchNotes,
+  type BodyMatch,
   type NoteIndex,
   type NoteIndexEntry,
 } from "../lib/vault";
@@ -38,6 +40,13 @@ const MODE_FILTERS: readonly CaptureMode[] = ["idea", "journal", "person"];
  * carry most taps; everything else is reachable by typing. */
 const MAX_TAG_PILLS = 6;
 
+/** Max body-search matches rendered as NoteCards in the footer — a common
+ * term across a vault of hundreds/thousands of notes could otherwise stream
+ * hundreds of non-virtualized cards into a plain View, which is a real jank
+ * risk on Android hardware. The "Scanning… N of M" / "Scanned M notes"
+ * progress lines still reflect the true total; only the rendered list caps. */
+const MAX_RENDERED_MATCHES = 50;
+
 export default function SearchScreen({ route, navigation }: Props) {
   const theme = useCarnetTheme();
   const [index, setIndex] = useState<NoteIndex | null>(null);
@@ -52,6 +61,83 @@ export default function SearchScreen({ route, navigation }: Props) {
   // Filter pills are hidden until the user asks for them (goal 4: filters
   // collapse into pills only when tapped, never permanently docked).
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // Phase 2: on-demand full-text body search, explicit-trigger only. Reset
+  // (and cancel any in-flight scan) whenever the query changes — a query
+  // edit implicitly invalidates whatever was being scanned for the old one.
+  const [bodyMatches, setBodyMatches] = useState<BodyMatch[]>([]);
+  const [bodyScan, setBodyScan] = useState<
+    "idle" | "scanning" | "done" | "cancelled" | "error"
+  >("idle");
+  const [bodyScanProgress, setBodyScanProgress] = useState<{ scanned: number; total: number }>({
+    scanned: 0,
+    total: 0,
+  });
+  const bodyScanController = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    setBodyMatches([]);
+    setBodyScan("idle");
+    setBodyScanProgress({ scanned: 0, total: 0 });
+    return () => {
+      // Implicit cancel (query changed out from under a running scan): abort
+      // AND null the ref. Aborting alone doesn't stop already-issued reads —
+      // when they finish, their callbacks compare `bodyScanController.current
+      // !== controller` to decide whether to act. If we left the ref pointing
+      // at this same controller, that comparison would stay false forever
+      // (controller !== controller is false) and stale results would still
+      // land on the freshly-reset "idle" state for the new query. Nulling it
+      // makes the guard fire for every subsequent callback from this scan,
+      // even though no new scan has started yet.
+      //
+      // The explicit Cancel button (cancelBodySearch) deliberately does NOT
+      // do this — it leaves the ref pointing at the same controller so its
+      // own eventual `.then()` guard still passes and correctly transitions
+      // to "cancelled" (so the user sees "Cancelled — N of M" after tapping
+      // Cancel).
+      bodyScanController.current?.abort();
+      bodyScanController.current = null;
+    };
+  }, [query]);
+
+  const startBodySearch = useCallback(() => {
+    const controller = new AbortController();
+    bodyScanController.current = controller;
+    setBodyMatches([]);
+    setBodyScan("scanning");
+    setBodyScanProgress({ scanned: 0, total: 0 });
+    void searchNoteBodies(
+      query,
+      (match) => {
+        if (bodyScanController.current !== controller) return;
+        setBodyMatches((prev) => [...prev, match]);
+      },
+      (progress) => {
+        if (bodyScanController.current !== controller) return;
+        setBodyScanProgress(progress);
+      },
+      controller.signal,
+    )
+      .then((finalProgress) => {
+        if (bodyScanController.current !== controller) return;
+        setBodyScanProgress(finalProgress);
+        setBodyScan(controller.signal.aborted ? "cancelled" : "done");
+      })
+      .catch(() => {
+        // listNoteFiles() (called at the top of searchNoteBodies, before its
+        // internal per-note try/catch kicks in) can reject outright — e.g. a
+        // SAF permission error. Without this, that's an unhandled rejection
+        // AND bodyScan gets stuck on "scanning" forever with no way out
+        // except editing the query. Same staleness guard as the other three
+        // callback sites: a rejected OLD scan must not clobber a newer scan.
+        if (bodyScanController.current !== controller) return;
+        setBodyScan("error");
+      });
+  }, [query]);
+
+  const cancelBodySearch = useCallback(() => {
+    bodyScanController.current?.abort();
+  }, []);
 
   // A tag tapped elsewhere (TagBrowser, note detail) navigates here with a
   // param — fold it into the active filters when it changes.
@@ -126,6 +212,94 @@ export default function SearchScreen({ route, navigation }: Props) {
   );
 
   const hasActiveFilters = modeFilter !== null || tagFilters.length > 0;
+
+  const noteForUri = useCallback(
+    (uri: string) => index?.notes.find((n) => n.uri === uri),
+    [index],
+  );
+
+  const bodySearchFooter = query.trim() ? (
+    <View
+      style={{
+        gap: theme.carnet.spacing.md,
+        paddingTop: theme.carnet.spacing.md,
+        paddingHorizontal: theme.carnet.spacing.md,
+        paddingBottom: theme.carnet.spacing.xl,
+      }}
+    >
+      {bodyScan === "idle" && (
+        <Pressable
+          onPress={startBodySearch}
+          style={styles.pillHit}
+          accessibilityRole="button"
+          accessibilityLabel="Search note contents"
+        >
+          <Text variant="labelLarge" style={{ color: theme.colors.primary }}>
+            Search note contents
+          </Text>
+        </Pressable>
+      )}
+      {bodyScan === "scanning" && (
+        <View style={{ gap: theme.carnet.spacing.sm }}>
+          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+            {`Scanning… ${bodyScanProgress.scanned} of ${bodyScanProgress.total} notes`}
+          </Text>
+          <Pressable
+            onPress={cancelBodySearch}
+            style={styles.pillHit}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel note content search"
+          >
+            <Text variant="labelLarge" style={{ color: theme.colors.error }}>
+              Cancel
+            </Text>
+          </Pressable>
+        </View>
+      )}
+      {(bodyScan === "done" || bodyScan === "cancelled") && (
+        <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+          {bodyScan === "cancelled"
+            ? `Cancelled — ${bodyScanProgress.scanned} of ${bodyScanProgress.total} notes scanned`
+            : `Scanned ${bodyScanProgress.total} notes`}
+        </Text>
+      )}
+      {bodyScan === "error" && (
+        <View style={{ gap: theme.carnet.spacing.sm }}>
+          <Text variant="labelMedium" style={{ color: theme.colors.error }}>
+            Search failed — could not scan note contents.
+          </Text>
+          <Pressable
+            onPress={startBodySearch}
+            style={styles.pillHit}
+            accessibilityRole="button"
+            accessibilityLabel="Retry note content search"
+          >
+            <Text variant="labelLarge" style={{ color: theme.colors.primary }}>
+              Retry
+            </Text>
+          </Pressable>
+        </View>
+      )}
+      {bodyMatches.slice(0, MAX_RENDERED_MATCHES).map((match) => {
+        const meta = noteForUri(match.uri);
+        return (
+          <NoteCard
+            key={match.uri}
+            title={meta?.title ?? match.uri}
+            mode={meta?.mode ?? "idea"}
+            excerpt={match.snippet}
+            tags={meta?.tags}
+            onPress={() => void openNote(match.uri)}
+          />
+        );
+      })}
+      {bodyMatches.length > MAX_RENDERED_MATCHES && (
+        <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
+          {`+${bodyMatches.length - MAX_RENDERED_MATCHES} more matches — try a more specific search`}
+        </Text>
+      )}
+    </View>
+  ) : null;
 
   const renderItem = useCallback(
     ({ item }: { item: NoteIndexEntry }) => (
@@ -266,6 +440,7 @@ export default function SearchScreen({ route, navigation }: Props) {
             },
           ]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          ListFooterComponent={bodySearchFooter}
           ListEmptyComponent={
             <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
               {query.trim() || hasActiveFilters
