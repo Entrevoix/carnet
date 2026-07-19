@@ -120,7 +120,7 @@ vi.mock("expo-sharing", () => ({
 }));
 
 import RecentDetailScreen from "./RecentDetailScreen";
-import { readNote } from "../lib/writer";
+import { readNote, updateNote } from "../lib/writer";
 import { removeFromHistory } from "../lib/storage";
 
 type ScreenProps = Parameters<typeof RecentDetailScreen>[0];
@@ -217,6 +217,36 @@ describe("RecentDetailScreen", () => {
         entry: target,
       }),
     );
+  });
+
+  it("link-plus persists a [[wikilink]] under ## Related and confirms via snackbar", async () => {
+    const relatedEntry = {
+      uri: "file:///v/Ideas/other-qa-note.md",
+      subdir: "Ideas" as const,
+      title: "Other QA note",
+      createdOrDate: 5,
+      tags: ["qa-test"],
+      mode: "idea" as const,
+      excerpt: "",
+    };
+    vi.mocked(loadCachedNoteIndex).mockResolvedValue({
+      builtAt: 1,
+      notes: [relatedEntry],
+    } as Awaited<ReturnType<typeof loadCachedNoteIndex>>);
+
+    renderScreen();
+    await screen.findByText("Related");
+    fireEvent.click(
+      screen.getByLabelText("Link Other QA note into this note"),
+    );
+
+    await waitFor(() => expect(updateNote).toHaveBeenCalledTimes(1));
+    const written = vi.mocked(updateNote).mock.calls[0][1];
+    expect(written).toContain("## Related");
+    expect(written).toContain("- [[Other QA note]]");
+    expect(
+      await screen.findByText("Linked [[Other QA note]] under Related"),
+    ).toBeTruthy();
   });
 
   it("tag stamp opens pre-filtered Search", async () => {

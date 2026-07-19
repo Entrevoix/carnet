@@ -122,3 +122,75 @@ export function findRelatedNotes(
     .slice(0, limit)
     .map((s) => s.entry);
 }
+
+// ── Wikilink insertion (the "link it" half of the Related card) ──────────────
+
+/** Make a note title safe inside `[[...]]`: brackets, pipes, and newlines
+ * would break the wikilink (or smuggle in an alias), and `#`/`^` would be
+ * parsed as heading/block anchors; they all become spaces. */
+function wikilinkSafeTitle(title: string): string {
+  return title.replace(/[[\]|#^\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Persist a `[[title]]` wikilink into the note under a `## Related` section.
+ *
+ * - Already linked anywhere in the note (body prose included) → unchanged,
+ *   `changed: false` — tapping Link twice, or linking a note the user
+ *   already referenced by hand, must not duplicate.
+ * - Existing `## Related` section → the link is APPENDED to its list
+ *   (upsertSection alone would replace the section body wholesale).
+ * - No section → one is created at the end of the note.
+ *
+ * Pure string → string; the caller owns the disk write. Frontmatter is
+ * untouched (the section lives in the body; upsertSection's heading match
+ * can't collide with YAML lines).
+ */
+export function insertRelatedLink(
+  markdown: string,
+  title: string,
+): { next: string; changed: boolean } {
+  const safe = wikilinkSafeTitle(title);
+  if (!safe) return { next: markdown, changed: false };
+  const link = `[[${safe}]]`;
+  // Already linked: exact form OR the aliased form `[[Title|display]]` a
+  // user may have hand-written in prose — both resolve to the same note.
+  if (markdown.includes(link) || markdown.includes(`[[${safe}|`)) {
+    return { next: markdown, changed: false };
+  }
+
+  // Self-contained insertion (same section-boundary rules as writer's
+  // upsertSection: exact heading line, section ends at the next heading) so
+  // this module stays free of writer's module graph. Insertion is an APPEND
+  // inside the section — upsertSection itself replaces a section wholesale,
+  // which is the wrong primitive for an accumulating link list.
+  const lines = markdown.split("\n");
+  const startIdx = lines.findIndex((l) => l === "## Related");
+  if (startIdx === -1) {
+    const trimmed = markdown.replace(/\n+$/, "");
+    const separator = trimmed.length === 0 ? "" : "\n\n";
+    return {
+      next: `${trimmed}${separator}## Related\n\n- ${link}\n`,
+      changed: true,
+    };
+  }
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    if (lines[i].startsWith("## ") || lines[i].startsWith("# ")) {
+      endIdx = i;
+      break;
+    }
+  }
+  // Insert after the section's last non-blank line so trailing blank lines
+  // (or the EOF newline) stay where they were.
+  let insertAt = endIdx;
+  while (insertAt > startIdx + 1 && lines[insertAt - 1].trim() === "") {
+    insertAt--;
+  }
+  const next = [
+    ...lines.slice(0, insertAt),
+    `- ${link}`,
+    ...lines.slice(insertAt),
+  ].join("\n");
+  return { next, changed: true };
+}

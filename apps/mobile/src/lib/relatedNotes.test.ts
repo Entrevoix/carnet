@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   findRelatedNotes,
+  insertRelatedLink,
   significantTerms,
   RELATED_NOTES_LIMIT,
 } from "./relatedNotes";
@@ -123,5 +124,53 @@ describe("findRelatedNotes", () => {
     expect(got).toHaveLength(RELATED_NOTES_LIMIT);
     // Same score everywhere → newest first.
     expect(got.map((e) => e.createdOrDate)).toEqual([5, 4, 3]);
+  });
+});
+
+describe("insertRelatedLink", () => {
+  const NOTE = "---\ncreated: 2026-07-18\ntags: [garden]\n---\n# Fence plan\n\nbody text\n";
+
+  it("creates a ## Related section at the end, preserving frontmatter bytes", () => {
+    const { next, changed } = insertRelatedLink(NOTE, "Gate hinges");
+    expect(changed).toBe(true);
+    expect(next.startsWith("---\ncreated: 2026-07-18\ntags: [garden]\n---\n")).toBe(true);
+    expect(next).toContain("## Related\n\n- [[Gate hinges]]\n");
+  });
+
+  it("appends to an existing section instead of replacing it", () => {
+    const first = insertRelatedLink(NOTE, "Gate hinges").next;
+    const { next } = insertRelatedLink(first, "Post driver");
+    expect(next).toContain("- [[Gate hinges]]");
+    expect(next).toContain("- [[Post driver]]");
+    expect(next.match(/## Related/g)).toHaveLength(1);
+  });
+
+  it("is a no-op when the link already exists anywhere — including body prose", () => {
+    const linked = insertRelatedLink(NOTE, "Gate hinges").next;
+    expect(insertRelatedLink(linked, "Gate hinges")).toEqual({
+      next: linked,
+      changed: false,
+    });
+    const prose = NOTE.replace("body text", "see [[Old Note]] for context");
+    expect(insertRelatedLink(prose, "Old Note").changed).toBe(false);
+  });
+
+  it("treats a hand-written ALIASED link as already-linked", () => {
+    const prose = NOTE.replace("body text", "see [[Old Note|that one]] for context");
+    expect(insertRelatedLink(prose, "Old Note").changed).toBe(false);
+  });
+
+  it("strips anchor characters (# ^) that Obsidian would parse inside the link", () => {
+    const { next } = insertRelatedLink(NOTE, "Ideas #tagged ^block");
+    expect(next).toContain("- [[Ideas tagged block]]");
+  });
+
+  it("sanitizes titles that would break the wikilink", () => {
+    const { next } = insertRelatedLink(NOTE, "Weird [title] | with\nbreaks");
+    expect(next).toContain("- [[Weird title with breaks]]");
+  });
+
+  it("refuses an unsalvageable title", () => {
+    expect(insertRelatedLink(NOTE, "[[|]]").changed).toBe(false);
   });
 });

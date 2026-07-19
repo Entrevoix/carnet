@@ -78,7 +78,7 @@ import {
   tagsForNote,
   type NoteIndexEntry,
 } from "../lib/vault";
-import { findRelatedNotes } from "../lib/relatedNotes";
+import { findRelatedNotes, insertRelatedLink } from "../lib/relatedNotes";
 import { exportNoteToKarakeep } from "../lib/karakeepNoteExport";
 import { enqueuePendingExport } from "../lib/pendingSync";
 import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
@@ -810,6 +810,37 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     };
   }, [body, missing, entry.filepath, entry.title, entry.mode]);
 
+  // Link a related note INTO this one as a persisted [[wikilink]] under a
+  // "## Related" section (the second half of research rec #3). The insert is
+  // pure + deduped (insertRelatedLink); the screen owns the disk write. A
+  // failed write surfaces through the existing Save-failed banner.
+  const [relatedLinked, setRelatedLinked] = useState<string | null>(null);
+  const linkingRelatedRef = useRef(false);
+  const linkRelated = useCallback(
+    async (title: string) => {
+      if (linkingRelatedRef.current) return;
+      linkingRelatedRef.current = true;
+      try {
+        const { next, changed } = insertRelatedLink(body, title);
+        if (changed) {
+          await updateNote(entry.filepath, next);
+          if (mountedRef.current) setBody(next);
+        }
+        if (mountedRef.current) {
+          setRelatedLinked(
+            changed ? `Linked [[${title}]] under Related` : "Already linked",
+          );
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (mountedRef.current) setEditError(msg);
+      } finally {
+        linkingRelatedRef.current = false;
+      }
+    },
+    [body, entry.filepath],
+  );
+
   // Push (not navigate) so the related note stacks on top and Back returns
   // here — hopping through a chain of related notes stays reversible. Ref
   // guard matches the screen's other async actions: a double-tap must not
@@ -1231,15 +1262,23 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
                 <Card.Title title="Related" />
                 <Card.Content style={styles.attachmentList}>
                   {related.map((r) => (
-                    <Button
-                      key={r.uri}
-                      mode="text"
-                      icon={modeStamp(r.mode).icon}
-                      onPress={() => void openRelated(r.uri)}
-                      contentStyle={styles.attachmentFileContent}
-                    >
-                      {r.title}
-                    </Button>
+                    <View key={r.uri} style={styles.relatedRow}>
+                      <Button
+                        mode="text"
+                        icon={modeStamp(r.mode).icon}
+                        onPress={() => void openRelated(r.uri)}
+                        contentStyle={styles.attachmentFileContent}
+                        style={styles.relatedOpen}
+                      >
+                        {r.title}
+                      </Button>
+                      <IconButton
+                        icon="link-plus"
+                        size={20}
+                        onPress={() => void linkRelated(r.title)}
+                        accessibilityLabel={`Link ${r.title} into this note`}
+                      />
+                    </View>
                   ))}
                 </Card.Content>
               </Card>
@@ -1276,6 +1315,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       >
         {(karakeepUpdated ? "Updated in Karakeep" : "Exported to Karakeep") +
           (karakeepSkipNote ? `. ${karakeepSkipNote}.` : "")}
+      </Snackbar>
+
+      <Snackbar
+        visible={relatedLinked !== null}
+        onDismiss={() => setRelatedLinked(null)}
+        duration={2500}
+      >
+        {relatedLinked ?? ""}
       </Snackbar>
 
       <Snackbar
@@ -1562,4 +1609,6 @@ const styles = StyleSheet.create({
     marginVertical: 8,
   },
   attachmentFileContent: { flexDirection: "row-reverse", justifyContent: "flex-end" },
+  relatedRow: { flexDirection: "row", alignItems: "center" },
+  relatedOpen: { flex: 1 },
 });
