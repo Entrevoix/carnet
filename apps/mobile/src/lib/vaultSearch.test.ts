@@ -47,12 +47,14 @@ import {
   loadCachedTagIndex,
   refreshNoteIndex,
   resolveNoteEntry,
+  searchNoteBodies,
   searchNotes,
   upsertNoteInIndex,
+  type BodyMatch,
   type NoteIndex,
   type NoteIndexEntry,
 } from "./vault";
-import { listNoteFiles } from "./writer";
+import { listNoteFiles, readNote } from "./writer";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -311,5 +313,138 @@ describe("tag index derived from note index (fold-in)", () => {
       work: 2,
       new: 1,
     });
+  });
+});
+
+// ── searchNoteBodies ─────────────────────────────────────────────────────────
+
+describe("searchNoteBodies", () => {
+  it("finds a match beyond the indexed excerpt window (200 chars)", async () => {
+    const long = "x".repeat(250) + " findme here";
+    addNote("file:///v/Ideas/deep.md", "Ideas", `---\n---\n# T\n\n${long}\n`);
+
+    const matches: BodyMatch[] = [];
+    const result = await searchNoteBodies(
+      "findme",
+      (m) => matches.push(m),
+      () => {},
+      new AbortController().signal,
+    );
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].uri).toBe("file:///v/Ideas/deep.md");
+    expect(matches[0].snippet).toContain("findme");
+    expect(result).toEqual({ scanned: 1, total: 1 });
+  });
+
+  it("matches case-insensitively", async () => {
+    addNote("file:///v/Ideas/a.md", "Ideas", "---\n---\n# T\n\nHello WORLD\n");
+
+    const matches: BodyMatch[] = [];
+    await searchNoteBodies("world", (m) => matches.push(m), () => {}, new AbortController().signal);
+
+    expect(matches).toHaveLength(1);
+  });
+
+  it("skips unreadable notes without failing the whole scan", async () => {
+    addNote("file:///v/Ideas/ok.md", "Ideas", "---\n---\n# T\n\nneedle good\n");
+    _listRefs.push({ uri: "file:///v/Ideas/bad.md", name: "bad.md", subdir: "Ideas" });
+    _unreadable.add("file:///v/Ideas/bad.md");
+
+    const matches: BodyMatch[] = [];
+    const result = await searchNoteBodies(
+      "needle",
+      (m) => matches.push(m),
+      () => {},
+      new AbortController().signal,
+    );
+
+    expect(matches).toEqual([
+      { uri: "file:///v/Ideas/ok.md", snippet: expect.stringContaining("needle") },
+    ]);
+    expect(result).toEqual({ scanned: 2, total: 2 });
+  });
+
+  it("reports incremental progress via onProgress as each note is scanned", async () => {
+    addNote("file:///v/Ideas/a.md", "Ideas", "---\n---\n# T\n\nneedle a\n");
+    addNote("file:///v/Ideas/b.md", "Ideas", "---\n---\n# T\n\nneedle b\n");
+
+    const progressCalls: Array<{ scanned: number; total: number }> = [];
+    await searchNoteBodies(
+      "needle",
+      () => {},
+      (p) => progressCalls.push(p),
+      new AbortController().signal,
+    );
+
+    expect(progressCalls).toEqual([
+      { scanned: 1, total: 2 },
+      { scanned: 2, total: 2 },
+    ]);
+  });
+
+  it("delivers a fast match before a concurrently-scanning slow note resolves", async () => {
+    addNote("file:///v/Ideas/fast.md", "Ideas", "---\n---\n# T\n\nneedle fast\n");
+    addNote("file:///v/Ideas/slow.md", "Ideas", "---\n---\n# T\n\nneedle slow\n");
+
+    let resolveSlow!: (v: string) => void;
+    const slowPromise = new Promise<string>((res) => {
+      resolveSlow = res;
+    });
+
+    vi.mocked(readNote)
+      .mockImplementationOnce(async () => _notes.get("file:///v/Ideas/fast.md")!)
+      .mockImplementationOnce(() => slowPromise);
+
+    const matches: string[] = [];
+    const done = searchNoteBodies(
+      "needle",
+      (m) => matches.push(m.uri),
+      () => {},
+      new AbortController().signal,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(matches).toEqual(["file:///v/Ideas/fast.md"]);
+
+    resolveSlow("---\n---\n# T\n\nneedle slow\n");
+    await done;
+    expect(matches).toEqual(["file:///v/Ideas/fast.md", "file:///v/Ideas/slow.md"]);
+  });
+
+  it("stops issuing new reads once aborted, keeping only already-issued results", async () => {
+    const uris = Array.from({ length: 9 }, (_, i) => `file:///v/Ideas/n${i}.md`);
+    for (const uri of uris) addNote(uri, "Ideas", "---\n---\n# T\n\nneedle here\n");
+
+    const resolvers: Array<() => void> = [];
+    const calledUris: string[] = [];
+    vi.mocked(readNote).mockImplementation((uri: string) => {
+      calledUris.push(uri);
+      return new Promise<string>((res) => resolvers.push(() => res(_notes.get(uri)!)));
+    });
+
+    const controller = new AbortController();
+    const matches: string[] = [];
+    const done = searchNoteBodies(
+      "needle",
+      (m) => matches.push(m.uri),
+      () => {},
+      controller.signal,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calledUris).toHaveLength(8); // SCAN_CONCURRENCY — item 9 (index 8) is queued, not issued
+
+    controller.abort();
+    resolvers[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calledUris).toHaveLength(8); // no 9th read issued after abort
+
+    resolvers.slice(1).forEach((r) => r());
+    const result = await done;
+    expect(result).toEqual({ scanned: 8, total: 9 });
   });
 });
