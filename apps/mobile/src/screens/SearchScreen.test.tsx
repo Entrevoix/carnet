@@ -283,4 +283,94 @@ describe("body search", () => {
     expect(screen.queryByText("STALE_A_LATE_MATCH")).toBeNull();
     expect(screen.getByText("FRESH_B_MATCH")).toBeTruthy();
   });
+
+  it("does not clobber idle state with a stale scan's late resolution after an implicit query-change cancel (no second scan started)", async () => {
+    let onMatchA!: (m: { uri: string; snippet: string }) => void;
+    let onProgressA!: (p: { scanned: number; total: number }) => void;
+    let resolveA!: (finalProgress: { scanned: number; total: number }) => void;
+
+    // Scan A: captures its callbacks and its own resolver — the test
+    // decides exactly when the promise settles, simulating an in-flight
+    // read that finishes AFTER abort() was called (abort doesn't cancel
+    // already-issued reads — that's documented behavior).
+    vi.mocked(searchNoteBodies).mockImplementationOnce(
+      (_query, onMatch, onProgress, _signal) =>
+        new Promise((resolve) => {
+          onMatchA = onMatch;
+          onProgressA = onProgress;
+          resolveA = resolve;
+        }),
+    );
+
+    renderScreen();
+    await screen.findByText("First idea");
+
+    const input = screen.getByPlaceholderText("Search notes") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hello" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+    fireEvent.click(screen.getByText("Search note contents"));
+    await waitFor(() => expect(searchNoteBodies).toHaveBeenCalledTimes(1));
+
+    onProgressA({ scanned: 1, total: 5 });
+    onMatchA({ uri: "file:///v/Journal/2026-07-08.md", snippet: "STALE_MATCH" });
+    await waitFor(() => expect(screen.getByText(/1 of 5 notes/)).toBeTruthy());
+
+    // Edit the query — implicit cancel via the [query] effect's cleanup.
+    // No second scan is started.
+    fireEvent.change(input, { target: { value: "hello world" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    // The new query is idle immediately — the button is back, stale match gone.
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+    expect(screen.queryByText("STALE_MATCH")).toBeNull();
+
+    // Scan A's promise finally settles late, well after the abort. Uses an
+    // async act() and an explicit microtask flush — resolveA() only queues
+    // the .then() callback as a microtask, and a plain sync act() would
+    // return (and let the assertions below run) before that microtask has
+    // actually executed, making the assertions pass vacuously regardless of
+    // whether the guard/nulling fix is present.
+    await act(async () => {
+      resolveA({ scanned: 5, total: 5 });
+      await Promise.resolve();
+    });
+
+    // Must still be idle for the new query — no "Cancelled" leak, button intact.
+    expect(screen.getByText("Search note contents")).toBeTruthy();
+    expect(screen.queryByText(/Cancelled/)).toBeNull();
+    expect(screen.queryByText("STALE_MATCH")).toBeNull();
+  });
+
+  it("shows an error state (not a stuck spinner) and offers a retry when the scan promise rejects", async () => {
+    let rejectA!: (err: Error) => void;
+    vi.mocked(searchNoteBodies).mockImplementationOnce(
+      (_query, _onMatch, _onProgress, _signal) =>
+        new Promise((_resolve, reject) => {
+          rejectA = reject;
+        }),
+    );
+
+    renderScreen();
+    await screen.findByText("First idea");
+
+    const input = screen.getByPlaceholderText("Search notes") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hello" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+    fireEvent.click(screen.getByText("Search note contents"));
+    await waitFor(() => expect(searchNoteBodies).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/Scanning/)).toBeTruthy();
+
+    await act(async () => {
+      rejectA(new Error("SAF permission denied"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByText(/Search failed/)).toBeTruthy());
+    expect(screen.queryByText(/Scanning/)).toBeNull();
+    expect(screen.getByLabelText("Retry note content search")).toBeTruthy();
+  });
 });

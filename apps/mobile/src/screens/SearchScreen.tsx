@@ -59,9 +59,9 @@ export default function SearchScreen({ route, navigation }: Props) {
   // (and cancel any in-flight scan) whenever the query changes — a query
   // edit implicitly invalidates whatever was being scanned for the old one.
   const [bodyMatches, setBodyMatches] = useState<BodyMatch[]>([]);
-  const [bodyScan, setBodyScan] = useState<"idle" | "scanning" | "done" | "cancelled">(
-    "idle",
-  );
+  const [bodyScan, setBodyScan] = useState<
+    "idle" | "scanning" | "done" | "cancelled" | "error"
+  >("idle");
   const [bodyScanProgress, setBodyScanProgress] = useState<{ scanned: number; total: number }>({
     scanned: 0,
     total: 0,
@@ -73,7 +73,23 @@ export default function SearchScreen({ route, navigation }: Props) {
     setBodyScan("idle");
     setBodyScanProgress({ scanned: 0, total: 0 });
     return () => {
+      // Implicit cancel (query changed out from under a running scan): abort
+      // AND null the ref. Aborting alone doesn't stop already-issued reads —
+      // when they finish, their callbacks compare `bodyScanController.current
+      // !== controller` to decide whether to act. If we left the ref pointing
+      // at this same controller, that comparison would stay false forever
+      // (controller !== controller is false) and stale results would still
+      // land on the freshly-reset "idle" state for the new query. Nulling it
+      // makes the guard fire for every subsequent callback from this scan,
+      // even though no new scan has started yet.
+      //
+      // The explicit Cancel button (cancelBodySearch) deliberately does NOT
+      // do this — it leaves the ref pointing at the same controller so its
+      // own eventual `.then()` guard still passes and correctly transitions
+      // to "cancelled" (so the user sees "Cancelled — N of M" after tapping
+      // Cancel).
       bodyScanController.current?.abort();
+      bodyScanController.current = null;
     };
   }, [query]);
 
@@ -94,11 +110,22 @@ export default function SearchScreen({ route, navigation }: Props) {
         setBodyScanProgress(progress);
       },
       controller.signal,
-    ).then((finalProgress) => {
-      if (bodyScanController.current !== controller) return;
-      setBodyScanProgress(finalProgress);
-      setBodyScan(controller.signal.aborted ? "cancelled" : "done");
-    });
+    )
+      .then((finalProgress) => {
+        if (bodyScanController.current !== controller) return;
+        setBodyScanProgress(finalProgress);
+        setBodyScan(controller.signal.aborted ? "cancelled" : "done");
+      })
+      .catch(() => {
+        // listNoteFiles() (called at the top of searchNoteBodies, before its
+        // internal per-note try/catch kicks in) can reject outright — e.g. a
+        // SAF permission error. Without this, that's an unhandled rejection
+        // AND bodyScan gets stuck on "scanning" forever with no way out
+        // except editing the query. Same staleness guard as the other three
+        // callback sites: a rejected OLD scan must not clobber a newer scan.
+        if (bodyScanController.current !== controller) return;
+        setBodyScan("error");
+      });
   }, [query]);
 
   const cancelBodySearch = useCallback(() => {
@@ -228,6 +255,23 @@ export default function SearchScreen({ route, navigation }: Props) {
             ? `Cancelled — ${bodyScanProgress.scanned} of ${bodyScanProgress.total} notes scanned`
             : `Scanned ${bodyScanProgress.total} notes`}
         </Text>
+      )}
+      {bodyScan === "error" && (
+        <View style={{ gap: theme.carnet.spacing.sm }}>
+          <Text variant="labelMedium" style={{ color: theme.colors.error }}>
+            Search failed — could not scan note contents.
+          </Text>
+          <Pressable
+            onPress={startBodySearch}
+            style={styles.pillHit}
+            accessibilityRole="button"
+            accessibilityLabel="Retry note content search"
+          >
+            <Text variant="labelLarge" style={{ color: theme.colors.primary }}>
+              Retry
+            </Text>
+          </Pressable>
+        </View>
       )}
       {bodyMatches.map((match) => {
         const meta = noteForUri(match.uri);
