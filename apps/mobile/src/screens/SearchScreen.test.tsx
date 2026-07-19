@@ -49,6 +49,7 @@ vi.mock("../lib/vault", () => ({
   // Query-agnostic fake: returns every note. The screen's own tag-filter
   // narrowing runs on top of this and is what the assertions exercise.
   searchNotes: vi.fn((index: { notes: NoteIndexEntry[] }) => index.notes),
+  searchNoteBodies: vi.fn(),
   resolveNoteEntry: vi.fn(async (uri: string) => ({
     id: "resolved-1",
     mode: "idea",
@@ -59,7 +60,7 @@ vi.mock("../lib/vault", () => ({
 }));
 
 import SearchScreen from "./SearchScreen";
-import { resolveNoteEntry } from "../lib/vault";
+import { resolveNoteEntry, searchNoteBodies } from "../lib/vault";
 
 type ScreenProps = Parameters<typeof SearchScreen>[0];
 
@@ -136,5 +137,76 @@ describe("SearchScreen", () => {
       }),
     );
     expect(resolveNoteEntry).toHaveBeenCalledWith("file:///v/Ideas/first.md");
+  });
+});
+
+describe("body search", () => {
+  it("shows the 'Search note contents' button only once a query is typed", async () => {
+    renderScreen();
+    await screen.findByText("First idea");
+    expect(screen.queryByText("Search note contents")).toBeNull();
+
+    const input = screen.getByPlaceholderText("Search notes") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hello" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+  });
+
+  it("streams body matches as they resolve and shows a progress line", async () => {
+    let onMatchCb!: (m: { uri: string; snippet: string }) => void;
+    let onProgressCb!: (p: { scanned: number; total: number }) => void;
+    vi.mocked(searchNoteBodies).mockImplementation(
+      (_query, onMatch, onProgress, _signal) =>
+        new Promise((resolve) => {
+          onMatchCb = onMatch;
+          onProgressCb = onProgress;
+          // Deliberately never auto-resolves — the test drives it manually.
+          void resolve;
+        }),
+    );
+
+    renderScreen();
+    await screen.findByText("First idea");
+
+    const input = screen.getByPlaceholderText("Search notes") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hello" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+    fireEvent.click(screen.getByText("Search note contents"));
+
+    await waitFor(() => expect(searchNoteBodies).toHaveBeenCalled());
+
+    onProgressCb({ scanned: 1, total: 2 });
+    onMatchCb({ uri: "file:///v/Journal/2026-07-08.md", snippet: "…matched text…" });
+
+    await waitFor(() => expect(screen.getByText(/1 of 2 notes/)).toBeTruthy());
+    expect(screen.getByText("…matched text…")).toBeTruthy();
+  });
+
+  it("cancels the in-flight scan when the query changes", async () => {
+    const abortSpy = vi.fn();
+    vi.mocked(searchNoteBodies).mockImplementation(
+      (_query, _onMatch, _onProgress, signal) =>
+        new Promise(() => {
+          signal.addEventListener("abort", abortSpy);
+        }),
+    );
+
+    renderScreen();
+    await screen.findByText("First idea");
+
+    const input = screen.getByPlaceholderText("Search notes") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "hello" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await waitFor(() => expect(screen.getByText("Search note contents")).toBeTruthy());
+    fireEvent.click(screen.getByText("Search note contents"));
+
+    fireEvent.change(input, { target: { value: "hello world" } });
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(abortSpy).toHaveBeenCalled();
   });
 });

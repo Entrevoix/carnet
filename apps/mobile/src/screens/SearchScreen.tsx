@@ -9,7 +9,7 @@
  * Tapping a result resolves the note into a CaptureEntry and opens
  * RecentDetail.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, RefreshControl, StyleSheet, View } from "react-native";
 import { Searchbar, Snackbar, Text } from "react-native-paper";
 import { useFocusEffect } from "@react-navigation/native";
@@ -21,7 +21,9 @@ import {
   getNoteIndex,
   refreshNoteIndex,
   resolveNoteEntry,
+  searchNoteBodies,
   searchNotes,
+  type BodyMatch,
   type NoteIndex,
   type NoteIndexEntry,
 } from "../lib/vault";
@@ -52,6 +54,49 @@ export default function SearchScreen({ route, navigation }: Props) {
   // Filter pills are hidden until the user asks for them (goal 4: filters
   // collapse into pills only when tapped, never permanently docked).
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // Phase 2: on-demand full-text body search, explicit-trigger only. Reset
+  // (and cancel any in-flight scan) whenever the query changes — a query
+  // edit implicitly invalidates whatever was being scanned for the old one.
+  const [bodyMatches, setBodyMatches] = useState<BodyMatch[]>([]);
+  const [bodyScan, setBodyScan] = useState<"idle" | "scanning" | "done" | "cancelled">(
+    "idle",
+  );
+  const [bodyScanProgress, setBodyScanProgress] = useState<{ scanned: number; total: number }>({
+    scanned: 0,
+    total: 0,
+  });
+  const bodyScanController = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    setBodyMatches([]);
+    setBodyScan("idle");
+    setBodyScanProgress({ scanned: 0, total: 0 });
+    return () => {
+      bodyScanController.current?.abort();
+    };
+  }, [query]);
+
+  const startBodySearch = useCallback(() => {
+    const controller = new AbortController();
+    bodyScanController.current = controller;
+    setBodyMatches([]);
+    setBodyScan("scanning");
+    setBodyScanProgress({ scanned: 0, total: 0 });
+    void searchNoteBodies(
+      query,
+      (match) => setBodyMatches((prev) => [...prev, match]),
+      (progress) => setBodyScanProgress(progress),
+      controller.signal,
+    ).then((finalProgress) => {
+      setBodyScanProgress(finalProgress);
+      setBodyScan(controller.signal.aborted ? "cancelled" : "done");
+    });
+  }, [query]);
+
+  const cancelBodySearch = useCallback(() => {
+    bodyScanController.current?.abort();
+  }, []);
 
   // A tag tapped elsewhere (TagBrowser, note detail) navigates here with a
   // param — fold it into the active filters when it changes.
@@ -126,6 +171,72 @@ export default function SearchScreen({ route, navigation }: Props) {
   );
 
   const hasActiveFilters = modeFilter !== null || tagFilters.length > 0;
+
+  const noteForUri = useCallback(
+    (uri: string) => index?.notes.find((n) => n.uri === uri),
+    [index],
+  );
+
+  const bodySearchFooter = query.trim() ? (
+    <View
+      style={{
+        gap: theme.carnet.spacing.md,
+        paddingTop: theme.carnet.spacing.md,
+        paddingHorizontal: theme.carnet.spacing.md,
+        paddingBottom: theme.carnet.spacing.xl,
+      }}
+    >
+      {bodyScan === "idle" && (
+        <Pressable
+          onPress={startBodySearch}
+          style={styles.pillHit}
+          accessibilityRole="button"
+          accessibilityLabel="Search note contents"
+        >
+          <Text variant="labelLarge" style={{ color: theme.colors.primary }}>
+            Search note contents
+          </Text>
+        </Pressable>
+      )}
+      {bodyScan === "scanning" && (
+        <View style={{ gap: theme.carnet.spacing.sm }}>
+          <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+            {`Scanning… ${bodyScanProgress.scanned} of ${bodyScanProgress.total} notes`}
+          </Text>
+          <Pressable
+            onPress={cancelBodySearch}
+            style={styles.pillHit}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel note content search"
+          >
+            <Text variant="labelLarge" style={{ color: theme.colors.error }}>
+              Cancel
+            </Text>
+          </Pressable>
+        </View>
+      )}
+      {(bodyScan === "done" || bodyScan === "cancelled") && (
+        <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+          {bodyScan === "cancelled"
+            ? `Cancelled — ${bodyScanProgress.scanned} of ${bodyScanProgress.total} notes scanned`
+            : `Scanned ${bodyScanProgress.total} notes`}
+        </Text>
+      )}
+      {bodyMatches.map((match) => {
+        const meta = noteForUri(match.uri);
+        return (
+          <NoteCard
+            key={match.uri}
+            title={meta?.title ?? match.uri}
+            mode={meta?.mode ?? "idea"}
+            excerpt={match.snippet}
+            tags={meta?.tags}
+            onPress={() => void openNote(match.uri)}
+          />
+        );
+      })}
+    </View>
+  ) : null;
 
   const renderItem = useCallback(
     ({ item }: { item: NoteIndexEntry }) => (
@@ -266,6 +377,7 @@ export default function SearchScreen({ route, navigation }: Props) {
             },
           ]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          ListFooterComponent={bodySearchFooter}
           ListEmptyComponent={
             <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
               {query.trim() || hasActiveFilters
