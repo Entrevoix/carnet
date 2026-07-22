@@ -13,6 +13,10 @@ import {
   type PromptOverrides,
   type Settings,
 } from "./settings";
+import type { LlmBackend } from "./settings";
+
+// Task 6 will use DEFAULT_LLM_BACKEND as the initial FormState value when composing from Settings
+void DEFAULT_LLM_BACKEND;
 
 /** Editable slice of {@link Settings} the Settings form renders. The API keys
  * are intentionally excluded — they live in SecureStore and are never read
@@ -22,6 +26,9 @@ export interface FormState {
   omniRouteUrl: string;
   omniRouteModel: string;
   omniRouteVisionModel: string;
+  llmBackend: LlmBackend;
+  localLlmUrl: string;
+  localLlmModel: string;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
@@ -63,12 +70,9 @@ export function composeSettingsForSave(
     omniRouteUrl: form.omniRouteUrl,
     omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
     omniRouteVisionModel: form.omniRouteVisionModel || DEFAULT_VISION_MODEL,
-    llmBackend: DEFAULT_LLM_BACKEND,
-    // Hardcoded blank until Task 5 adds a FormState field + Task 6 adds
-    // picker UI — mirrors how llmBackend: DEFAULT_LLM_BACKEND is hardcoded
-    // above for the identical reason.
-    localLlmUrl: "",
-    localLlmModel: "",
+    llmBackend: form.llmBackend,
+    localLlmUrl: form.localLlmUrl,
+    localLlmModel: form.localLlmModel,
     localLlmApiKey: existing.localLlmApiKey,
     persistentNotificationEnabled: form.persistentNotificationEnabled,
     autoTranscribeOnSave: form.autoTranscribeOnSave,
