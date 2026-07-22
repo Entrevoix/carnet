@@ -95,6 +95,7 @@ import {
   MAX_TRANSCRIPTION_BYTES,
   withSystemOverride,
 } from "./omniroute";
+import { HttpError } from "./httpClient";
 import {
   buildIdeaPrompt,
   buildJournalPrompt,
@@ -223,6 +224,21 @@ describe("assertBase64UnderLimit", () => {
     } catch (e: unknown) {
       expect(isPermanentError(e)).toBe(true);
     }
+  });
+});
+
+describe("isPermanentError / isNotConfiguredError generalize to HttpError", () => {
+  it("classifies a non-OmniRouteError HttpError subclass by its status/notConfigured fields", () => {
+    class FakeBackendError extends HttpError {}
+    const permanent = new FakeBackendError("bad request", 400);
+    const notConfigured = new FakeBackendError("no url", 0, { notConfigured: true });
+    const transient = new FakeBackendError("network blip", 0);
+
+    expect(isPermanentError(permanent)).toBe(true);
+    expect(isNotConfiguredError(notConfigured)).toBe(true);
+    expect(isPermanentError(notConfigured)).toBe(false);
+    expect(isPermanentError(transient)).toBe(false);
+    expect(isNotConfiguredError(transient)).toBe(false);
   });
 });
 
