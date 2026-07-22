@@ -32,10 +32,17 @@ export interface FormState {
 }
 
 /** The currently-stored API keys, threaded into the saved Settings so
- * saveSettings doesn't wipe any of them when only URL/model/folder changed. */
+ * saveSettings doesn't wipe any of them when only URL/model/folder changed.
+ * localLlmUrl/localLlmModel/localLlmApiKey are threaded through the same way
+ * (rather than added to FormState) because Phase 1 has no local-LLM picker
+ * UI yet — see Task 6 (SettingsScreen.tsx) — so a save from this form must
+ * preserve whatever is already persisted instead of blanking it out. */
 export interface ExistingApiKeys {
   omniRouteApiKey: string;
   karakeepApiKey: string;
+  localLlmUrl: string;
+  localLlmModel: string;
+  localLlmApiKey: string;
 }
 
 /**
@@ -56,6 +63,9 @@ export function composeSettingsForSave(
     omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
     omniRouteVisionModel: form.omniRouteVisionModel || DEFAULT_VISION_MODEL,
     llmBackend: DEFAULT_LLM_BACKEND,
+    localLlmUrl: existing.localLlmUrl,
+    localLlmModel: existing.localLlmModel,
+    localLlmApiKey: existing.localLlmApiKey,
     persistentNotificationEnabled: form.persistentNotificationEnabled,
     autoTranscribeOnSave: form.autoTranscribeOnSave,
     richEditorEnabled: form.richEditorEnabled,

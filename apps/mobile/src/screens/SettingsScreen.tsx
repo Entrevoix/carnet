@@ -782,11 +782,17 @@ export default function SettingsScreen() {
 async function currentKeysOrEmpty(): Promise<{
   omniRouteApiKey: string;
   karakeepApiKey: string;
+  localLlmUrl: string;
+  localLlmModel: string;
+  localLlmApiKey: string;
 }> {
   const s = await getSettings();
   return {
     omniRouteApiKey: s.omniRouteApiKey ?? "",
     karakeepApiKey: s.karakeepApiKey ?? "",
+    localLlmUrl: s.localLlmUrl ?? "",
+    localLlmModel: s.localLlmModel ?? "",
+    localLlmApiKey: s.localLlmApiKey ?? "",
   };
 }
 

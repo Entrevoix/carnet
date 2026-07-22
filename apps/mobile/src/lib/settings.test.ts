@@ -33,7 +33,9 @@ import {
   DEFAULT_OMNIROUTE_MODEL,
   DEFAULT_VISION_MODEL,
   getSettings,
+  hasLocalLlmApiKey,
   saveSettings,
+  setLocalLlmApiKey,
   type Settings,
 } from "./settings";
 
@@ -237,6 +239,9 @@ describe("getSettings — persisted-blob migration (B1 vision model split)", () 
       omniRouteModel: "gpt-4o-mini",
       omniRouteVisionModel: "gemini/gemini-2.5-flash",
       llmBackend: "omniroute",
+      localLlmUrl: "",
+      localLlmModel: "",
+      localLlmApiKey: "",
       persistentNotificationEnabled: false,
       autoTranscribeOnSave: false,
       richEditorEnabled: true,
@@ -257,5 +262,34 @@ describe("getSettings — persisted-blob migration (B1 vision model split)", () 
 
     const reloaded = await getSettings();
     expect(reloaded.omniRouteVisionModel).toBe("gemini/gemini-2.5-flash");
+  });
+});
+
+describe("hasLocalLlmApiKey / setLocalLlmApiKey", () => {
+  it("reports false when no key is stored, true after setting one, false after clearing", async () => {
+    expect(await hasLocalLlmApiKey()).toBe(false);
+
+    await setLocalLlmApiKey("local-secret-token");
+    expect(await hasLocalLlmApiKey()).toBe(true);
+
+    await setLocalLlmApiKey("");
+    expect(await hasLocalLlmApiKey()).toBe(false);
+  });
+});
+
+describe("localLlmUrl / localLlmModel default via getSettings", () => {
+  it("defaults localLlmUrl and localLlmModel to empty strings on a fresh install", async () => {
+    const s = await getSettings();
+    expect(s.localLlmUrl).toBe("");
+    expect(s.localLlmModel).toBe("");
+    expect(s.localLlmApiKey).toBe("");
+  });
+
+  it("round-trips localLlmUrl/localLlmModel through saveSettings", async () => {
+    const s = await getSettings();
+    await saveSettings({ ...s, localLlmUrl: "http://127.0.0.1:8080", localLlmModel: "gemma-4" });
+    const after = await getSettings();
+    expect(after.localLlmUrl).toBe("http://127.0.0.1:8080");
+    expect(after.localLlmModel).toBe("gemma-4");
   });
 });
