@@ -33,6 +33,28 @@ vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Light: "light", Medium: "medium", Heavy: "heavy" },
 }));
 
+vi.mock("./settings", () => ({
+  getSettings: vi.fn().mockResolvedValue({
+    omniRouteUrl: "",
+    omniRouteApiKey: "",
+    omniRouteModel: "",
+    omniRouteVisionModel: "",
+    llmBackend: "omniroute",
+    localLlmUrl: "",
+    localLlmModel: "",
+    localLlmApiKey: "",
+    captureFolderPath: "",
+    persistentNotificationEnabled: false,
+    autoTranscribeOnSave: false,
+    richEditorEnabled: false,
+    previewBeforeSave: false,
+    promptOverrides: {},
+    karakeepUrl: "",
+    karakeepApiKey: "",
+  }),
+  getPromptOverrides: vi.fn().mockResolvedValue({}),
+}));
+
 // ── Mock omniroute ────────────────────────────────────────────────────────────
 
 vi.mock("./omniroute", () => ({
@@ -54,6 +76,19 @@ vi.mock("./omniroute", () => ({
   isPermanentError: vi.fn().mockReturnValue(false),
   // Default false; the not-configured drain test flips it on for one pass.
   isNotConfiguredError: vi.fn().mockReturnValue(false),
+}));
+
+// ── Mock localLlm (dispatcher now imports it) ────────────────────────────────
+
+vi.mock("./localLlm", () => ({
+  enrichIdea: vi.fn(),
+  enrichJournal: vi.fn(),
+  enrichPerson: vi.fn(),
+  enrichSharedImage: vi.fn(),
+  enrichSharedLink: vi.fn(),
+  promoteIdea: vi.fn(),
+  ocrCardViaVision: vi.fn(),
+  listModels: vi.fn(),
 }));
 
 // ── Mock writer ───────────────────────────────────────────────────────────────
