@@ -33,15 +33,16 @@ export interface FormState {
 
 /** The currently-stored API keys, threaded into the saved Settings so
  * saveSettings doesn't wipe any of them when only URL/model/folder changed.
- * localLlmUrl/localLlmModel/localLlmApiKey are threaded through the same way
- * (rather than added to FormState) because Phase 1 has no local-LLM picker
- * UI yet — see Task 6 (SettingsScreen.tsx) — so a save from this form must
- * preserve whatever is already persisted instead of blanking it out. */
+ * localLlmApiKey is threaded through the same way (rather than added to
+ * FormState) because Phase 1 has no local-LLM picker UI yet — see Task 6
+ * (SettingsScreen.tsx) — so a save from this form must preserve whatever key
+ * is already persisted instead of blanking it out. localLlmUrl/localLlmModel
+ * are NOT part of this interface: they'll live on FormState once Task 5/6
+ * add the picker UI, so composeSettingsForSave hardcodes them blank below in
+ * the meantime, matching how llmBackend is hardcoded to the default. */
 export interface ExistingApiKeys {
   omniRouteApiKey: string;
   karakeepApiKey: string;
-  localLlmUrl: string;
-  localLlmModel: string;
   localLlmApiKey: string;
 }
 
@@ -63,8 +64,11 @@ export function composeSettingsForSave(
     omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
     omniRouteVisionModel: form.omniRouteVisionModel || DEFAULT_VISION_MODEL,
     llmBackend: DEFAULT_LLM_BACKEND,
-    localLlmUrl: existing.localLlmUrl,
-    localLlmModel: existing.localLlmModel,
+    // Hardcoded blank until Task 5 adds a FormState field + Task 6 adds
+    // picker UI — mirrors how llmBackend: DEFAULT_LLM_BACKEND is hardcoded
+    // above for the identical reason.
+    localLlmUrl: "",
+    localLlmModel: "",
     localLlmApiKey: existing.localLlmApiKey,
     persistentNotificationEnabled: form.persistentNotificationEnabled,
     autoTranscribeOnSave: form.autoTranscribeOnSave,
