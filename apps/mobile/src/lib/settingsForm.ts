@@ -7,16 +7,12 @@
  */
 
 import {
-  DEFAULT_LLM_BACKEND,
   DEFAULT_OMNIROUTE_MODEL,
   DEFAULT_VISION_MODEL,
   type PromptOverrides,
   type Settings,
 } from "./settings";
 import type { LlmBackend } from "./settings";
-
-// Task 6 will use DEFAULT_LLM_BACKEND as the initial FormState value when composing from Settings
-void DEFAULT_LLM_BACKEND;
 
 /** Editable slice of {@link Settings} the Settings form renders. The API keys
  * are intentionally excluded — they live in SecureStore and are never read
@@ -41,12 +37,10 @@ export interface FormState {
 /** The currently-stored API keys, threaded into the saved Settings so
  * saveSettings doesn't wipe any of them when only URL/model/folder changed.
  * localLlmApiKey is threaded through the same way (rather than added to
- * FormState) because Phase 1 has no local-LLM picker UI yet — see Task 6
- * (SettingsScreen.tsx) — so a save from this form must preserve whatever key
- * is already persisted instead of blanking it out. localLlmUrl/localLlmModel
- * are NOT part of this interface: they'll live on FormState once Task 5/6
- * add the picker UI, so composeSettingsForSave hardcodes them blank below in
- * the meantime, matching how llmBackend is hardcoded to the default. */
+ * FormState) because it is a secret and lives in SecureStore, never in render
+ * state. localLlmUrl/localLlmModel are NOT part of this interface: they live
+ * on FormState as plain-text config fields and are passed through by
+ * composeSettingsForSave. */
 export interface ExistingApiKeys {
   omniRouteApiKey: string;
   karakeepApiKey: string;
@@ -56,11 +50,12 @@ export interface ExistingApiKeys {
 /**
  * Compose the {@link Settings} object to persist from the form state and the
  * existing keys. Applies the blank→default fallbacks for the chat/vision
- * models and always persists the default backend (Phase 1 has no picker UI).
- * The keys are passed through unchanged: when the user typed a new key the
- * screen writes it separately via setOmniRouteApiKey/setKarakeepApiKey after
- * this save, and passing the existing (or empty) key here matches the prior
- * behavior where saveSettings preserves — or clears — the stored key.
+ * models and passes through the user's selected llmBackend and local-LLM
+ * configuration. The keys are passed through unchanged: when the user typed a
+ * new key the screen writes it separately via setOmniRouteApiKey/
+ * setKarakeepApiKey after this save, and passing the existing (or empty) key
+ * here matches the prior behavior where saveSettings preserves — or clears —
+ * the stored key.
  */
 export function composeSettingsForSave(
   form: FormState,

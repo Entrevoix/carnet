@@ -22,15 +22,11 @@ import {
   DEFAULT_OMNIROUTE_MODEL,
   DEFAULT_VISION_MODEL,
 } from "./settings";
-import type { LlmBackend } from "./settings";
 import {
   captureFolderLabel,
   composeSettingsForSave,
   type FormState,
 } from "./settingsForm";
-
-// LlmBackend is used in FormState type definition for the test form literal
-void ({} as LlmBackend);
 
 const baseForm: FormState = {
   omniRouteUrl: "https://llm.grepon.cc",
