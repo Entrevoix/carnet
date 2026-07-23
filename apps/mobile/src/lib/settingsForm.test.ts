@@ -32,6 +32,9 @@ const baseForm: FormState = {
   omniRouteUrl: "https://llm.grepon.cc",
   omniRouteModel: "gemini/gemini-2.5-flash",
   omniRouteVisionModel: "openai/gpt-4o-mini",
+  llmBackend: DEFAULT_LLM_BACKEND,
+  localLlmUrl: "",
+  localLlmModel: "",
   persistentNotificationEnabled: true,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
@@ -44,6 +47,7 @@ const baseForm: FormState = {
 const keys = {
   omniRouteApiKey: "sk-existing",
   karakeepApiKey: "kk-existing",
+  localLlmApiKey: "",
 };
 
 describe("composeSettingsForSave", () => {
@@ -54,6 +58,9 @@ describe("composeSettingsForSave", () => {
       omniRouteModel: "gemini/gemini-2.5-flash",
       omniRouteVisionModel: "openai/gpt-4o-mini",
       llmBackend: DEFAULT_LLM_BACKEND,
+      localLlmUrl: "",
+      localLlmModel: "",
+      localLlmApiKey: "",
       persistentNotificationEnabled: true,
       autoTranscribeOnSave: false,
       richEditorEnabled: true,
@@ -82,18 +89,43 @@ describe("composeSettingsForSave", () => {
     expect(next.omniRouteVisionModel).toBe(DEFAULT_VISION_MODEL);
   });
 
-  it("always persists the default backend (no picker UI in Phase 1)", () => {
-    const next = composeSettingsForSave(baseForm, keys);
-    expect(next.llmBackend).toBe(DEFAULT_LLM_BACKEND);
-  });
 
   it("passes empty existing keys straight through (so saveSettings clears them)", () => {
     const next = composeSettingsForSave(baseForm, {
       omniRouteApiKey: "",
       karakeepApiKey: "",
+      localLlmApiKey: "",
     });
     expect(next.omniRouteApiKey).toBe("");
     expect(next.karakeepApiKey).toBe("");
+  });
+
+
+  it("threads the existing localLlmApiKey through unchanged (no picker UI yet)", () => {
+    const next = composeSettingsForSave(baseForm, {
+      ...keys,
+      localLlmApiKey: "local-secret",
+    });
+    expect(next.localLlmApiKey).toBe("local-secret");
+  });
+
+  it("passes the user's selected llmBackend through instead of forcing the default", () => {
+    const form: FormState = {
+      ...baseForm,
+      llmBackend: "local",
+      localLlmUrl: "http://127.0.0.1:8080",
+      localLlmModel: "gemma-4",
+    };
+    const result = composeSettingsForSave(form, {
+      omniRouteApiKey: "",
+      karakeepApiKey: "",
+      localLlmApiKey: "local-key",
+    });
+
+    expect(result.llmBackend).toBe("local");
+    expect(result.localLlmUrl).toBe("http://127.0.0.1:8080");
+    expect(result.localLlmModel).toBe("gemma-4");
+    expect(result.localLlmApiKey).toBe("local-key");
   });
 
   it("does not mutate the input form", () => {

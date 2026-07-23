@@ -106,17 +106,20 @@ export class OmniRouteError extends HttpError {
 }
 
 /** True for HTTP statuses that indicate a permanent failure — caller should
- * NOT enqueue these for automatic retry. */
+ * NOT enqueue these for automatic retry. Classifies via the shared HttpError
+ * base (not the OmniRouteError subclass specifically) so any backend's
+ * client — a second HttpError subclass, e.g. a local-LLM client — is
+ * classified correctly without dispatcher.ts needing per-backend predicates. */
 export function isPermanentError(err: unknown): boolean {
-  if (!(err instanceof OmniRouteError)) return false;
+  if (!(err instanceof HttpError)) return false;
   return err.status >= 400 && err.status < 500;
 }
 
-/** True when the request failed because OmniRoute is not configured (blank
+/** True when the request failed because the backend is not configured (blank
  * URL). Distinct from a transient network status-0 error: retrying/queuing is
  * pointless until the user sets a URL, so the caller should surface this. */
 export function isNotConfiguredError(err: unknown): boolean {
-  return err instanceof OmniRouteError && err.notConfigured;
+  return err instanceof HttpError && err.notConfigured;
 }
 
 // Hard ceiling on any single OmniRoute request. Kept short because an

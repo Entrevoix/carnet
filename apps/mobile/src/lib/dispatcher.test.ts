@@ -15,6 +15,9 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     omniRouteModel: "gpt-4o-mini",
     omniRouteVisionModel: "vision-model-xyz",
     llmBackend: "omniroute" as const,
+    localLlmUrl: "",
+    localLlmModel: "",
+    localLlmApiKey: "",
     persistentNotificationEnabled: false,
     autoTranscribeOnSave: false,
     richEditorEnabled: false,
@@ -38,6 +41,17 @@ vi.mock("./writer", () => ({
   upsertSection: vi.fn(),
 }));
 
+vi.mock("./localLlm", () => ({
+  enrichIdea: vi.fn(),
+  enrichJournal: vi.fn(),
+  enrichPerson: vi.fn(),
+  enrichSharedImage: vi.fn(),
+  enrichSharedLink: vi.fn(),
+  promoteIdea: vi.fn(),
+  ocrCardViaVision: vi.fn(),
+  listModels: vi.fn(),
+}));
+
 vi.mock("./audioTranscribeOnDevice", () => ({
   transcribeOnDevice: vi.fn(),
 }));
@@ -49,15 +63,11 @@ globalThis.fetch = fetchMock as unknown as typeof fetch;
 // backend it wraps — so we can assert reference identity and request parity.
 import {
   enrichIdea,
-  enrichJournal,
-  enrichPerson,
-  enrichSharedImage,
-  enrichSharedLink,
-  promoteIdea,
   isPermanentError,
   isNotConfiguredError,
 } from "./dispatcher";
 import * as omniroute from "./omniroute";
+import * as localLlm from "./localLlm";
 import { OmniRouteError } from "./omniroute";
 import { getSettings } from "./settings";
 
@@ -90,19 +100,30 @@ beforeEach(() => {
 // whatever the online capture screens and the offline drain (queue.ts) invoke
 // through the dispatcher is literally the omniroute implementation.
 
-describe("dispatcher re-export identity (online + drain parity)", () => {
-  it("re-exports the exact same six enrich functions as omniroute", () => {
-    expect(enrichIdea).toBe(omniroute.enrichIdea);
-    expect(enrichJournal).toBe(omniroute.enrichJournal);
-    expect(enrichPerson).toBe(omniroute.enrichPerson);
-    expect(enrichSharedImage).toBe(omniroute.enrichSharedImage);
-    expect(enrichSharedLink).toBe(omniroute.enrichSharedLink);
-    expect(promoteIdea).toBe(omniroute.promoteIdea);
+describe("dispatcher backend routing", () => {
+  it("routes to omniroute's enrichIdea when llmBackend is 'omniroute' (the default)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse("---\nstatus: seedling\n---\n# Idea\n\nbody\n"),
+    );
+
+    await enrichIdea("route to omniroute");
+
+    expect(localLlm.enrichIdea).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // omniroute's real HTTP path fired
   });
 
-  it("re-exports the exact same error predicates as omniroute", () => {
-    expect(isPermanentError).toBe(omniroute.isPermanentError);
-    expect(isNotConfiguredError).toBe(omniroute.isNotConfiguredError);
+  it("routes to localLlm's enrichIdea when llmBackend is 'local'", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce({ ...BASE_SETTINGS, llmBackend: "local" });
+    vi.mocked(localLlm.enrichIdea).mockResolvedValueOnce({
+      markdown: "# from local\n",
+      model: "local-model",
+    });
+
+    const result = await enrichIdea("route to local");
+
+    expect(localLlm.enrichIdea).toHaveBeenCalledWith("route to local");
+    expect(fetchMock).not.toHaveBeenCalled(); // omniroute's HTTP path did NOT fire
+    expect(result.markdown).toBe("# from local\n");
   });
 });
 

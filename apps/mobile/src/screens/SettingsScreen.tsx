@@ -23,9 +23,11 @@ import {
   dismissMigrationBanner,
   getSettings,
   hasKarakeepApiKey,
+  hasLocalLlmApiKey,
   hasOmniRouteApiKey,
   saveSettings,
   setKarakeepApiKey,
+  setLocalLlmApiKey,
   setOmniRouteApiKey,
   shouldShowMigrationBanner,
 } from "../lib/settings";
@@ -36,6 +38,7 @@ import {
 } from "../lib/settingsForm";
 import { filterAndSplitModels } from "../lib/modelBrowser";
 import { listModels } from "../lib/dispatcher";
+import { healthCheck } from "../lib/localLlm";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { caretProps, spacing, useCarnetTheme } from "../lib/theme";
 import {
@@ -71,6 +74,12 @@ export default function SettingsScreen() {
   const [karakeepKeyConfigured, setKarakeepKeyConfigured] =
     useState<boolean>(false);
   const [pendingKarakeepKey, setPendingKarakeepKey] = useState<string>("");
+  /** Local-LLM key state — mirrors the OmniRoute/Karakeep key pattern. */
+  const [localLlmKeyConfigured, setLocalLlmKeyConfigured] = useState<boolean>(false);
+  const [pendingLocalLlmKey, setPendingLocalLlmKey] = useState<string>("");
+  /** Test Connection state for the Local LLM section. */
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionResult, setConnectionResult] = useState<"ok" | "unreachable" | null>(null);
   const [saved, setSaved] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
   /** Surfaced via Snackbar when the SAF folder picker fails. Previous
@@ -101,10 +110,11 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     void (async () => {
-      const [s, hasKey, hasKkKey, banner] = await Promise.all([
+      const [s, hasKey, hasKkKey, hasLocalKey, banner] = await Promise.all([
         getSettings(),
         hasOmniRouteApiKey(),
         hasKarakeepApiKey(),
+        hasLocalLlmApiKey(),
         shouldShowMigrationBanner(),
       ]);
       // Source-of-truth for the notification toggle is native
@@ -136,6 +146,9 @@ export default function SettingsScreen() {
         omniRouteUrl: s.omniRouteUrl,
         omniRouteModel: s.omniRouteModel,
         omniRouteVisionModel: s.omniRouteVisionModel,
+        llmBackend: s.llmBackend,
+        localLlmUrl: s.localLlmUrl,
+        localLlmModel: s.localLlmModel,
         persistentNotificationEnabled: initialNotificationEnabled,
         autoTranscribeOnSave: s.autoTranscribeOnSave,
         richEditorEnabled: s.richEditorEnabled,
@@ -146,6 +159,7 @@ export default function SettingsScreen() {
       });
       setKeyConfigured(hasKey);
       setKarakeepKeyConfigured(hasKkKey);
+      setLocalLlmKeyConfigured(hasLocalKey);
       setShowBanner(banner);
     })();
   }, []);
@@ -187,6 +201,11 @@ export default function SettingsScreen() {
         setPendingKarakeepKey("");
         setKarakeepKeyConfigured(true);
       }
+      if (pendingLocalLlmKey.length > 0) {
+        await setLocalLlmApiKey(pendingLocalLlmKey);
+        setPendingLocalLlmKey("");
+        setLocalLlmKeyConfigured(true);
+      }
       setSaved(true);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -212,6 +231,17 @@ export default function SettingsScreen() {
       await setKarakeepApiKey("");
       setKarakeepKeyConfigured(false);
       setPendingKarakeepKey("");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPickerError(`Failed to clear the key: ${msg.slice(0, 120)}`);
+    }
+  };
+
+  const clearLocalLlmKey = async () => {
+    try {
+      await setLocalLlmApiKey("");
+      setLocalLlmKeyConfigured(false);
+      setPendingLocalLlmKey("");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setPickerError(`Failed to clear the key: ${msg.slice(0, 120)}`);
@@ -327,6 +357,15 @@ export default function SettingsScreen() {
     }
   };
 
+  const testLocalLlmConnection = async () => {
+    if (!form) return;
+    setTestingConnection(true);
+    setConnectionResult(null);
+    const ok = await healthCheck(form.localLlmUrl);
+    setConnectionResult(ok ? "ok" : "unreachable");
+    setTestingConnection(false);
+  };
+
   const pickModel = (id: string) => {
     if (!form) return;
     if (browseTarget === "vision") {
@@ -371,95 +410,212 @@ export default function SettingsScreen() {
       />
 
       <Text variant="titleMedium" style={styles.sectionTitle}>
-        Connection
+        Enrichment backend
       </Text>
       <HelperText type="info" visible>
-        Where AI enrichment runs — your self-hosted OmniRoute endpoint.
+        Where AI enrichment runs. OmniRoute is your self-hosted cloud-routed
+        proxy; Local runs entirely on-device (or LAN) with no internet
+        required.
       </HelperText>
-      <TextInput
-        {...caretProps(theme)}
-        label="OmniRoute URL"
-        mode="outlined"
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="url"
-        value={form.omniRouteUrl}
-        onChangeText={(v) => update({ omniRouteUrl: v })}
+      <SegmentedButtons
+        value={form.llmBackend}
+        onValueChange={(v) => update({ llmBackend: v as FormState["llmBackend"] })}
+        buttons={[
+          { value: "omniroute", label: "OmniRoute", icon: "cloud-outline" },
+          { value: "local", label: "Local", icon: "cellphone-off" },
+        ]}
+        style={{ marginBottom: spacing.sm }}
       />
-      <HelperText type="info" visible>
-        OmniRoute base URL — must start with https:// (e.g. https://llm.grepon.cc)
-      </HelperText>
 
-      <TextInput
-        {...caretProps(theme)}
-        label={keyConfigured && pendingKey.length === 0 ? "OmniRoute API key (configured)" : "OmniRoute API key"}
-        mode="outlined"
-        autoCapitalize="none"
-        autoCorrect={false}
-        secureTextEntry
-        placeholder={keyConfigured ? "•••• configured — tap to replace" : "sk-..."}
-        value={pendingKey}
-        onChangeText={setPendingKey}
-      />
-      <HelperText type="info" visible>
-        Stored in the secure keychain. The existing key is never shown again.
-      </HelperText>
-      {keyConfigured && (
-        <Button mode="text" compact onPress={clearKey} style={styles.clearKey}>
-          Clear key
-        </Button>
+      {form.llmBackend === "omniroute" && (
+        <>
+          <Text variant="titleMedium" style={styles.sectionTitle}>
+            Connection
+          </Text>
+          <HelperText type="info" visible>
+            Where AI enrichment runs — your self-hosted OmniRoute endpoint.
+          </HelperText>
+          <TextInput
+            {...caretProps(theme)}
+            label="OmniRoute URL"
+            mode="outlined"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            value={form.omniRouteUrl}
+            onChangeText={(v) => update({ omniRouteUrl: v })}
+          />
+          <HelperText type="info" visible>
+            OmniRoute base URL — must start with https:// (e.g. https://llm.grepon.cc)
+          </HelperText>
+
+          <TextInput
+            {...caretProps(theme)}
+            label={keyConfigured && pendingKey.length === 0 ? "OmniRoute API key (configured)" : "OmniRoute API key"}
+            mode="outlined"
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            placeholder={keyConfigured ? "•••• configured — tap to replace" : "sk-..."}
+            value={pendingKey}
+            onChangeText={setPendingKey}
+          />
+          <HelperText type="info" visible>
+            Stored in the secure keychain. The existing key is never shown again.
+          </HelperText>
+          {keyConfigured && (
+            <Button mode="text" compact onPress={clearKey} style={styles.clearKey}>
+              Clear key
+            </Button>
+          )}
+
+          <TextInput
+            {...caretProps(theme)}
+            label="Model"
+            mode="outlined"
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={form.omniRouteModel}
+            onChangeText={(v) => update({ omniRouteModel: v })}
+            placeholder={DEFAULT_OMNIROUTE_MODEL}
+          />
+          <HelperText type="info" visible>
+            OmniRoute model — tap Browse to pick from your provider's catalog
+          </HelperText>
+          <Button
+            mode="text"
+            icon="format-list-bulleted"
+            compact
+            onPress={() => openBrowse("chat")}
+            disabled={!form.omniRouteUrl.trim()}
+            style={styles.browseBtn}
+          >
+            Browse available models
+          </Button>
+
+          <TextInput
+            {...caretProps(theme)}
+            label="Vision model"
+            mode="outlined"
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={form.omniRouteVisionModel}
+            onChangeText={(v) => update({ omniRouteVisionModel: v })}
+            placeholder={DEFAULT_VISION_MODEL}
+          />
+          <HelperText type="info" visible>
+            Vision-capable model used when you share a photo or image into carnet.
+            Held separate from the chat model so a text-only model can't silently
+            drop the image. Must handle image input (e.g. gpt-4o-mini, Gemini
+            Flash, Claude). Tap Browse to pick from your provider's catalog.
+          </HelperText>
+          <Button
+            mode="text"
+            icon="format-list-bulleted"
+            compact
+            onPress={() => openBrowse("vision")}
+            disabled={!form.omniRouteUrl.trim()}
+            style={styles.browseBtn}
+          >
+            Browse available models
+          </Button>
+        </>
       )}
 
-      <TextInput
-        {...caretProps(theme)}
-        label="Model"
-        mode="outlined"
-        autoCapitalize="none"
-        autoCorrect={false}
-        value={form.omniRouteModel}
-        onChangeText={(v) => update({ omniRouteModel: v })}
-        placeholder={DEFAULT_OMNIROUTE_MODEL}
-      />
-      <HelperText type="info" visible>
-        OmniRoute model — tap Browse to pick from your provider's catalog
-      </HelperText>
-      <Button
-        mode="text"
-        icon="format-list-bulleted"
-        compact
-        onPress={() => openBrowse("chat")}
-        disabled={!form.omniRouteUrl.trim()}
-        style={styles.browseBtn}
-      >
-        Browse available models
-      </Button>
+      {form.llmBackend === "local" && (
+        <View style={styles.notificationSection}>
+          <Text variant="titleMedium" style={styles.promptSectionTitle}>
+            Local LLM
+          </Text>
+          <HelperText type="info" visible>
+            A loopback or LAN OpenAI-compatible server (e.g. Relais). Blank
+            URL defaults to http://127.0.0.1:8080 — no setup needed if Relais
+            is already running on this device.
+          </HelperText>
+          <TextInput
+            {...caretProps(theme)}
+            label="Local LLM URL"
+            mode="outlined"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            value={form.localLlmUrl}
+            onChangeText={(v) => update({ localLlmUrl: v })}
+            placeholder="http://127.0.0.1:8080"
+          />
+          <HelperText type="info" visible>
+            Local LLM base URL — loopback (127.0.0.1) or LAN addresses are
+            allowed over plain http://; anything else must use https://.
+          </HelperText>
 
-      <TextInput
-        {...caretProps(theme)}
-        label="Vision model"
-        mode="outlined"
-        autoCapitalize="none"
-        autoCorrect={false}
-        value={form.omniRouteVisionModel}
-        onChangeText={(v) => update({ omniRouteVisionModel: v })}
-        placeholder={DEFAULT_VISION_MODEL}
-      />
-      <HelperText type="info" visible>
-        Vision-capable model used when you share a photo or image into carnet.
-        Held separate from the chat model so a text-only model can't silently
-        drop the image. Must handle image input (e.g. gpt-4o-mini, Gemini
-        Flash, Claude). Tap Browse to pick from your provider's catalog.
-      </HelperText>
-      <Button
-        mode="text"
-        icon="format-list-bulleted"
-        compact
-        onPress={() => openBrowse("vision")}
-        disabled={!form.omniRouteUrl.trim()}
-        style={styles.browseBtn}
-      >
-        Browse available models
-      </Button>
+          <TextInput
+            {...caretProps(theme)}
+            label={
+              localLlmKeyConfigured && pendingLocalLlmKey.length === 0
+                ? "Local LLM API key (configured)"
+                : "Local LLM API key"
+            }
+            mode="outlined"
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            placeholder={
+              localLlmKeyConfigured
+                ? "•••• configured — tap to replace"
+                : "optional — leave blank for an unauthenticated loopback server"
+            }
+            value={pendingLocalLlmKey}
+            onChangeText={setPendingLocalLlmKey}
+          />
+          <HelperText type="info" visible>
+            Stored in the secure keychain. The existing key is never shown
+            again. Most loopback deployments (e.g. Relais on this device)
+            need no key at all.
+          </HelperText>
+          {localLlmKeyConfigured && (
+            <Button mode="text" compact onPress={clearLocalLlmKey} style={styles.clearKey}>
+              Clear key
+            </Button>
+          )}
+
+          <TextInput
+            {...caretProps(theme)}
+            label="Model"
+            mode="outlined"
+            autoCapitalize="none"
+            autoCorrect={false}
+            value={form.localLlmModel}
+            onChangeText={(v) => update({ localLlmModel: v })}
+            placeholder="e.g. litert-community/gemma-4-E4B-it-litert-lm"
+          />
+          <HelperText type="info" visible>
+            One model handles text, vision, and business-card OCR for the
+            local backend — no separate vision-model field.
+          </HelperText>
+
+          <Button
+            mode="text"
+            icon="lan-connect"
+            compact
+            onPress={() => void testLocalLlmConnection()}
+            loading={testingConnection}
+            disabled={testingConnection}
+            style={styles.browseBtn}
+          >
+            Test connection
+          </Button>
+          {connectionResult === "ok" && (
+            <HelperText type="info" visible>
+              ✓ Reachable
+            </HelperText>
+          )}
+          {connectionResult === "unreachable" && (
+            <HelperText type="error" visible>
+              Unreachable — check the URL and that the server is running.
+            </HelperText>
+          )}
+        </View>
+      )}
 
       <Text variant="titleMedium" style={styles.sectionTitle}>
         Storage
@@ -782,11 +938,13 @@ export default function SettingsScreen() {
 async function currentKeysOrEmpty(): Promise<{
   omniRouteApiKey: string;
   karakeepApiKey: string;
+  localLlmApiKey: string;
 }> {
   const s = await getSettings();
   return {
     omniRouteApiKey: s.omniRouteApiKey ?? "",
     karakeepApiKey: s.karakeepApiKey ?? "",
+    localLlmApiKey: s.localLlmApiKey ?? "",
   };
 }
 

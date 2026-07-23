@@ -18,7 +18,19 @@ vi.mock("./settings", () => ({
     omniRouteUrl: "",
     omniRouteApiKey: "",
     omniRouteModel: "",
+    omniRouteVisionModel: "",
+    llmBackend: "omniroute",
+    localLlmUrl: "",
+    localLlmModel: "",
+    localLlmApiKey: "",
     captureFolderPath: "",
+    persistentNotificationEnabled: false,
+    autoTranscribeOnSave: false,
+    richEditorEnabled: false,
+    previewBeforeSave: false,
+    promptOverrides: {},
+    karakeepUrl: "",
+    karakeepApiKey: "",
   }),
 }));
 
@@ -83,6 +95,19 @@ vi.mock("./omniroute", () => ({
   enrichIdea: (...args: unknown[]) => enrichIdeaMock(...args),
   isPermanentError: (...args: unknown[]) => isPermanentErrorMock(...args),
   isNotConfiguredError: (...args: unknown[]) => isNotConfiguredErrorMock(...args),
+}));
+
+// ── Mock localLlm (dispatcher now imports it, even if tests use omniroute path) ─
+
+vi.mock("./localLlm", () => ({
+  enrichIdea: vi.fn(),
+  enrichJournal: vi.fn(),
+  enrichPerson: vi.fn(),
+  enrichSharedImage: vi.fn(),
+  enrichSharedLink: vi.fn(),
+  promoteIdea: vi.fn(),
+  ocrCardViaVision: vi.fn(),
+  listModels: vi.fn(),
 }));
 
 import {

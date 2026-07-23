@@ -9,6 +9,7 @@ const SETTINGS_KEY_V1 = "carnet:settings:v1";
 const LEGACY_NAVETTED_TOKEN_KEY = "carnet_navetted_token";
 const OMNIROUTE_API_KEY = "carnet_omniroute_api_key";
 const KARAKEEP_API_KEY = "carnet_karakeep_api_key";
+const LOCAL_LLM_API_KEY = "carnet_local_llm_api_key";
 /** Flag: user dismissed the navetted→OmniRoute migration banner. */
 const MIGRATION_BANNER_KEY = "carnet:migration_banner_dismissed:v1";
 /** Flag: legacy SecureStore secrets purged. Set to "1" after the one-time
@@ -23,14 +24,16 @@ export const DEFAULT_OMNIROUTE_MODEL = "openrouter/openai/gpt-4o-mini";
 export const DEFAULT_VISION_MODEL = "openrouter/openai/gpt-4o-mini";
 
 /**
- * Enrichment backend selector (Stage 2 / branch B7). `"omniroute"` is the
- * shipped default and the only backend wired in Phase 1; `"on-device"` is
- * reserved for the pluggable local-inference backend (native module + model
- * download, later phases). Persisted as a plain string in the AsyncStorage
+ * Enrichment backend selector (Stage 2 / branch B7, extended for the
+ * local-LLM backend). `"omniroute"` is the shipped default; `"local"` routes
+ * to a loopback/LAN OpenAI-compatible server (e.g. Relais) for a fully
+ * disconnected capture flow; `"on-device"` is reserved for the pluggable
+ * native-inference backend (unbuilt — see on-device-backend.prd.md) and has
+ * no picker UI entry yet. Persisted as a plain string in the AsyncStorage
  * settings blob — non-secret, so old blobs without the key take the default
  * via the `{...DEFAULT_PERSISTED, ...parsed}` spread in readPersisted.
  */
-export type LlmBackend = "omniroute" | "on-device";
+export type LlmBackend = "omniroute" | "on-device" | "local";
 
 /** Default backend — the shipped OmniRoute client. */
 export const DEFAULT_LLM_BACKEND: LlmBackend = "omniroute";
@@ -58,6 +61,22 @@ export interface Settings {
    * from the vestigial transcription-model field (transcription is on-device
    * now, so that config was dead). */
   omniRouteVisionModel: string;
+  /** Base URL for the local-LLM backend (e.g. a loopback Relais server).
+   * Blank means "use the default loopback port" — unlike omniRouteUrl, a
+   * blank value does NOT mean "not configured": the local backend's client
+   * (localLlm.ts) falls back to http://127.0.0.1:8080 rather than throwing,
+   * since the whole point is a zero-setup disconnected flow. */
+  localLlmUrl: string;
+  /** Model name for the local-LLM backend — used for text, vision, AND
+   * audio-adjacent calls (unlike OmniRoute's separate chat/vision split):
+   * a local single-model deployment typically has one model handling
+   * everything the user configured it with. */
+  localLlmModel: string;
+  /** Local-LLM API key (Bearer). Held in SecureStore, never persisted to the
+   * AsyncStorage settings blob — mirrors omniRouteApiKey/karakeepApiKey.
+   * Optional in practice: Relais's loopback port is unauthenticated, but the
+   * field stays available for a LAN-facing/authenticated deployment. */
+  localLlmApiKey: string;
   /** Which enrichment backend serves captures. Default `"omniroute"`; the
    * dispatcher (dispatcher.ts) routes on this. Only `"omniroute"` is wired in
    * Phase 1 — see {@link LlmBackend}. */
@@ -100,6 +119,8 @@ interface PersistedSettings {
   omniRouteUrl: string;
   omniRouteModel: string;
   omniRouteVisionModel: string;
+  localLlmUrl: string;
+  localLlmModel: string;
   llmBackend: LlmBackend;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
@@ -121,6 +142,8 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   omniRouteUrl: "",
   omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
   omniRouteVisionModel: DEFAULT_VISION_MODEL,
+  localLlmUrl: "",
+  localLlmModel: "",
   llmBackend: DEFAULT_LLM_BACKEND,
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
@@ -168,6 +191,8 @@ async function readPersisted(): Promise<PersistedSettings> {
         omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
         omniRouteVisionModel: DEFAULT_VISION_MODEL,
         llmBackend: DEFAULT_LLM_BACKEND,
+        localLlmUrl: "",
+        localLlmModel: "",
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
@@ -190,6 +215,8 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     omniRouteModel: settings.omniRouteModel,
     omniRouteVisionModel: settings.omniRouteVisionModel,
     llmBackend: settings.llmBackend,
+    localLlmUrl: settings.localLlmUrl,
+    localLlmModel: settings.localLlmModel,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -225,6 +252,8 @@ export async function getSettings(): Promise<Settings> {
     (await SecureStore.getItemAsync(OMNIROUTE_API_KEY)) ?? "";
   const karakeepApiKey =
     (await SecureStore.getItemAsync(KARAKEEP_API_KEY)) ?? "";
+  const localLlmApiKey =
+    (await SecureStore.getItemAsync(LOCAL_LLM_API_KEY)) ?? "";
 
   return {
     omniRouteUrl: persisted.omniRouteUrl,
@@ -232,6 +261,9 @@ export async function getSettings(): Promise<Settings> {
     omniRouteModel: persisted.omniRouteModel,
     omniRouteVisionModel: persisted.omniRouteVisionModel,
     llmBackend: persisted.llmBackend,
+    localLlmUrl: persisted.localLlmUrl,
+    localLlmModel: persisted.localLlmModel,
+    localLlmApiKey,
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
     autoTranscribeOnSave: persisted.autoTranscribeOnSave,
     richEditorEnabled: persisted.richEditorEnabled,
@@ -249,6 +281,8 @@ export async function saveSettings(settings: Settings): Promise<void> {
     omniRouteModel: settings.omniRouteModel,
     omniRouteVisionModel: settings.omniRouteVisionModel,
     llmBackend: settings.llmBackend,
+    localLlmUrl: settings.localLlmUrl,
+    localLlmModel: settings.localLlmModel,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -266,6 +300,11 @@ export async function saveSettings(settings: Settings): Promise<void> {
     await SecureStore.setItemAsync(KARAKEEP_API_KEY, settings.karakeepApiKey);
   } else {
     await SecureStore.deleteItemAsync(KARAKEEP_API_KEY);
+  }
+  if (settings.localLlmApiKey) {
+    await SecureStore.setItemAsync(LOCAL_LLM_API_KEY, settings.localLlmApiKey);
+  } else {
+    await SecureStore.deleteItemAsync(LOCAL_LLM_API_KEY);
   }
 }
 
@@ -312,6 +351,25 @@ export async function setKarakeepApiKey(value: string): Promise<void> {
     await SecureStore.setItemAsync(KARAKEEP_API_KEY, value.trim());
   } else {
     await SecureStore.deleteItemAsync(KARAKEEP_API_KEY);
+  }
+}
+
+/**
+ * True if there is a local-LLM API key stored in SecureStore. Used by the
+ * settings UI to render a "•••• configured" placeholder rather than reading
+ * the key into React state for display.
+ */
+export async function hasLocalLlmApiKey(): Promise<boolean> {
+  const key = await SecureStore.getItemAsync(LOCAL_LLM_API_KEY);
+  return Boolean(key && key.trim().length > 0);
+}
+
+/** Write-only setter for the local-LLM API key. Used by the settings UI. */
+export async function setLocalLlmApiKey(value: string): Promise<void> {
+  if (value && value.trim().length > 0) {
+    await SecureStore.setItemAsync(LOCAL_LLM_API_KEY, value.trim());
+  } else {
+    await SecureStore.deleteItemAsync(LOCAL_LLM_API_KEY);
   }
 }
 
