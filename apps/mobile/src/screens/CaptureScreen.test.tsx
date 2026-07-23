@@ -93,6 +93,8 @@ vi.mock("../lib/vault", () => ({
 import CaptureScreen from "./CaptureScreen";
 import { loadDraft, saveDraft, clearDraft } from "../lib/captureDraft";
 import { writeRawIdea, enrichIdeaInPlace } from "../lib/ideaSaveFirst";
+import { getSettings } from "../lib/settings";
+import { enrichIdea } from "../lib/dispatcher";
 import { recordCapture } from "../lib/storage";
 import { upsertNoteInIndex } from "../lib/vault";
 
@@ -216,5 +218,33 @@ describe("CaptureScreen (idea)", () => {
     // The raw note was still written and recorded before the failure.
     expect(writeRawIdea).toHaveBeenCalled();
     expect(recordCapture).toHaveBeenCalled();
+  });
+
+  it("submitting-phase label names the configured backend, not a hardcoded OmniRoute", async () => {
+    // Blocking-preview path (previewBeforeSave: true) calls enrichIdea
+    // directly, which is where the "submitting" phase is actually visible —
+    // the default save-first path resolves too fast in tests to observe it.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      previewBeforeSave: true,
+      llmBackend: "local",
+    } as Awaited<ReturnType<typeof getSettings>>);
+    let resolveEnrich!: (v: { markdown: string; model: string }) => void;
+    vi.mocked(enrichIdea).mockReturnValueOnce(
+      new Promise((res) => {
+        resolveEnrich = res;
+      }),
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    expect(
+      await screen.findByText("Local LLM is structuring the note…"),
+    ).toBeTruthy();
+    expect(screen.queryByText("OmniRoute is structuring the note…")).toBeNull();
+
+    resolveEnrich({ markdown: "# My Idea\n\nbody\n", model: "local-model" });
   });
 });

@@ -23,7 +23,7 @@ import {
   CapturePreviewCard,
   CaptureSavedCard,
 } from "../components/CaptureViews";
-import { getSettings } from "../lib/settings";
+import { getSettings, type LlmBackend } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
 import {
   enrichIdea,
@@ -138,6 +138,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // note is written immediately, enrichment updates it in place). Loaded from
   // settings on mount; Journal/Person never consult it.
   const [previewBeforeSave, setPreviewBeforeSave] = useState(false);
+  // Which backend the submitting-phase label names — read once alongside
+  // previewBeforeSave so "OmniRoute is structuring…" doesn't show while a
+  // capture is actually enriching via the local backend (or vice versa).
+  const [llmBackend, setLlmBackend] = useState<LlmBackend>("omniroute");
   // Saved-screen state for the save-first Idea failure paths (mirrors photo):
   // `degradedReason` = permanent enrichment failure (raw note kept, Re-enrich
   // offered); `enrichNotice` = an info line (queued offline, or conflict).
@@ -201,7 +205,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
       .catch(() => {});
     // Load the save-first preference (default false = save-first).
     void getSettings()
-      .then((s) => setPreviewBeforeSave(s.previewBeforeSave))
+      .then((s) => {
+        setPreviewBeforeSave(s.previewBeforeSave);
+        setLlmBackend(s.llmBackend);
+      })
       .catch(() => {});
   }, []);
 
@@ -758,7 +765,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
         <View style={styles.loading}>
           <ActivityIndicator animating size="large" />
           <Text variant="bodyMedium" style={styles.loadingText}>
-            OmniRoute is structuring the note…
+            {llmBackend === "local"
+              ? "Local LLM is structuring the note…"
+              : "OmniRoute is structuring the note…"}
           </Text>
         </View>
       )}
