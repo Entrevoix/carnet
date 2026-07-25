@@ -11,8 +11,6 @@
   "scripts": {
     "build:shared": "npm -w @carnet/shared run build",
     "mobile": "npm -w @carnet/mobile start",
-    "desktop": "npm -w @carnet/desktop run dev",
-    "desktop:tauri": "npm -w @carnet/desktop run tauri dev",
     "postinstall": "patch-package"
   },
   "devDependencies": {

@@ -26,14 +26,14 @@
 - `expo-secure-store` — OmniRoute + Karakeep API keys
 - `expo-document-picker` / `expo-sharing` — attachments
 
-## Desktop (`apps/desktop`)
-Tauri (Rust) + React + `react-router-dom` + `@tauri-apps/api`; consumes `@carnet/shared`.
+(`apps/desktop`, a Tauri + React stub, was deprecated and removed 2026-07-25 — see
+`.claude/PRPs/plans/completed/desktop-fate.plan.md`.)
 
 ## Shared
-`@carnet/shared` — types + markdown helpers; imported by mobile and desktop.
+`@carnet/shared` — types + markdown helpers; imported by mobile.
 
 ## CI
-`.github/workflows/ci.yml` — jobs: **shared → mobile · desktop · mobile-android (parallel) →
+`.github/workflows/ci.yml` — jobs: **shared → mobile · mobile-android (parallel) →
 gate** (required check) + advisory **apk** (release-signed artifact, 14-day retention).
 `mobile-android` runs Expo prebuild + `gradlew :app:compileDebugKotlin` (catches native/config-
 plugin regressions). Shared Android toolchain via `.github/actions/android-toolchain`.

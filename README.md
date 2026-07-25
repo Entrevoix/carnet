@@ -67,7 +67,6 @@ Any note can optionally be pushed to a self-hosted **Karakeep** instance from it
 carnet/
   apps/
     mobile/          Expo 54 + React Native + TypeScript
-    desktop/         Tauri v2 stub (placeholder UI, fate deferred to v0.3)
   packages/
     shared/          @carnet/shared — note types + markdown helpers
   docs/
@@ -116,10 +115,6 @@ Open the **Settings** screen in the app and set:
 ### Syncthing sync
 
 See [docs/sync-setup.md](docs/sync-setup.md) for step-by-step instructions to pair the Android capture folder with `~/Obsidian/Carnet/` on your workstation.
-
-## Desktop app
-
-`apps/desktop` is a Tauri v2 placeholder stub. Its fate (rebuild or deprecate) will be decided after v0.2 mobile dogfooding. See TODO.md.
 
 ## License
 

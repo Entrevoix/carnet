@@ -65,7 +65,10 @@ branches shipped (B2 folded via `visionModel`, gate passed 2026-07-12).
 - [ ] **Card auto-detection** — Current button-press OCR flow works. Auto-detect when camera sees a business card is polish.
 - [ ] **Cross-capture linking** — Person ↔ journal associations via prompt-side linking. Iterate after v0.2 ships.
 - [ ] **Multi-vault support** — Single-vault solves the actual problem. Premature to add vault switching now.
-- [ ] **Desktop app fate** — `apps/desktop` is a Tauri v2 stub. Decide rebuild or deprecate after v0.2 mobile dogfooding.
+- [x] **Desktop app fate** — Decided 2026-07-25: deprecate. `apps/desktop` (Tauri v2 stub,
+  zero commits since 2026-06-04, zero tests, no usage signal) removed entirely, along with
+  its CI job. See `.claude/PRPs/plans/completed/desktop-fate.plan.md` for the full
+  rationale if desktop-capture demand ever resurfaces.
 - [ ] **On-device Gemma backend, Phases 2–4** — native module + model download. B7 Phase 1
   (shipped above) built the dispatcher seam this needs; the native-code phases (add a
   `localLlm.ts` sibling behind the seam) are still unstarted. Trade-offs unchanged:

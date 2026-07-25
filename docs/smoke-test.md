@@ -36,7 +36,6 @@ device-only (voice/OCR, real share-sheet, Syncthing, Karakeep network calls).
 - [ ] Syncthing pairs the device folder `/Documents/carnet/` with the workstation
       vault `~/Obsidian/Carnet/` — see [sync-setup.md](sync-setup.md)
 - [ ] *(Optional)* A reachable Karakeep instance + API key, for the export tests
-- [ ] *(Optional)* Workstation has the Tauri prerequisites for desktop testing
 
 ## First launch & configuration
 
@@ -193,14 +192,6 @@ non-Latin H1 handling via `writer.test.ts` and `test/fixtures/repro.test.ts`)_
 - [ ] Capture another idea that resolves to the same slug → `Ideas/memoire-flux-2.md`
       (collision suffix). The original file is untouched.
 
-## Desktop (optional)
-
-`apps/desktop` is a **Tauri v2 placeholder stub** (see README / TODO.md) — its
-capture path is not part of the mobile smoke flow.
-
-- [ ] `npm run desktop:tauri` opens the Carnet window without error.
-- [ ] The LLM-gateway token is held in the OS keychain via the Tauri commands
-      (`get/set/delete_navetted_token`), not plaintext.
 
 ## When something fails
 

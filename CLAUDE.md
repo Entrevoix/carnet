@@ -1,8 +1,11 @@
 # CLAUDE.md — Carnet
 
 Mobile-first knowledge capture for Obsidian. Android app (Expo/React Native) writes plain
-Markdown into a Syncthing-watched folder; a Tauri desktop stub exists but is deferred (see
-`TODO.md`). **No server, no database** — the vault (plain files) is the source of truth.
+Markdown into a Syncthing-watched folder. **No server, no database** — the vault (plain
+files) is the source of truth. (A Tauri desktop stub existed as a placeholder from
+2026-05 through 2026-07 and was formally deprecated and removed 2026-07-25 —
+`.claude/PRPs/plans/completed/desktop-fate.plan.md` — after seven weeks with zero commits,
+zero tests, and no usage signal; see that doc if desktop capture demand ever resurfaces.)
 
 Read first, in this order, before making changes:
 1. This file (build/test commands, hard constraints).
@@ -16,19 +19,14 @@ Read first, in this order, before making changes:
 
 ## Workspaces (npm workspaces monorepo)
 - `apps/mobile` — Expo SDK 54 / React Native 0.81 / TypeScript — the primary surface.
-- `apps/desktop` — Tauri v2 (Rust) + React — intentional placeholder stub; **has zero real
-  tests today** (`test` script uses `--passWithNoTests`). Don't invest effort here without
-  checking `TODO.md`'s "Desktop app fate" item first.
-- `packages/shared` (`@carnet/shared`) — TS types + markdown helpers used by both apps.
-  Build this first: mobile/desktop import it directly.
+- `packages/shared` (`@carnet/shared`) — TS types + markdown helpers used by `apps/mobile`.
+  Build this first: mobile imports it directly.
 
 ## Commands (verified against package.json — do not invent others)
 ```bash
 npm ci                      # install (root)
-npm run build:shared        # build @carnet/shared — required before mobile/desktop work
+npm run build:shared        # build @carnet/shared — required before mobile work
 npm run mobile               # expo start (Metro dev server)
-npm run desktop               # desktop app, Vite dev (web) mode
-npm run desktop:tauri         # desktop app, Tauri native-shell dev mode
 
 npm -w @carnet/mobile run typecheck   # tsc --noEmit (apps/mobile)
 npm -w @carnet/mobile run lint        # eslint (apps/mobile only — 3 rules, see below)
@@ -36,7 +34,6 @@ npm -w @carnet/mobile test            # vitest run (apps/mobile)
 npm -w @carnet/mobile run verify:capture-flow  # fixture-backed capture-flow subset (fast repro gate)
 npm -w @carnet/mobile run android              # build + run debug app on attached device
 npm -w @carnet/mobile run android:release      # build + install release-signed APK
-npm -w @carnet/desktop test           # vitest run --passWithNoTests (apps/desktop — no real tests exist yet)
 npm -w @carnet/shared run typecheck   # tsc --noEmit (packages/shared)
 npm -w @carnet/shared test            # vitest run (packages/shared)
 ```
@@ -45,9 +42,9 @@ rules** (`react-hooks/rules-of-hooks`, `react-hooks/exhaustive-deps` as warn, ty
 `@typescript-eslint/no-floating-promises` with `ignoreVoid`), each mapped to a defect
 class that actually shipped here; scope was change-controlled via
 `.claude/PRPs/plans/completed/minimal-eslint-scope.plan.md` (approved 2026-07-18).
-**Do not widen the rule set, add stylistic/formatting rules, or lint
-desktop/shared without the same scope discussion.** Gates per workspace remain
-`tsc --noEmit` + vitest (+ this lint, in the `mobile` CI job).
+**Do not widen the rule set, add stylistic/formatting rules, or lint shared without the
+same scope discussion.** Gates per workspace remain `tsc --noEmit` + vitest (+ this lint,
+in the `mobile` CI job).
 
 `npm ci`/`npm install` runs a `postinstall: patch-package` hook — see `patches/`. Two
 patches, both fixing real, on-device-reproduced upstream native-Kotlin crashes:
@@ -67,9 +64,11 @@ If bumping either dependency, re-verify its patch still applies (`npx patch-pack
 crashes are real and reproducible.
 
 ## CI (`.github/workflows/ci.yml`)
-Five jobs: `shared` → `mobile`, `desktop`, `mobile-android` (parallel, all
-`needs: [shared]`) → `gate` (`needs: [shared, mobile, desktop, mobile-android]`,
-required by branch protection). `mobile-android` (Expo prebuild +
+Four jobs: `shared` → `mobile`, `mobile-android` (parallel, both
+`needs: [shared]`) → `gate` (`needs: [shared, mobile, mobile-android]`,
+required by branch protection). (A `desktop` job existed here through
+2026-07-25, gating `apps/desktop`; removed along with that package — see
+`.claude/PRPs/plans/completed/desktop-fate.plan.md`.) `mobile-android` (Expo prebuild +
 `gradlew :app:compileDebugKotlin`) catches native Kotlin regressions in
 `apps/mobile/plugins/*.js` config plugins; it was promoted into `gate.needs` on
 2026-07-09 after three consecutive green runs (PRs #94–#96). If its Android
@@ -108,8 +107,8 @@ tampering.
 - **No SQLite.** `expo-sqlite@55` is ABI-broken on Expo SDK 54. All persistence goes through
   AsyncStorage (`lib/queue.ts`, `lib/storage.ts`).
 - **No `.env` files anywhere.** All runtime config (OmniRoute URL/key, Karakeep URL/key) is
-  entered in-app via the Settings screen. API keys live in `expo-secure-store` /
-  OS keychain (Tauri), never AsyncStorage/localStorage in plaintext.
+  entered in-app via the Settings screen. API keys live in `expo-secure-store`, never
+  AsyncStorage/localStorage in plaintext.
 - **Frontmatter must stay byte-compatible** with existing Obsidian vault files — verify
   against `lib/frontmatter.ts` and its tests before changing serialization.
 - **Attribution is disabled in commits** (configured globally) — don't add co-author trailers.
@@ -139,9 +138,7 @@ anything that can't be reproduced this way (voice/OCR/native share-sheet/Syncthi
   prefer extracting the non-UI logic into a new `lib/*.ts` module with its own tests (as
   `lib/ideaSaveFirst.ts` and `lib/journalTagIndex.ts` already do) over adding more inline
   logic. See `.agent_native/agent_roadmap.md` item #2 for the full list.
-- `packages/shared` has no circular dependencies on the apps; keep it that way — it must
-  stay importable by both `apps/mobile` and `apps/desktop` without pulling in RN- or
-  Tauri-specific code.
+- `packages/shared` has no circular dependencies on the apps; keep it that way.
 
 ## Where deeper agent-native audit findings live
 `.agent_native/agent_roadmap.md` — prioritized gaps (verification, reproduction,

@@ -1,6 +1,8 @@
-# Proposal: deprecate `apps/desktop` (decision doc — awaiting CONFIRM)
+# Proposal: deprecate `apps/desktop` (decision doc)
 
-Status: proposed, awaiting decision
+Status: **approved 2026-07-25 — Option A implemented.** `apps/desktop` deleted, its CI
+`desktop` job removed from `.github/workflows/ci.yml` (including `gate.needs`), and
+`CLAUDE.md`/root `package.json`/`TODO.md` updated accordingly.
 Date: 2026-07-23
 Origin: `TODO.md`'s long-standing "Desktop app fate" item ("`apps/desktop` is a
 Tauri v2 stub. Decide rebuild or deprecate after v0.2 mobile dogfooding."),

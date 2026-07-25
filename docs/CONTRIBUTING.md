@@ -1,19 +1,20 @@
 # Contributing to Carnet
 
 Carnet is an **npm-workspaces monorepo**: an Expo / React Native Android app
-(`apps/mobile`), a Tauri desktop companion (`apps/desktop`), and shared TypeScript
-(`packages/shared`). See [CODEMAPS/architecture.md](CODEMAPS/architecture.md) for the layout.
+(`apps/mobile`) and shared TypeScript (`packages/shared`). See
+[CODEMAPS/architecture.md](CODEMAPS/architecture.md) for the layout. (A Tauri desktop
+companion, `apps/desktop`, existed as a placeholder stub and was deprecated/removed
+2026-07-25 — see `.claude/PRPs/plans/completed/desktop-fate.plan.md`.)
 
 ## Prerequisites
 - **Node.js 20** (matches CI)
 - **npm** (the repo uses workspaces + `npm ci`)
 - Android release builds: **Android SDK** (`ANDROID_HOME`), a JDK, and an attached device/emulator
-- Desktop: a **Rust** toolchain (for Tauri)
 
 ## Setup
 ```bash
 npm ci
-npm run build:shared   # build shared first — mobile & desktop import @carnet/shared
+npm run build:shared   # build shared first — mobile imports @carnet/shared
 ```
 
 ## Scripts
@@ -21,10 +22,8 @@ npm run build:shared   # build shared first — mobile & desktop import @carnet/
 **Root**
 | Command | Description |
 |---|---|
-| `npm run build:shared` | Build `@carnet/shared` (run before mobile/desktop) |
+| `npm run build:shared` | Build `@carnet/shared` (run before mobile) |
 | `npm run mobile` | Start the Expo dev server (Metro) |
-| `npm run desktop` | Desktop app in Vite dev (web) mode |
-| `npm run desktop:tauri` | Desktop app in the Tauri native-shell dev mode |
 | `postinstall` (automatic) | `patch-package` — applies `patches/*.patch` (expo-speech-recognition, expo-share-intent); runs on every `npm ci`/`install` |
 
 **apps/mobile**
@@ -41,15 +40,6 @@ npm run build:shared   # build shared first — mobile & desktop import @carnet/
 | `npm -w @carnet/mobile run editor:build` | Build the TenTap WYSIWYG editor-web bundle (Vite) |
 | `npm -w @carnet/mobile run editor:post-build` | Inline the editor-web bundle into one HTML (invoked by `editor:build`) |
 
-**apps/desktop**
-| Command | Description |
-|---|---|
-| `npm -w @carnet/desktop run dev` | Vite dev server (web) |
-| `npm -w @carnet/desktop run build` | Type-check then Vite production build |
-| `npm -w @carnet/desktop run preview` | Preview the production Vite build |
-| `npm -w @carnet/desktop run tauri` | Tauri CLI passthrough |
-| `npm -w @carnet/desktop test` | Vitest (`--passWithNoTests`) |
-
 **packages/shared**
 | Command | Description |
 |---|---|
@@ -63,7 +53,6 @@ npm run build:shared   # build shared first — mobile & desktop import @carnet/
 ## Running locally
 - **Mobile (dev):** `npm run mobile`, then `npm -w @carnet/mobile run android`
 - **Mobile (release APK):** `npm -w @carnet/mobile run android:release`
-- **Desktop:** `npm run desktop` (web) or `npm run desktop:tauri` (native shell)
 
 ## Configuration
 There are **no `.env` files**. All runtime config is entered **in-app** on the device via the
@@ -78,7 +67,7 @@ Settings screen (API keys in SecureStore, the rest in AsyncStorage) — see [RUN
 
 ## CI — must be green before merge
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on push/PR:
-**shared → mobile · desktop · mobile-android (parallel) → gate** (the branch-protection
+**shared → mobile · mobile-android (parallel) → gate** (the branch-protection
 required check), plus an advisory **apk** job that attaches a release-signed installable
 APK to each run's artifacts (14-day retention). `mobile-android` runs Expo prebuild +
 `gradlew :app:compileDebugKotlin` to catch native/config-plugin regressions. Tag pushes

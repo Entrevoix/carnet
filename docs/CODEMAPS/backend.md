@@ -96,6 +96,5 @@ card OCR `ocrCardViaVision()` in `lib/omniroute.ts` (chat-vision call; the stand
 client was retired in Stage 2 B2); on-device transcribe `lib/audioTranscribeOnDevice.ts`;
 notifications `lib/captureNotification.ts`.
 
-## Desktop — `apps/desktop/src-tauri` (Rust)
-`#[tauri::command]` `get_navetted_token` / `set_navetted_token` / `delete_navetted_token`
-(LLM-gateway token held in the OS keychain).
+(`apps/desktop`, the Tauri placeholder stub, was deprecated and removed 2026-07-25 — see
+`.claude/PRPs/plans/completed/desktop-fate.plan.md`.)

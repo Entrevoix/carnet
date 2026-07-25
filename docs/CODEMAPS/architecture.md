@@ -7,8 +7,10 @@ Syncthing replicates it peer-to-peer into an Obsidian vault on the workstation.
 
 ## Workspaces (npm monorepo, v0.2.0)
 - `apps/mobile`    — Expo SDK 54 / React Native 0.81 — the primary surface
-- `apps/desktop`   — Tauri (Rust) + React — intentional stub, fate deferred (TODO.md)
 - `packages/shared` — `@carnet/shared` — TS types + markdown helpers (no app deps)
+
+(`apps/desktop`, a Tauri placeholder stub, was deprecated and removed 2026-07-25 — see
+`.claude/PRPs/plans/completed/desktop-fate.plan.md`.)
 
 ## Data flow
 ```
