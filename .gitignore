@@ -46,3 +46,4 @@ playwright-report/
 
 # Local agent harness state
 .omc/
+.claude/scheduled_tasks.lock
