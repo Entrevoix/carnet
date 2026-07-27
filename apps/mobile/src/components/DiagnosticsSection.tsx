@@ -26,6 +26,7 @@ function formatLog(log: CrashRecord[]): string {
 export function DiagnosticsSection() {
   const [log, setLog] = useState<CrashRecord[] | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const reload = useCallback(() => {
@@ -43,17 +44,19 @@ export function DiagnosticsSection() {
 
   const handleCopy = useCallback(() => {
     if (!log || log.length === 0) return;
+    setCopyFailed(false);
     Clipboard.setStringAsync(formatLog(log))
       .then(() => {
         setCopied(true);
         if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
         copiedTimeoutRef.current = setTimeout(() => setCopied(false), 2500);
       })
-      .catch(() => undefined);
+      .catch(() => setCopyFailed(true));
   }, [log]);
 
   const handleClear = useCallback(() => {
     setCopied(false);
+    setCopyFailed(false);
     clearCrashLog()
       .then(reload)
       .catch(() => undefined);
@@ -84,6 +87,11 @@ export function DiagnosticsSection() {
       {copied && (
         <HelperText type="info" visible>
           Copied to clipboard.
+        </HelperText>
+      )}
+      {copyFailed && (
+        <HelperText type="error" visible>
+          Copy failed.
         </HelperText>
       )}
     </View>

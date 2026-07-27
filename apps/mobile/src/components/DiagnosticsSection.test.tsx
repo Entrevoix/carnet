@@ -66,6 +66,22 @@ describe("DiagnosticsSection", () => {
     expect(setStringAsync.mock.calls[0][0]).toContain("boom");
   });
 
+  it("shows a failure message when the clipboard write rejects", async () => {
+    await recordCrash(new Error("boom"));
+    setStringAsync.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    renderSection();
+
+    await waitFor(() => {
+      expect(screen.getByText(/1 crash recorded/i)).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText(/copy/i));
+    await waitFor(() => {
+      expect(screen.getByText(/copy failed/i)).toBeTruthy();
+    });
+    expect(screen.queryByText(/copied to clipboard/i)).toBeNull();
+  });
+
   it("pluralizes correctly for multiple crashes", async () => {
     await recordCrash(new Error("one"));
     await recordCrash(new Error("two"));

@@ -105,6 +105,32 @@ describe("recordCrash / getCrashLog", () => {
     await expect(recordCrash(new Error("boom"))).resolves.toBeUndefined();
   });
 
+  it("never throws even when the error's own toString() throws", async () => {
+    const hostile = {
+      toString() {
+        throw new Error("poisoned toString");
+      },
+    };
+    await expect(recordCrash(hostile)).resolves.toBeUndefined();
+    // Record construction failed before it could be queued — log stays
+    // empty, which is correct "best-effort, never throws" behavior, not
+    // silent corruption of a partially-built record.
+    expect(await getCrashLog()).toEqual([]);
+  });
+
+  it("a poisoned-toString failure does not block later crashes from being recorded", async () => {
+    const hostile = {
+      toString() {
+        throw new Error("poisoned toString");
+      },
+    };
+    await recordCrash(hostile);
+    await recordCrash(new Error("recorded fine"));
+    const log = await getCrashLog();
+    expect(log).toHaveLength(1);
+    expect(log[0].message).toBe("recorded fine");
+  });
+
   it("getCrashLog returns [] (not throws) on corrupt stored JSON", async () => {
     _store.set("carnet:crashlog:v1", "not json");
     expect(await getCrashLog()).toEqual([]);

@@ -80,6 +80,15 @@ screen or just pulled via `adb pull` / Syncthing like everything else in the vau
   (e.g. MMKV) would close this gap but is out of scope — the project's no-SQLite
   constraint doesn't rule out MMKV specifically, but swapping storage engines for one edge
   case wasn't judged worth it here.
+- **Privacy precision (surfaced in devils-advocate review):** the *store* (AsyncStorage)
+  is local-only and never sent off-device — that guarantee holds. The Settings →
+  Diagnostics "Copy log" action does not carry the same guarantee: it hands crash
+  message/stack content (which can include user PII, since this app handles voice
+  transcripts and OCR'd business-card text) to the **OS clipboard**, a cross-app-readable
+  surface on Android, not confined to this device's storage boundary the way AsyncStorage
+  is. This is accepted as explicit user intent (the button says "Copy log," same exposure
+  class as any password manager's "copy password" action) — no code change follows, but
+  "local-only" should not be read as covering the copy action too.
 
 ### Option C — Status quo (do nothing)
 

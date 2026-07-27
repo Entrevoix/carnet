@@ -45,23 +45,31 @@ export async function recordCrash(
   error: unknown,
   opts: { isFatal?: boolean } = {},
 ): Promise<void> {
-  const record: CrashRecord = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    timestamp: Date.now(),
-    message: error instanceof Error ? error.message : String(error),
-    stack: error instanceof Error ? error.stack : undefined,
-    isFatal: opts.isFatal ?? false,
-  };
-  writeQueue = writeQueue.then(async () => {
-    try {
-      const existing = await readLog();
-      const next = [record, ...existing].slice(0, CRASH_LOG_LIMIT);
-      await AsyncStorage.setItem(CRASH_LOG_KEY, JSON.stringify(next));
-    } catch {
-      // Best-effort — see doc comment above.
-    }
-  });
-  await writeQueue;
+  try {
+    // error.toString()/message can throw (a hostile or malformed thrown
+    // value) — this outer try covers record construction. The inner try
+    // below covers the queued write separately, so one bad write can't
+    // permanently poison writeQueue for every crash recorded afterward.
+    const record: CrashRecord = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: Date.now(),
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      isFatal: opts.isFatal ?? false,
+    };
+    writeQueue = writeQueue.then(async () => {
+      try {
+        const existing = await readLog();
+        const next = [record, ...existing].slice(0, CRASH_LOG_LIMIT);
+        await AsyncStorage.setItem(CRASH_LOG_KEY, JSON.stringify(next));
+      } catch {
+        // Best-effort — see doc comment above.
+      }
+    });
+    await writeQueue;
+  } catch {
+    // Best-effort — see doc comment above.
+  }
 }
 
 export async function getCrashLog(): Promise<CrashRecord[]> {
