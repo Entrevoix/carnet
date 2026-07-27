@@ -40,6 +40,7 @@ import { filterAndSplitModels } from "../lib/modelBrowser";
 import { listModels } from "../lib/dispatcher";
 import { healthCheck } from "../lib/localLlm";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
+import { DiagnosticsSection } from "../components/DiagnosticsSection";
 import { caretProps, spacing, useCarnetTheme } from "../lib/theme";
 import {
   useThemePreference,
@@ -811,6 +812,8 @@ export default function SettingsScreen() {
         overrides={form.promptOverrides}
         onChange={(next) => update({ promptOverrides: next })}
       />
+
+      <DiagnosticsSection />
 
       <Button mode="contained" onPress={save} style={styles.save}>
         Save

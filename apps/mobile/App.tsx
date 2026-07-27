@@ -22,6 +22,8 @@ import { useFonts } from "expo-font";
 import { Inter_400Regular, Inter_500Medium } from "@expo-google-fonts/inter";
 import { SpaceGrotesk_600SemiBold } from "@expo-google-fonts/space-grotesk";
 
+import { CrashBoundary } from "./src/components/CrashBoundary";
+import { installGlobalCrashHandler } from "./src/lib/crashReporting";
 import HomeScreen from "./src/screens/HomeScreen";
 import CaptureScreen from "./src/screens/CaptureScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
@@ -40,6 +42,12 @@ import {
   type ThemePreference,
 } from "./src/lib/themePreference";
 import { drainPendingKarakeepExports } from "./src/lib/pendingSyncRunner";
+
+// Installed once at module load, as early as possible — chains onto RN's
+// default handler so every uncaught JS exception lands in the local crash
+// log (lib/crashLog.ts) before redbox/restart handling runs. See
+// .claude/PRPs/plans/completed/self-hosted-sentry.plan.md.
+installGlobalCrashHandler();
 
 export type RootStackParamList = {
   Home: undefined;
@@ -228,6 +236,7 @@ export default function App() {
     <ShareIntentProvider>
       <ThemePreferenceContext.Provider value={{ preference, setPreference }}>
         <PaperProvider theme={paperTheme}>
+          <CrashBoundary>
           <NavigationContainer ref={navRef} theme={navTheme} linking={linking}>
             {/* Explicit style (not "auto") so the bar follows the manual
                 override too, not just the OS scheme. */}
@@ -295,6 +304,7 @@ export default function App() {
           </Stack.Navigator>
           <ShareIntentRouter navigation={navRef} />
           </NavigationContainer>
+          </CrashBoundary>
         </PaperProvider>
       </ThemePreferenceContext.Provider>
     </ShareIntentProvider>
