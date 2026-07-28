@@ -69,11 +69,23 @@ two connected devices (Pixel 9 Pro Fold `4A111FDKD0000C`, Pixel 10 Pro Fold
 
 ## Open / user-side
 
-- **Local-LLM Settings UI on-device confirmation** — still not explicitly re-verified this
-  session despite two devices now being available; carried over again from the
-  2026-07-23/26 handoffs. Auto-memory `project_local_llm_verified_e2e` claims this was
-  done 2026-07-23, but that predates several since-changed files — worth a fresh check
-  now that a device is reliably connected.
+- **Local-LLM Settings UI on-device confirmation** — **partially verified 2026-07-28**
+  (same handoff period, follow-up check). Settings → Local backend was already configured
+  on the Pixel 10 Pro Fold (`127.0.0.1:8080`, model + API key set, from an earlier
+  session). With the local LLM host (Relais) unreachable — no model loaded, confirmed via
+  its own `AGModelManagerViewModel` logs (`Gemma3-1B-IT ... NOT_DOWNLOADED,
+  receivedBytes=0`) and network stats (17KB total received, nowhere near a model
+  download) — attempting an Idea capture showed **"1 capture waiting for enrichment —
+  they'll finish automatically"** instead of blocking, crashing, or losing the note. This
+  confirms Carnet's side of the integration degrades gracefully under the real failure
+  mode (backend unreachable), matching `feedback_stub_fallback_on_enrichment_failure`'s
+  design intent. **Not fully verified**: a live send-and-observe cycle with Relais
+  actually serving a response — blocked because Relais kept stealing foreground focus on
+  this device mid-interaction (confirmed via `dumpsys activity activities
+  topResumedActivity`, not a screenshot artifact), making further blind on-device driving
+  unreliable, and because Relais has no model downloaded on this device at all (a
+  Relais-side issue, out of scope for this repo — do not attempt to fix Relais from a
+  Carnet session; it has its own repo at `~/Documents/vibe-code/relais`).
 - **Karakeep test bookmarks** — still awaiting manual delete (user-side, needs Karakeep
   instance access).
 - **OmniRoute Mistral key deletion** — still awaiting manual delete on the OmniRoute
