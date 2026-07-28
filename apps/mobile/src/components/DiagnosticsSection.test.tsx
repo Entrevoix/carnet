@@ -59,7 +59,7 @@ describe("DiagnosticsSection", () => {
       expect(screen.getByText(/1 crash recorded/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/copy/i));
+    fireEvent.click(screen.getByText("Copy log"));
     await waitFor(() => {
       expect(setStringAsync).toHaveBeenCalledTimes(1);
     });
@@ -75,7 +75,7 @@ describe("DiagnosticsSection", () => {
       expect(screen.getByText(/1 crash recorded/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/copy/i));
+    fireEvent.click(screen.getByText("Copy log"));
     await waitFor(() => {
       expect(screen.getByText(/copy failed/i)).toBeTruthy();
     });
@@ -99,7 +99,7 @@ describe("DiagnosticsSection", () => {
       expect(screen.getByText(/1 crash recorded/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/clear/i));
+    fireEvent.click(screen.getByText("Clear log"));
 
     await waitFor(() => {
       expect(screen.getByText(/no crashes recorded/i)).toBeTruthy();
@@ -114,12 +114,12 @@ describe("DiagnosticsSection", () => {
       expect(screen.getByText(/1 crash recorded/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/copy/i));
+    fireEvent.click(screen.getByText("Copy log"));
     await waitFor(() => {
       expect(screen.getByText(/copied to clipboard/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/clear/i));
+    fireEvent.click(screen.getByText("Clear log"));
 
     await waitFor(() => {
       expect(screen.getByText(/no crashes recorded/i)).toBeTruthy();

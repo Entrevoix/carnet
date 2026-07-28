@@ -11,8 +11,9 @@ function formatLog(log: CrashRecord[]): string {
     .map((c) => {
       const when = new Date(c.timestamp).toISOString();
       const fatal = c.isFatal ? " (fatal)" : "";
+      const repeats = (c.count ?? 1) > 1 ? ` (×${c.count})` : "";
       const stack = c.stack ? `\n${c.stack}` : "";
-      return `${when}${fatal} — ${c.message}${stack}`;
+      return `${when}${fatal}${repeats} — ${c.message}${stack}`;
     })
     .join("\n\n");
 }
@@ -71,8 +72,8 @@ export function DiagnosticsSection() {
       </Text>
       <HelperText type="info" visible>
         {log.length === 0
-          ? "No crashes recorded. Nothing has ever been sent off-device — this is a local log only."
-          : `${log.length} crash${log.length === 1 ? "" : "es"} recorded, most recent first. Nothing here is sent off-device.`}
+          ? "No crashes recorded. This log is stored on-device only."
+          : `${log.length} crash${log.length === 1 ? "" : "es"} recorded, most recent first. Stored on-device; "Copy log" puts the contents on the system clipboard, which other apps can read.`}
       </HelperText>
       {log.length > 0 && (
         <View style={styles.actions}>

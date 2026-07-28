@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PaperProvider } from "react-native-paper";
 
 const _store = new Map<string, string>();
@@ -15,6 +15,11 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
       _store.delete(k);
     }),
   },
+}));
+
+const setStringAsync = vi.fn(async (_s: string) => undefined);
+vi.mock("expo-clipboard", () => ({
+  setStringAsync: (s: string) => setStringAsync(s),
 }));
 
 import { getCrashLog } from "../lib/crashLog";
@@ -70,6 +75,52 @@ describe("CrashBoundary", () => {
     const log = await getCrashLog();
     expect(log).toHaveLength(1);
     expect(log[0]).toMatchObject({ message: "kaboom", isFatal: false });
+
+    consoleError.mockRestore();
+  });
+
+  it("copies the error details from the fallback itself", async () => {
+    // Settings → Diagnostics is unreachable while the boundary is tripped —
+    // it replaces the whole navigation tree — so this is the only escape
+    // hatch for a crash that reproduces on every retry.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    render(
+      <PaperProvider theme={carnetLight}>
+        <CrashBoundary>
+          <Bomb />
+        </CrashBoundary>
+      </PaperProvider>,
+    );
+
+    fireEvent.click(screen.getByText("Copy error details"));
+    await waitFor(() => {
+      expect(setStringAsync).toHaveBeenCalledTimes(1);
+    });
+    expect(setStringAsync.mock.calls[0][0]).toContain("kaboom");
+    await waitFor(() => {
+      expect(screen.getByText("Copied")).toBeTruthy();
+    });
+
+    consoleError.mockRestore();
+  });
+
+  it("surfaces a clipboard failure in the fallback", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    setStringAsync.mockRejectedValueOnce(new Error("clipboard unavailable"));
+
+    render(
+      <PaperProvider theme={carnetLight}>
+        <CrashBoundary>
+          <Bomb />
+        </CrashBoundary>
+      </PaperProvider>,
+    );
+
+    fireEvent.click(screen.getByText("Copy error details"));
+    await waitFor(() => {
+      expect(screen.getByText("Copy failed")).toBeTruthy();
+    });
 
     consoleError.mockRestore();
   });
