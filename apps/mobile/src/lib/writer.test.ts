@@ -142,6 +142,36 @@ describe("slugify", () => {
     const result = slugify("🚀");
     expect(typeof result).toBe("string");
   });
+
+  // Unicode decomposition — supersedes the hand-listed French accent map, so
+  // any Latin-script diacritic folds, not just the ones someone remembered.
+  it("folds Latin diacritics beyond the hand-listed French set", () => {
+    expect(slugify("Łódź street")).toBe("lodz-street");
+    expect(slugify("Dvořák concerto")).toBe("dvorak-concerto");
+    expect(slugify("Việt Nam notes")).toBe("viet-nam-notes");
+    expect(slugify("Gündoğan")).toBe("gundogan");
+  });
+
+  it("folds precomposed and decomposed forms identically", () => {
+    // "é" as U+00E9 vs "e" + U+0301 — Syncthing/macOS can deliver either.
+    expect(slugify("café")).toBe(slugify("café"));
+    expect(slugify("café")).toBe("cafe");
+  });
+
+  it("still transliterates the ligatures decomposition alone won't handle", () => {
+    // ß and æ/œ have no combining-mark decomposition — they need the map.
+    expect(slugify("Straße")).toBe("strasse");
+    expect(slugify("cœur")).toBe("coeur");
+    expect(slugify("Æther")).toBe("aether");
+  });
+
+  it("leaves non-Latin scripts empty rather than inventing a filename", () => {
+    // Deliberate non-goal: preserving non-Latin characters in filenames would
+    // change on-disk encoding (Syncthing NFC/NFD, Obsidian links, exFAT). The
+    // caller's fallback ("idea"/"image"/"attachment") is the intended path.
+    expect(slugify("Заметка")).toBe("");
+    expect(slugify("メモ")).toBe("");
+  });
 });
 
 // ── injectImageEmbed ──────────────────────────────────────────────────────────
