@@ -22,8 +22,12 @@
 #   2. Run `./gradlew assembleRelease` (Gradle handles the JS bundle via the
 #      react-native-gradle-plugin tasks wired during prebuild).
 #   3. Print the output path.
-#   4. If a device is connected, offer to install via adb. Otherwise show
-#      the install command.
+#   4. Install via adb to every connected device. Otherwise show the command.
+#
+# MULTIPLE DEVICES: all connected devices get the APK, each named as it goes.
+# Set ANDROID_SERIAL=<serial> (adb's own env var) to target exactly one. A
+# bare `adb install` fails with "more than one device/emulator" the moment a
+# second phone is attached, which is why every call here is `adb -s`.
 
 set -e
 
@@ -72,6 +76,17 @@ elif [ -x "${HOME}/Library/Android/sdk/platform-tools/adb" ]; then
   ADB="${HOME}/Library/Android/sdk/platform-tools/adb"
 else
   ADB=""
+fi
+
+# ── fail fast on a bad ANDROID_SERIAL, before spending a build on it ──
+# Re-checked after the build too, since devices come and go mid-build.
+if [ -n "${ANDROID_SERIAL:-}" ] && [ -n "$ADB" ]; then
+  if ! "$ADB" devices 2>/dev/null | awk '$2 == "device" { print $1 }' | grep -qxF "$ANDROID_SERIAL"; then
+    echo "ERROR: ANDROID_SERIAL=$ANDROID_SERIAL is set but that device isn't connected." >&2
+    echo "Connected:" >&2
+    "$ADB" devices 2>/dev/null | awk '$2 == "device" { print "  " $1 }' >&2
+    exit 1
+  fi
 fi
 
 # ── release signing (optional; falls back to the debug keystore) ────
@@ -136,14 +151,55 @@ if [ -z "$ADB" ]; then
   exit 0
 fi
 
-# Detect a connected device. "adb devices" output has a header line + one
-# line per device; consider it "connected" only if there's at least one
-# line ending in $'\tdevice'.
-if "$ADB" devices 2>/dev/null | grep -qE $'\tdevice$'; then
-  echo "Installing to the connected device…"
-  "$ADB" install -r "$OUTPUT_APK"
-  echo "Done. Launch from the app drawer; no Metro needed."
-else
+# Collect connected serials. "adb devices" prints a header line plus one line
+# per device as "<serial>\t<state>"; only state "device" can accept an install
+# (an "unauthorized" or "offline" entry would fail with a confusing error).
+# while-read rather than mapfile — macOS still ships bash 3.2.
+DEVICES=()
+while IFS= read -r serial; do
+  [ -n "$serial" ] && DEVICES+=("$serial")
+done < <("$ADB" devices 2>/dev/null | awk '$2 == "device" { print $1 }')
+
+if [ "${#DEVICES[@]}" -eq 0 ]; then
   echo "No device connected. To install:"
   echo "  adb install -r $OUTPUT_APK"
+  exit 0
+fi
+
+# ANDROID_SERIAL is adb's own targeting variable, so honor it rather than
+# inventing a CARNET_* one — it also works for any manual adb call afterward.
+if [ -n "${ANDROID_SERIAL:-}" ]; then
+  if ! printf '%s\n' "${DEVICES[@]}" | grep -qxF "$ANDROID_SERIAL"; then
+    echo "ERROR: ANDROID_SERIAL=$ANDROID_SERIAL is set but that device isn't connected." >&2
+    echo "Connected:" >&2
+    printf '  %s\n' "${DEVICES[@]}" >&2
+    exit 1
+  fi
+  DEVICES=("$ANDROID_SERIAL")
+fi
+
+# Don't let one device's failure abort the rest — a phone that's locked, low
+# on space, or holding a debug-signed install shouldn't stop the others.
+set +e
+FAILED=()
+for serial in "${DEVICES[@]}"; do
+  model=$("$ADB" -s "$serial" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')
+  echo ""
+  echo "Installing to ${model:-unknown device} ($serial)…"
+  if ! "$ADB" -s "$serial" install -r "$OUTPUT_APK"; then
+    FAILED+=("${model:-unknown} ($serial)")
+  fi
+done
+set -e
+
+echo ""
+if [ "${#FAILED[@]}" -eq 0 ]; then
+  echo "Done — installed to ${#DEVICES[@]} device(s). Launch from the app drawer; no Metro needed."
+else
+  echo "Installed to $(( ${#DEVICES[@]} - ${#FAILED[@]} )) of ${#DEVICES[@]} device(s). Failed:" >&2
+  printf '  %s\n' "${FAILED[@]}" >&2
+  echo "" >&2
+  echo "INSTALL_FAILED_UPDATE_INCOMPATIBLE means that device holds a differently-signed" >&2
+  echo "install — uninstall it first (loses app data; see the header note)." >&2
+  exit 1
 fi
