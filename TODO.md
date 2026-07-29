@@ -2,6 +2,11 @@
 
 Tracking deferred v0.3 scope and known issues.
 
+**Last reconciled against git history: 2026-07-28.** This file had drifted — two items
+below were listed as deferred after they had already shipped. When planning from it,
+re-verify anything you're about to act on (`git log --oneline --all | grep -i <topic>`,
+or look for the module it names); a stale "deferred" entry is worse than no entry.
+
 ## Resolved in v0.2
 
 - [x] **Filename collision** — `writer.ts` appends `-2`, `-3` etc. on slug collision.
@@ -52,33 +57,76 @@ branches shipped (B2 folded via `visionModel`, gate passed 2026-07-12).
   `SettingsScreen.tsx` 849→794 (smaller by design — mostly legitimate form UI, not hidden
   logic). 10 new modules, each behavior-preserving and independently code-reviewed.
 
+## Resolved since Stage 2 (2026-07-18 → 2026-07-28)
+
+- [x] **Browse/search Phase 2 — on-demand full-text body search** (PR #104) —
+  `searchNoteBodies()` in `lib/vault.ts`, explicit-trigger only (not keystroke-driven),
+  wired into `SearchScreen.tsx` with progress reporting. Was still listed as deferred
+  below until this reconciliation. Phase 3 (retrospective query) remains open.
+- [x] **Local-LLM backend** (PR #105) — `lib/localLlm.ts`, an OpenAI-compatible HTTP
+  client for a loopback/LAN server (Relais by default), behind B7's `dispatcher.ts` seam
+  with `Settings.llmBackend`. Mirrors `omniroute.ts`'s signatures and error-classification
+  contract. This is the network-client path, **not** the native in-process model — see the
+  re-framed Gemma item below.
+- [x] **Minimal ESLint in `apps/mobile`** — exactly three rules, each mapped to a defect
+  class that actually shipped here; scope change-controlled via
+  `.claude/PRPs/plans/completed/minimal-eslint-scope.plan.md`. See CLAUDE.md before
+  widening it.
+- [x] **Local crash/error log** (PRs #106) — the app had zero crash telemetry; every
+  defect in project history was found by manual `adb logcat` reproduction. `lib/crashLog.ts`
+  (AsyncStorage ring buffer, capped, serialized writes, repeat-collapsing, size-clamped),
+  `lib/crashReporting.ts` (chains RN's `global.ErrorUtils`; fatal writes flush before
+  teardown), `components/CrashBoundary.tsx`, and Settings → Diagnostics. No server — see
+  `.claude/PRPs/plans/completed/self-hosted-sentry.plan.md` for why hosted crash reporting
+  was rejected.
+
 ## Deferred to v0.3
 
 - [ ] **Auto-capture surfaces** — Android Quick Settings tile dropped from the roadmap
   (2026-07-04 decision): the persistent notification (shipped) + B5's inline-reply cover
   the same latency profile. iOS share extension and Android Auto remain open; Android
   share sheet is already shipped.
-- [ ] **Browse/search Phase 2 + 3** — on-demand full-text search and the retrospective
-  query ("What have I been thinking about regarding X?") build on B6 Phase 1 (shipped
-  above) as separate later plans.
+- [ ] **Browse/search Phase 3** — the retrospective query ("What have I been thinking
+  about regarding X?"). Phase 1 (note index) and Phase 2 (full-text body search) both
+  shipped — see above. Phase 3 is the only remaining piece, and unlike 1–2 it needs an
+  LLM round-trip over retrieved notes, so it should be specified against the
+  `dispatcher.ts` seam (either backend) rather than assuming OmniRoute.
 - [ ] **Bidirectional sync awareness** — Mostly works via Syncthing. A mobile file watcher to detect workstation edits is a v0.3 enhancement.
 - [ ] **Card auto-detection** — Current button-press OCR flow works. Auto-detect when camera sees a business card is polish.
-- [ ] **Cross-capture linking** — Person ↔ journal associations via prompt-side linking. Iterate after v0.2 ships.
+- [ ] **Cross-capture linking — largely superseded, narrow remainder.** The "you've thought
+  about this before" intent is now served by `lib/relatedNotes.ts` (lexical scoring over the
+  cached note index — shared tags + term overlap, no embeddings, no network), surfaced in
+  `RecentDetailScreen` with wikilink insertion into a Related section. What remains of the
+  original framing is specifically **Person ↔ journal associations via prompt-side
+  linking** — i.e. having enrichment itself emit the link when a journal entry names a
+  person, rather than the reader-side lexical surfacing that exists today. Re-scope before
+  picking this up; it may not be worth doing separately.
 - [ ] **Multi-vault support** — Single-vault solves the actual problem. Premature to add vault switching now.
 - [x] **Desktop app fate** — Decided 2026-07-25: deprecate. `apps/desktop` (Tauri v2 stub,
   zero commits since 2026-06-04, zero tests, no usage signal) removed entirely, along with
   its CI job. See `.claude/PRPs/plans/completed/desktop-fate.plan.md` for the full
   rationale if desktop-capture demand ever resurfaces.
-- [ ] **On-device Gemma backend, Phases 2–4** — native module + model download. B7 Phase 1
-  (shipped above) built the dispatcher seam this needs; the native-code phases (add a
-  `localLlm.ts` sibling behind the seam) are still unstarted. Trade-offs unchanged:
-  ~1.5GB model file, slow first-token (~3-8s on phone), battery cost. Skip the workstation
-  Ollama variant: it re-introduces the daemon dependency v0.2 deliberately removed.
+- [ ] **On-device Gemma backend, native phases — NEEDS A DECISION, not just execution.**
+  This item's original framing is obsolete. It said the remaining work was "add a
+  `localLlm.ts` sibling behind the seam"; that file now exists (PR #105, above), but as an
+  **HTTP client to a local server** rather than an in-process native model. So
+  disconnected/no-internet enrichment — the actual goal — is already solved via Relais on
+  the same device. What's genuinely unstarted is only the native module + bundled model
+  download (~1.5GB model file, ~3-8s first token on phone, battery cost).
+  **Before building any of it, decide whether it's still worth it**: Relais already
+  delivers the user-visible benefit with none of the app-size or native-maintenance cost,
+  and it is a separate app with its own repo (`~/Documents/vibe-code/relais`) that can be
+  updated independently. Skip the workstation Ollama variant regardless: it re-introduces
+  the daemon dependency v0.2 deliberately removed.
 - [ ] **Encrypt offline queue payloads at rest** — Currently `queue.ts` stores `payload_json` (raw user idea text, voice transcripts, OCR'd business-card PII including names/emails/phones) as plaintext in AsyncStorage (a JSON array under a single key — the queue moved off expo-sqlite entirely per this repo's no-SQLite constraint; `payload_json` is just a legacy field name, not an actual SQLite column). AsyncStorage on Android is unencrypted by default. The realistic threat is a rooted / debug-enabled device, an adb pull, or a malicious app with `INSTALL_PACKAGES` privilege. For carnet's single-developer threat model this is defense-in-depth, not a blocker — but it should land before any non-developer dogfooding. Approach: encrypt `payload_json` with a key kept in `expo-secure-store` (AES-GCM via `expo-crypto`) before the AsyncStorage write. (A SQLite-backed encryption path like `op-sqlite`/`expo-sqlite-encrypted` is off the table — see CLAUDE.md's no-SQLite constraint.)
 
 ## Deferred (carry-over from v0.1)
 
 - [ ] **Person camera capture pipeline** — `CardScannerModal` (opened from `CaptureModeInput`) wires up `expo-camera` → `ocrCardViaVision()` (in `lib/omniroute.ts`; the standalone `lib/ocr.ts` `/ocr` client was retired in B2). The button is present; the full pipeline needs integration testing on device.
 - [ ] **Slugify Unicode edge cases** — ASCII-only slugifier drops non-Latin characters. For French accents this is fine; for non-Latin titles you get "untitled". Consider a Unicode-aware slugifier if this comes up in practice.
-- [ ] **Settings: live connection test** — A "Tester la connexion" button that pings OmniRoute and reports latency/auth status.
+- [ ] **Settings: live connection test — OmniRoute side only.** Half of this shipped with
+  the local-LLM backend: `healthCheck()` in `lib/localLlm.ts` is wired to a test button in
+  `SettingsScreen.tsx` (`testLocalLlmConnection`), reporting reachable/unreachable. There
+  is no equivalent for OmniRoute — `lib/omniroute.ts` has no health/ping export. Mirroring
+  it there is the remaining work; latency/auth-status reporting was never built for either.
 - [x] **Promote-idea race condition** — Closed by the B4 mtime conflict guard (`writer.ts` `getModificationTime` + `updateNoteIfUnchanged`). Promote now records the file's `modificationTime` before its read-modify-write and re-checks it before the overwrite; a Syncthing/workstation edit that landed in between is kept (write skipped) and a conflict message is surfaced in `CaptureScreen`. The same guard backs the save-first Idea enriched overwrite and the offline-drain in-place update.
