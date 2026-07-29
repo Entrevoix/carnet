@@ -1,6 +1,7 @@
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, useState, type ErrorInfo, type ReactNode } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { Button } from "react-native-paper";
+import * as Clipboard from "expo-clipboard";
 
 import { recordCrash } from "../lib/crashLog";
 import { spacing, useCarnetTheme } from "../lib/theme";
@@ -20,6 +21,15 @@ interface CrashBoundaryState {
  */
 function CrashFallback({ error, onReset }: { error: Error; onReset: () => void }) {
   const { colors } = useCarnetTheme();
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  const handleCopy = (): void => {
+    const details = error.stack ? `${error.message}\n${error.stack}` : error.message;
+    Clipboard.setStringAsync(details)
+      .then(() => setCopyState("copied"))
+      .catch(() => setCopyState("failed"));
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <Text style={[styles.title, { color: colors.onSurface }]}>
@@ -29,11 +39,22 @@ function CrashFallback({ error, onReset }: { error: Error; onReset: () => void }
         {error.message}
       </Text>
       <Text style={[styles.hint, { color: colors.onSurfaceVariant }]}>
-        The error was saved to Settings → Diagnostics. Your notes are safe — nothing is
-        written to the vault by this screen.
+        Saved to the local crash log — reachable from Settings → Diagnostics once the
+        app restarts. Your notes are safe; nothing is written to the vault by this
+        screen.
       </Text>
       <Button mode="contained" onPress={onReset} style={styles.button}>
         Try again
+      </Button>
+      {/* This screen replaces the whole navigation tree, so Settings is
+          unreachable while the boundary is tripped. Copying from here is the
+          only way out for a crash that reproduces on every retry. */}
+      <Button mode="text" onPress={handleCopy} style={styles.button}>
+        {copyState === "copied"
+          ? "Copied"
+          : copyState === "failed"
+            ? "Copy failed"
+            : "Copy error details"}
       </Button>
     </View>
   );

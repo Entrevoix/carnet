@@ -237,73 +237,73 @@ export default function App() {
       <ThemePreferenceContext.Provider value={{ preference, setPreference }}>
         <PaperProvider theme={paperTheme}>
           <CrashBoundary>
-          <NavigationContainer ref={navRef} theme={navTheme} linking={linking}>
-            {/* Explicit style (not "auto") so the bar follows the manual
-                override too, not just the OS scheme. */}
-            <StatusBar style={resolvedScheme === "dark" ? "light" : "dark"} />
-          <Stack.Navigator initialRouteName="Home">
-            <Stack.Screen
-              name="Home"
-              component={HomeScreen}
-              options={{ title: "Carnet" }}
-            />
-            <Stack.Screen
-              name="Capture"
-              component={CaptureScreen}
-              options={({ route }) => ({
-                title:
-                  route.params.mode === "idea"
-                    ? "Idea"
-                    : route.params.mode === "journal"
-                      ? "Journal"
-                      : "Contact",
-              })}
-            />
-            <Stack.Screen
-              name="Settings"
-              component={SettingsScreen}
-              options={{ title: "Settings" }}
-            />
-            <Stack.Screen
-              name="ShareReceive"
-              component={ShareReceiveScreen}
-              options={{ title: "Shared" }}
-            />
-            <Stack.Screen
-              name="PhotoCapture"
-              component={PhotoCaptureScreen}
-              options={{ title: "Photo" }}
-            />
-            <Stack.Screen
-              name="AudioCapture"
-              component={AudioCaptureScreen}
-              options={{ title: "Audio" }}
-            />
-            <Stack.Screen
-              name="RecentDetail"
-              component={RecentDetailScreen}
-              options={({ route }) => ({ title: route.params.entry.title })}
-            />
-            <Stack.Screen name="TagBrowser" component={TagBrowserScreen} options={{ title: "Tags" }} />
-            <Stack.Screen
-              name="Search"
-              component={SearchScreen}
-              options={({ navigation }) => ({
-                title: "Search",
-                // Tags moved out of the Home header (one primary action per
-                // screen) — browsing by tag now lives with search.
-                headerRight: () => (
-                  <IconButton
-                    icon="tag-multiple-outline"
-                    onPress={() => navigation.navigate("TagBrowser")}
-                    accessibilityLabel="Browse tags"
-                  />
-                ),
-              })}
-            />
-          </Stack.Navigator>
-          <ShareIntentRouter navigation={navRef} />
-          </NavigationContainer>
+            <NavigationContainer ref={navRef} theme={navTheme} linking={linking}>
+              {/* Explicit style (not "auto") so the bar follows the manual
+                  override too, not just the OS scheme. */}
+              <StatusBar style={resolvedScheme === "dark" ? "light" : "dark"} />
+              <Stack.Navigator initialRouteName="Home">
+                <Stack.Screen
+                  name="Home"
+                  component={HomeScreen}
+                  options={{ title: "Carnet" }}
+                />
+                <Stack.Screen
+                  name="Capture"
+                  component={CaptureScreen}
+                  options={({ route }) => ({
+                    title:
+                      route.params.mode === "idea"
+                        ? "Idea"
+                        : route.params.mode === "journal"
+                          ? "Journal"
+                          : "Contact",
+                  })}
+                />
+                <Stack.Screen
+                  name="Settings"
+                  component={SettingsScreen}
+                  options={{ title: "Settings" }}
+                />
+                <Stack.Screen
+                  name="ShareReceive"
+                  component={ShareReceiveScreen}
+                  options={{ title: "Shared" }}
+                />
+                <Stack.Screen
+                  name="PhotoCapture"
+                  component={PhotoCaptureScreen}
+                  options={{ title: "Photo" }}
+                />
+                <Stack.Screen
+                  name="AudioCapture"
+                  component={AudioCaptureScreen}
+                  options={{ title: "Audio" }}
+                />
+                <Stack.Screen
+                  name="RecentDetail"
+                  component={RecentDetailScreen}
+                  options={({ route }) => ({ title: route.params.entry.title })}
+                />
+                <Stack.Screen name="TagBrowser" component={TagBrowserScreen} options={{ title: "Tags" }} />
+                <Stack.Screen
+                  name="Search"
+                  component={SearchScreen}
+                  options={({ navigation }) => ({
+                    title: "Search",
+                    // Tags moved out of the Home header (one primary action per
+                    // screen) — browsing by tag now lives with search.
+                    headerRight: () => (
+                      <IconButton
+                        icon="tag-multiple-outline"
+                        onPress={() => navigation.navigate("TagBrowser")}
+                        accessibilityLabel="Browse tags"
+                      />
+                    ),
+                  })}
+                />
+              </Stack.Navigator>
+              <ShareIntentRouter navigation={navRef} />
+            </NavigationContainer>
           </CrashBoundary>
         </PaperProvider>
       </ThemePreferenceContext.Provider>
