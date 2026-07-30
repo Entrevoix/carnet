@@ -254,7 +254,11 @@ function canonicalizeIPv4(host: string): string | null {
  * parse as IPv6. Lenient by design — it only feeds the loopback/link-local
  * block check, where over-recognizing never loosens the guard. */
 function expandIPv6(input: string): number[] | null {
-  let s = input.toLowerCase();
+  // Strip an RFC6874 zone ID (`::1%25eth0`, or `::1%eth0` once percent-decoded).
+  // The zone is interface scope metadata, not part of the address — leaving it
+  // attached makes the hextet parse fail and the address read as "not IPv6",
+  // which would silently unblock `[::1%25eth0]`.
+  let s = input.toLowerCase().replace(/%(?:25)?[^%]*$/, "");
   if (s.length === 0) return null;
   // Fold a trailing dotted-quad (`::ffff:127.0.0.1`) into two hextets.
   if (s.includes(".")) {
@@ -323,30 +327,82 @@ function isBlockedIPv6(hextets: number[]): boolean {
 /** Unicode code points IDNA maps to an ASCII label separator (`.`): ideographic
  * full stop, fullwidth full stop, halfwidth ideographic full stop. NFKC folds
  * the latter two but leaves U+3002 alone, so we fold all three by hand. */
-const IDNA_DOT_VARIANTS = /[。．｡]/g;
+const IDNA_DOT_VARIANTS = /[。．｡․﹒]/g;
 
-/** Fold the Halfwidth-and-Fullwidth-Forms block (U+FF01–U+FF5E) onto its ASCII
- * equivalents (a fixed 0xFEE0 offset), then fold the IDNA dot variants.
+/** UTS46 `ignored` code points: the IDNA host mapper DELETES these before
+ * resolution, so `127.0.0.1<U+00AD>` dials `127.0.0.1`. NFKC does NOT remove
+ * them and they sit outside the fullwidth block, so without this they slip past
+ * both normalization layers — the third UTS46 mapping category. */
+const IDNA_IGNORED =
+  /[­͏᠋-᠍᠏​-‍⁠-⁤︀-️﻿]/g;
+
+/** Non-fullwidth code points NFKC folds to an ASCII digit, as an explicit
+ * table: superscripts, subscripts, and circled/parenthesized/dotted digits.
+ *
+ * Applied unconditionally rather than only when NFKC is missing, so the guard
+ * behaves identically on Node (full ICU, where CI runs) and on a Hermes build
+ * without it. Folding more can only add variants, and a variant set can only
+ * tighten the deny-list — so there is no reason to make this conditional. */
+const DIGIT_FOLDS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/[⁰₀]/g, "0"],
+  [/[¹₁①⑴⒈]/g, "1"],
+  [/[²₂②⑵⒉]/g, "2"],
+  [/[³₃③⑶⒊]/g, "3"],
+  [/[⁴₄④⑷⒋]/g, "4"],
+  [/[⁵₅⑤⑸⒌]/g, "5"],
+  [/[⁶₆⑥⑹⒍]/g, "6"],
+  [/[⁷₇⑦⑺⒎]/g, "7"],
+  [/[⁸₈⑧⑻⒏]/g, "8"],
+  [/[⁹₉⑨⑼⒐]/g, "9"],
+];
+
+/** Mathematical Alphanumeric Symbols digit runs (U+1D7CE–U+1D7FF), each a
+ * contiguous 0-9 block, folded by offset. */
+const MATH_DIGIT_BASES = [0x1d7ce, 0x1d7d8, 0x1d7e2, 0x1d7ec, 0x1d7f6];
+
+/** True when the runtime performs real NFKC. Probed rather than assumed: a
+ * Hermes build without full ICU can expose `normalize` that silently returns
+ * its input, which would look identical to a successful fold. */
+const HAS_NFKC = ((): boolean => {
+  try {
+    return "․".normalize("NFKC") === ".";
+  } catch {
+    return false;
+  }
+})();
+
+/** Fold a host toward the ASCII form the IDNA host mapper would produce:
+ * the Halfwidth-and-Fullwidth-Forms block (U+FF01–U+FF5E, a fixed 0xFEE0
+ * offset), the IDNA dot variants, and the `ignored` code points.
  *
  * Done by hand rather than relying solely on `String.prototype.normalize`
- * because Hermes builds without full ICU do not reliably provide NFKC — and a
- * guard that silently stops normalizing on-device is exactly the failure this
- * function exists to prevent. `normalize` is still applied on top when
- * available, since it catches forms outside this block. */
+ * because `ignored` code points are not an NFKC transformation at all, and
+ * because NFKC is not guaranteed on a Hermes build without full ICU. When
+ * {@link HAS_NFKC} is false the explicit digit table above stands in for the
+ * folds `normalize` would otherwise have done. */
 function foldWidth(s: string): string {
   let out = "";
   for (const ch of s) {
     const cp = ch.codePointAt(0)!;
-    out +=
-      cp >= 0xff01 && cp <= 0xff5e ? String.fromCharCode(cp - 0xfee0) : ch;
+    if (cp >= 0xff01 && cp <= 0xff5e) {
+      out += String.fromCharCode(cp - 0xfee0);
+      continue;
+    }
+    const mathBase = MATH_DIGIT_BASES.find((b) => cp >= b && cp <= b + 9);
+    out += mathBase === undefined ? ch : String(cp - mathBase);
   }
-  return out.replace(IDNA_DOT_VARIANTS, ".");
+  out = out.replace(IDNA_DOT_VARIANTS, ".").replace(IDNA_IGNORED, "");
+  for (const [pattern, digit] of DIGIT_FOLDS) {
+    out = out.replace(pattern, digit);
+  }
+  return out;
 }
 
-/** Apply NFKC when the runtime supports it, otherwise pass through. */
+/** Apply NFKC when the runtime genuinely supports it, otherwise pass through —
+ * {@link foldWidth} has already covered the fallback cases. */
 function nfkc(s: string): string {
   try {
-    return typeof s.normalize === "function" ? s.normalize("NFKC") : s;
+    return HAS_NFKC ? s.normalize("NFKC") : s;
   } catch {
     return s;
   }
@@ -450,6 +506,18 @@ function isBlockedHostExact(rawHost: string): boolean {
   return dotted ? isBlockedIPv4(dotted) : false;
 }
 
+/** The SSRF guard internals, exported for direct unit testing.
+ *
+ * Not part of the module's intended API — but these MUST be testable without
+ * going through {@link fetchUrlPreview}, because Node's `URL` rejects several
+ * of the hostile inputs this guard exists to stop (`http://127․0․0․1/`,
+ * `http://[::1%25eth0]/` both throw `Invalid URL`). A black-box test of those
+ * cases passes whether or not the guard works, since the preview already
+ * failed closed at the parse step. React Native's `URL` is far more permissive
+ * and forwards them intact — so on-device the guard is the only thing standing
+ * between those strings and the socket, and it has to be asserted directly. */
+export const __ssrfGuardInternals = { extractHost, isBlockedHost } as const;
+
 /** Maximum redirect hops to follow before giving up. Guards against redirect
  * loops and a malicious server dragging out the fetch with an endless 3xx
  * chain. */
@@ -507,7 +575,21 @@ async function followWithRedirects(
     // SSRF guard on EVERY hop — see isBlockedHost JSDoc for the threat model.
     // Extract the host from the raw URL string rather than `next.hostname`:
     // RN's URL leaves non-canonical IP encodings and bracketed IPv6 unparsed.
-    if (isBlockedHost(extractHost(next.toString()) ?? next.hostname)) {
+    //
+    // Check the RAW Location header as well as the round-tripped URL. Node's
+    // URL applies UTS46 and hands back an already-normalized host, so guarding
+    // only `next` would pass under test while RN's URL — which canonicalizes
+    // nothing (see extractHost) — forwards the obfuscated host straight to the
+    // socket. Guarding the raw string is what actually holds on-device; the
+    // parsed form is kept because it resolves relative Location values.
+    const rawTarget = /^[a-z][a-z0-9+.-]*:\/\//i.test(location)
+      ? location
+      : next.toString();
+    const rawHost = extractHost(rawTarget);
+    if (
+      (rawHost !== null && isBlockedHost(rawHost)) ||
+      isBlockedHost(extractHost(next.toString()) ?? next.hostname)
+    ) {
       throw new Error("URL preview: redirect to blocked host");
     }
     currentUrl = next.toString();
