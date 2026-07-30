@@ -320,6 +320,83 @@ function isBlockedIPv6(hextets: number[]): boolean {
   return false;
 }
 
+/** Unicode code points IDNA maps to an ASCII label separator (`.`): ideographic
+ * full stop, fullwidth full stop, halfwidth ideographic full stop. NFKC folds
+ * the latter two but leaves U+3002 alone, so we fold all three by hand. */
+const IDNA_DOT_VARIANTS = /[。．｡]/g;
+
+/** Fold the Halfwidth-and-Fullwidth-Forms block (U+FF01–U+FF5E) onto its ASCII
+ * equivalents (a fixed 0xFEE0 offset), then fold the IDNA dot variants.
+ *
+ * Done by hand rather than relying solely on `String.prototype.normalize`
+ * because Hermes builds without full ICU do not reliably provide NFKC — and a
+ * guard that silently stops normalizing on-device is exactly the failure this
+ * function exists to prevent. `normalize` is still applied on top when
+ * available, since it catches forms outside this block. */
+function foldWidth(s: string): string {
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    out +=
+      cp >= 0xff01 && cp <= 0xff5e ? String.fromCharCode(cp - 0xfee0) : ch;
+  }
+  return out.replace(IDNA_DOT_VARIANTS, ".");
+}
+
+/** Apply NFKC when the runtime supports it, otherwise pass through. */
+function nfkc(s: string): string {
+  try {
+    return typeof s.normalize === "function" ? s.normalize("NFKC") : s;
+  } catch {
+    return s;
+  }
+}
+
+/** Percent-decode once, mirroring what OkHttp/WHATWG do to the authority before
+ * dialing. Returns null when there is nothing to decode or the input contains a
+ * malformed escape (`%zz`), so callers fall back to the undecoded form. */
+function percentDecodeOnce(s: string): string | null {
+  if (!s.includes("%")) return null;
+  try {
+    const decoded = decodeURIComponent(s);
+    return decoded === s ? null : decoded;
+  } catch {
+    return null;
+  }
+}
+
+/** Every host spelling the native layer might resolve this raw host to.
+ *
+ * The deny-list is evaluated against ALL of them and blocks if ANY is blocked,
+ * so normalization can only ever tighten the guard — a decoding quirk that
+ * produces a nonsense variant costs a wasted comparison, never an unblocked
+ * loopback. The raw host is always included first so existing behavior is
+ * strictly preserved.
+ *
+ * Both orders of (decode, fold) are generated: `%FF11` needs decoding before
+ * folding, while a fullwidth percent sign (`％31`) needs folding before
+ * decoding. */
+function hostVariants(rawHost: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (v: string | null): void => {
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      out.push(v);
+    }
+  };
+  push(rawHost);
+  push(percentDecodeOnce(rawHost));
+  // Snapshot: we fold each raw/decoded form, then re-decode the folded result.
+  for (const base of [...out]) {
+    const folded = nfkc(foldWidth(base)).toLowerCase();
+    push(folded);
+    const reDecoded = percentDecodeOnce(folded);
+    if (reDecoded) push(nfkc(foldWidth(reDecoded)).toLowerCase());
+  }
+  return out;
+}
+
 /** SSRF guard: hosts that should NEVER be reached by a URL preview
  * fetch, even though the device's network position could otherwise
  * reach them.
@@ -337,6 +414,13 @@ function isBlockedIPv6(hextets: number[]): boolean {
  * native fetch layer resolves them to the real loopback/link-local address.
  * Membership is tested by numeric range, not string literal.
  *
+ * The host is additionally percent-decoded and width/NFKC-folded before those
+ * comparisons (see {@link hostVariants}), because OkHttp decodes and IDNA-maps
+ * the authority before dialing: `%31%32%37%2e%30%2e%30%2e%31` and the
+ * fullwidth `１２７.0.0.1` both reach `127.0.0.1` on-device. Every spelling is
+ * checked and any single blocked match blocks, so normalization can only
+ * tighten the guard, never loosen it.
+ *
  * General RFC1918 private ranges (`10.*`, `172.16-31.*`, `192.168.*`)
  * are deliberately NOT blocked: the user may legitimately bookmark
  * self-hosted services on their LAN. The user's threat model here is
@@ -347,6 +431,12 @@ function isBlockedIPv6(hextets: number[]): boolean {
  * `rawHost` must be an already-extracted host (see {@link extractHost}),
  * not a full URL — no scheme, no port, no brackets required. */
 function isBlockedHost(rawHost: string): boolean {
+  return hostVariants(rawHost).some(isBlockedHostExact);
+}
+
+/** The deny-list decision for one exact host spelling. Callers go through
+ * {@link isBlockedHost}, which runs this over every normalized variant. */
+function isBlockedHostExact(rawHost: string): boolean {
   // Strip a trailing root dot (`127.0.0.1.` resolves the same as `127.0.0.1`).
   const h = rawHost.trim().toLowerCase().replace(/\.$/, "");
   if (h === "") return false;
