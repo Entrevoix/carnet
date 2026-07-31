@@ -1,15 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { FlatList, Platform, ScrollView, StyleSheet, View } from "react-native";
+import { Platform, ScrollView, StyleSheet, View } from "react-native";
 import { StorageAccessFramework } from "expo-file-system/legacy";
 import {
-  ActivityIndicator,
   Banner,
   Button,
   HelperText,
-  IconButton,
   List,
-  Modal,
-  Portal,
   SegmentedButtons,
   Snackbar,
   Switch,
@@ -32,15 +28,31 @@ import {
   shouldShowMigrationBanner,
 } from "../lib/settings";
 import {
+  apiKeyFieldLabel,
+  apiKeyFieldPlaceholder,
   captureFolderLabel,
-  composeSettingsForSave,
+  errorMessage,
+  formStateFromSettings,
   type FormState,
 } from "../lib/settingsForm";
-import { filterAndSplitModels } from "../lib/modelBrowser";
+import {
+  applyPickedModel,
+  filterAndSplitModels,
+  resolveBrowseApiKey,
+} from "../lib/modelBrowser";
+import {
+  clearApiKey,
+  persistNotificationHint,
+  reconcileInitialNotificationState,
+  saveSettingsWithKeys,
+  toggleNotification,
+} from "../lib/settingsPersistence";
 import { listModels } from "../lib/dispatcher";
 import { healthCheck } from "../lib/localLlm";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { DiagnosticsSection } from "../components/DiagnosticsSection";
+import { ModelBrowserModal } from "../components/ModelBrowserModal";
+import { LocalLlmSection } from "../components/LocalLlmSection";
 import { caretProps, spacing, useCarnetTheme } from "../lib/theme";
 import {
   useThemePreference,
@@ -119,45 +131,32 @@ export default function SettingsScreen() {
         shouldShowMigrationBanner(),
       ]);
       // Source-of-truth for the notification toggle is native
-      // SharedPreferences (BootReceiver reads it). Read the native flag if
-      // available so the UI matches reality. Also reconcile: if native
-      // says ON but POST_NOTIFICATIONS was revoked via system settings,
-      // the service is running with an invisible notification — force-stop
-      // and flip the UI off so reality matches what the user can see.
+      // SharedPreferences (BootReceiver reads it) — reconcileInitialNotificationState
+      // decides the value; force-stop happens here if it says the invisible-
+      // notification case (native ON, permission revoked) applies.
       let initialNotificationEnabled = s.persistentNotificationEnabled;
-      if (captureNotification.isAvailable()) {
+      const nativeAvailable = captureNotification.isAvailable();
+      if (nativeAvailable) {
         try {
           const enabledNative = await captureNotification.isEnabled();
-          if (enabledNative) {
-            const granted = await captureNotification.permissionIsGranted();
-            if (granted) {
-              initialNotificationEnabled = true;
-            } else {
-              await captureNotification.stop();
-              initialNotificationEnabled = false;
-            }
-          } else {
-            initialNotificationEnabled = false;
+          const permissionGranted = enabledNative
+            ? await captureNotification.permissionIsGranted()
+            : false;
+          const reconciled = reconcileInitialNotificationState({
+            jsHint: initialNotificationEnabled,
+            nativeAvailable,
+            enabledNative,
+            permissionGranted,
+          });
+          initialNotificationEnabled = reconciled.value;
+          if (reconciled.shouldStopNative) {
+            await captureNotification.stop();
           }
         } catch {
           // Native module read failed — keep the JS-side value as the hint.
         }
       }
-      setForm({
-        omniRouteUrl: s.omniRouteUrl,
-        omniRouteModel: s.omniRouteModel,
-        omniRouteVisionModel: s.omniRouteVisionModel,
-        llmBackend: s.llmBackend,
-        localLlmUrl: s.localLlmUrl,
-        localLlmModel: s.localLlmModel,
-        persistentNotificationEnabled: initialNotificationEnabled,
-        autoTranscribeOnSave: s.autoTranscribeOnSave,
-        richEditorEnabled: s.richEditorEnabled,
-        previewBeforeSave: s.previewBeforeSave,
-        captureFolderPath: s.captureFolderPath,
-        promptOverrides: s.promptOverrides,
-        karakeepUrl: s.karakeepUrl,
-      });
+      setForm(formStateFromSettings(s, initialNotificationEnabled));
       setKeyConfigured(hasKey);
       setKarakeepKeyConfigured(hasKkKey);
       setLocalLlmKeyConfigured(hasLocalKey);
@@ -177,75 +176,69 @@ export default function SettingsScreen() {
     setForm({ ...form, ...patch });
   };
 
+  // API keys are intentionally NOT in form state — saveSettingsWithKeys
+  // threads the currently-stored keys through so saveSettings doesn't wipe
+  // them, then writes any newly-typed key. See settingsPersistence.ts for
+  // the guarded-end-to-end rationale (this is the ONLY way to enter config
+  // in a no-.env app).
   const save = async () => {
-    // Compose the Settings object to persist. The API keys are intentionally
-    // NOT in form state — we thread the currently-stored keys through so
-    // saveSettings doesn't wipe them, then write any newly-typed key
-    // separately below (see composeSettingsForSave).
-    //
-    // Guarded end-to-end: this is the ONLY way to enter config in a no-.env
-    // app, and an unguarded reject (AsyncStorage or either SecureStore write)
-    // previously failed SILENTLY — worst case persisting settings while
-    // dropping a newly-typed API key, so later captures fail auth with no
-    // signal. Pending keys clear only after their write confirms, so a
-    // failed save keeps the typed key in the field for retry.
-    try {
-      const existingKeys = await currentKeysOrEmpty();
-      await saveSettings(composeSettingsForSave(form, existingKeys));
-      if (pendingKey.length > 0) {
-        await setOmniRouteApiKey(pendingKey);
-        setPendingKey("");
-        setKeyConfigured(true);
-      }
-      if (pendingKarakeepKey.length > 0) {
-        await setKarakeepApiKey(pendingKarakeepKey);
-        setPendingKarakeepKey("");
-        setKarakeepKeyConfigured(true);
-      }
-      if (pendingLocalLlmKey.length > 0) {
-        await setLocalLlmApiKey(pendingLocalLlmKey);
-        setPendingLocalLlmKey("");
-        setLocalLlmKeyConfigured(true);
-      }
-      setSaved(true);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setPickerError(`Save failed: ${msg.slice(0, 120)}`);
+    const result = await saveSettingsWithKeys(
+      form,
+      {
+        omniRoute: pendingKey,
+        karakeep: pendingKarakeepKey,
+        localLlm: pendingLocalLlmKey,
+      },
+      { getSettings, saveSettings, setOmniRouteApiKey, setKarakeepApiKey, setLocalLlmApiKey },
+    );
+    if (!result.ok) {
+      setPickerError(result.error);
+      return;
     }
+    if (result.keysWritten.omniRoute) {
+      setPendingKey("");
+      setKeyConfigured(true);
+    }
+    if (result.keysWritten.karakeep) {
+      setPendingKarakeepKey("");
+      setKarakeepKeyConfigured(true);
+    }
+    if (result.keysWritten.localLlm) {
+      setPendingLocalLlmKey("");
+      setLocalLlmKeyConfigured(true);
+    }
+    setSaved(true);
   };
 
-  // Both clears flip UI state only AFTER the keychain write confirms — a
+  // Each clear flips UI state only AFTER the keychain write confirms — a
   // reject must not show "cleared" while the key is still stored.
   const clearKey = async () => {
-    try {
-      await setOmniRouteApiKey("");
+    const result = await clearApiKey(setOmniRouteApiKey);
+    if (result.ok) {
       setKeyConfigured(false);
       setPendingKey("");
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setPickerError(`Failed to clear the key: ${msg.slice(0, 120)}`);
+    } else {
+      setPickerError(result.error);
     }
   };
 
   const clearKarakeepKey = async () => {
-    try {
-      await setKarakeepApiKey("");
+    const result = await clearApiKey(setKarakeepApiKey);
+    if (result.ok) {
       setKarakeepKeyConfigured(false);
       setPendingKarakeepKey("");
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setPickerError(`Failed to clear the key: ${msg.slice(0, 120)}`);
+    } else {
+      setPickerError(result.error);
     }
   };
 
   const clearLocalLlmKey = async () => {
-    try {
-      await setLocalLlmApiKey("");
+    const result = await clearApiKey(setLocalLlmApiKey);
+    if (result.ok) {
       setLocalLlmKeyConfigured(false);
       setPendingLocalLlmKey("");
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setPickerError(`Failed to clear the key: ${msg.slice(0, 120)}`);
+    } else {
+      setPickerError(result.error);
     }
   };
 
@@ -258,50 +251,13 @@ export default function SettingsScreen() {
    */
   const handleToggleNotification = async (next: boolean) => {
     if (!form) return;
-    if (!captureNotification.isAvailable()) {
-      setPickerError(
-        "Persistent notification needs a native build (Expo Go can't host it).",
-      );
+    const result = await toggleNotification(next, captureNotification);
+    if (!result.ok) {
+      setPickerError(result.error);
       return;
     }
-    if (next) {
-      const granted = await captureNotification.requestPermission();
-      if (!granted) {
-        setPickerError(
-          "Notification permission denied — toggle stays off.",
-        );
-        return;
-      }
-      try {
-        await captureNotification.start();
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setPickerError(`Failed to start notification: ${msg.slice(0, 120)}`);
-        return;
-      }
-    } else {
-      try {
-        await captureNotification.stop();
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setPickerError(`Failed to stop notification: ${msg.slice(0, 120)}`);
-        return;
-      }
-    }
     setForm({ ...form, persistentNotificationEnabled: next });
-    // Self-save to AsyncStorage so a fast Save tap doesn't race with the
-    // toggle's async setForm. Native SharedPreferences is the real source
-    // of truth on Android, but keeping the JS hint in sync avoids a
-    // confusing "Settings saved" toast that wrote the pre-flip value.
-    try {
-      const current = await getSettings();
-      await saveSettings({
-        ...current,
-        persistentNotificationEnabled: next,
-      });
-    } catch {
-      // Best-effort — reconcile-on-mount catches drift from a failed write.
-    }
+    await persistNotificationHint(next, { getSettings, saveSettings });
   };
 
   const handleDismissBanner = async () => {
@@ -322,7 +278,7 @@ export default function SettingsScreen() {
     setBrowseLoading(true);
     try {
       const stored = await getSettings();
-      const key = pendingKey.length > 0 ? pendingKey : stored.omniRouteApiKey;
+      const key = resolveBrowseApiKey(pendingKey, stored.omniRouteApiKey);
       const list = await listModels(form.omniRouteUrl, key);
       setModels(list);
     } catch (e: unknown) {
@@ -351,10 +307,9 @@ export default function SettingsScreen() {
         setForm({ ...form, captureFolderPath: res.directoryUri });
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
       // Surface via Snackbar — do NOT write the error into the path field
       // (that would persist a broken capture folder on the next Save).
-      setPickerError(`Folder picker failed: ${msg.slice(0, 120)}`);
+      setPickerError(errorMessage(e, "Folder picker failed"));
     }
   };
 
@@ -369,11 +324,7 @@ export default function SettingsScreen() {
 
   const pickModel = (id: string) => {
     if (!form) return;
-    if (browseTarget === "vision") {
-      setForm({ ...form, omniRouteVisionModel: id });
-    } else {
-      setForm({ ...form, omniRouteModel: id });
-    }
+    setForm(applyPickedModel(form, browseTarget, id));
     setBrowseOpen(false);
   };
 
@@ -452,12 +403,12 @@ export default function SettingsScreen() {
 
           <TextInput
             {...caretProps(theme)}
-            label={keyConfigured && pendingKey.length === 0 ? "OmniRoute API key (configured)" : "OmniRoute API key"}
+            label={apiKeyFieldLabel("OmniRoute API key", keyConfigured, pendingKey.length)}
             mode="outlined"
             autoCapitalize="none"
             autoCorrect={false}
             secureTextEntry
-            placeholder={keyConfigured ? "•••• configured — tap to replace" : "sk-..."}
+            placeholder={apiKeyFieldPlaceholder(keyConfigured, "sk-...")}
             value={pendingKey}
             onChangeText={setPendingKey}
           />
@@ -524,98 +475,20 @@ export default function SettingsScreen() {
       )}
 
       {form.llmBackend === "local" && (
-        <View style={styles.notificationSection}>
-          <Text variant="titleMedium" style={styles.promptSectionTitle}>
-            Local LLM
-          </Text>
-          <HelperText type="info" visible>
-            A loopback or LAN OpenAI-compatible server (e.g. Relais). Blank
-            URL defaults to http://127.0.0.1:8080 — no setup needed if Relais
-            is already running on this device.
-          </HelperText>
-          <TextInput
-            {...caretProps(theme)}
-            label="Local LLM URL"
-            mode="outlined"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            value={form.localLlmUrl}
-            onChangeText={(v) => update({ localLlmUrl: v })}
-            placeholder="http://127.0.0.1:8080"
-          />
-          <HelperText type="info" visible>
-            Local LLM base URL — loopback (127.0.0.1) or LAN addresses are
-            allowed over plain http://; anything else must use https://.
-          </HelperText>
-
-          <TextInput
-            {...caretProps(theme)}
-            label={
-              localLlmKeyConfigured && pendingLocalLlmKey.length === 0
-                ? "Local LLM API key (configured)"
-                : "Local LLM API key"
-            }
-            mode="outlined"
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-            placeholder={
-              localLlmKeyConfigured
-                ? "•••• configured — tap to replace"
-                : "optional — leave blank for an unauthenticated loopback server"
-            }
-            value={pendingLocalLlmKey}
-            onChangeText={setPendingLocalLlmKey}
-          />
-          <HelperText type="info" visible>
-            Stored in the secure keychain. The existing key is never shown
-            again. Most loopback deployments (e.g. Relais on this device)
-            need no key at all.
-          </HelperText>
-          {localLlmKeyConfigured && (
-            <Button mode="text" compact onPress={clearLocalLlmKey} style={styles.clearKey}>
-              Clear key
-            </Button>
-          )}
-
-          <TextInput
-            {...caretProps(theme)}
-            label="Model"
-            mode="outlined"
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={form.localLlmModel}
-            onChangeText={(v) => update({ localLlmModel: v })}
-            placeholder="e.g. litert-community/gemma-4-E4B-it-litert-lm"
-          />
-          <HelperText type="info" visible>
-            One model handles text, vision, and business-card OCR for the
-            local backend — no separate vision-model field.
-          </HelperText>
-
-          <Button
-            mode="text"
-            icon="lan-connect"
-            compact
-            onPress={() => void testLocalLlmConnection()}
-            loading={testingConnection}
-            disabled={testingConnection}
-            style={styles.browseBtn}
-          >
-            Test connection
-          </Button>
-          {connectionResult === "ok" && (
-            <HelperText type="info" visible>
-              ✓ Reachable
-            </HelperText>
-          )}
-          {connectionResult === "unreachable" && (
-            <HelperText type="error" visible>
-              Unreachable — check the URL and that the server is running.
-            </HelperText>
-          )}
-        </View>
+        <LocalLlmSection
+          theme={theme}
+          url={form.localLlmUrl}
+          onUrlChange={(v) => update({ localLlmUrl: v })}
+          keyConfigured={localLlmKeyConfigured}
+          pendingKey={pendingLocalLlmKey}
+          onPendingKeyChange={setPendingLocalLlmKey}
+          onClearKey={clearLocalLlmKey}
+          model={form.localLlmModel}
+          onModelChange={(v) => update({ localLlmModel: v })}
+          testingConnection={testingConnection}
+          connectionResult={connectionResult}
+          onTestConnection={() => void testLocalLlmConnection()}
+        />
       )}
 
       <Text variant="titleMedium" style={styles.sectionTitle}>
@@ -688,20 +561,19 @@ export default function SettingsScreen() {
 
         <TextInput
           {...caretProps(theme)}
-          label={
-            karakeepKeyConfigured && pendingKarakeepKey.length === 0
-              ? "Karakeep API key (configured)"
-              : "Karakeep API key"
-          }
+          label={apiKeyFieldLabel(
+            "Karakeep API key",
+            karakeepKeyConfigured,
+            pendingKarakeepKey.length,
+          )}
           mode="outlined"
           autoCapitalize="none"
           autoCorrect={false}
           secureTextEntry
-          placeholder={
-            karakeepKeyConfigured
-              ? "•••• configured — tap to replace"
-              : "Generate in Karakeep → User Settings → API Keys"
-          }
+          placeholder={apiKeyFieldPlaceholder(
+            karakeepKeyConfigured,
+            "Generate in Karakeep → User Settings → API Keys",
+          )}
           value={pendingKarakeepKey}
           onChangeText={setPendingKarakeepKey}
         />
@@ -835,121 +707,23 @@ export default function SettingsScreen() {
         {pickerError ?? ""}
       </Snackbar>
 
-      <Portal>
-        <Modal
-          visible={browseOpen}
-          onDismiss={() => setBrowseOpen(false)}
-          contentContainerStyle={[
-            styles.browseModal,
-            { backgroundColor: theme.colors.surface },
-          ]}
-        >
-          <View style={styles.browseHeader}>
-            <Text variant="titleMedium">Available models</Text>
-            <IconButton
-              icon="close"
-              onPress={() => setBrowseOpen(false)}
-              accessibilityLabel="Close model browser"
-            />
-          </View>
-          {browseLoading ? (
-            <View style={styles.browseLoading}>
-              <ActivityIndicator />
-              <Text style={styles.browseLoadingText}>Fetching catalog…</Text>
-            </View>
-          ) : browseError ? (
-            <View style={styles.browseBody}>
-              <HelperText type="error" visible>
-                {browseError}
-              </HelperText>
-              <Button
-                mode="contained-tonal"
-                onPress={() => openBrowse(browseTarget)}
-              >
-                Retry
-              </Button>
-            </View>
-          ) : (
-            <View style={styles.browseBody}>
-              <TextInput
-                {...caretProps(theme)}
-                mode="outlined"
-                placeholder="Filter (e.g. claude, gemini, gpt)"
-                autoCapitalize="none"
-                autoCorrect={false}
-                value={modelFilter}
-                onChangeText={setModelFilter}
-                dense
-              />
-              <Text variant="bodySmall" style={styles.browseCount}>
-                {recommended.length + others.length} model
-                {recommended.length + others.length === 1 ? "" : "s"}
-                {modelFilter ? ` matching “${modelFilter}”` : ""}
-              </Text>
-              <FlatList
-                data={others}
-                keyExtractor={(item) => item}
-                style={styles.browseList}
-                ListHeaderComponent={
-                  recommended.length > 0 ? (
-                    <View>
-                      <List.Subheader style={styles.browseSubheader}>
-                        Recommended for carnet
-                      </List.Subheader>
-                      {recommended.map((item) => (
-                        <List.Item
-                          key={item}
-                          title={item}
-                          titleNumberOfLines={2}
-                          onPress={() => pickModel(item)}
-                          style={styles.browseRow}
-                          left={(p) => <List.Icon {...p} icon="star" />}
-                        />
-                      ))}
-                      {others.length > 0 && (
-                        <List.Subheader style={styles.browseSubheader}>
-                          All available
-                        </List.Subheader>
-                      )}
-                    </View>
-                  ) : null
-                }
-                renderItem={({ item }) => (
-                  <List.Item
-                    title={item}
-                    titleNumberOfLines={2}
-                    onPress={() => pickModel(item)}
-                    style={styles.browseRow}
-                  />
-                )}
-                ListEmptyComponent={
-                  recommended.length === 0 ? (
-                    <Text style={styles.browseEmpty}>No models match.</Text>
-                  ) : null
-                }
-              />
-            </View>
-          )}
-        </Modal>
-      </Portal>
+      <ModelBrowserModal
+        theme={theme}
+        visible={browseOpen}
+        onDismiss={() => setBrowseOpen(false)}
+        loading={browseLoading}
+        error={browseError}
+        onRetry={() => openBrowse(browseTarget)}
+        filter={modelFilter}
+        onFilterChange={setModelFilter}
+        recommended={recommended}
+        others={others}
+        onPickModel={pickModel}
+      />
     </ScrollView>
   );
 }
 
-/** Helper that returns the currently-stored API keys if present (so
- * saveSettings doesn't wipe either when the user only changed URL/model). */
-async function currentKeysOrEmpty(): Promise<{
-  omniRouteApiKey: string;
-  karakeepApiKey: string;
-  localLlmApiKey: string;
-}> {
-  const s = await getSettings();
-  return {
-    omniRouteApiKey: s.omniRouteApiKey ?? "",
-    karakeepApiKey: s.karakeepApiKey ?? "",
-    localLlmApiKey: s.localLlmApiKey ?? "",
-  };
-}
 
 const styles = StyleSheet.create({
   loading: { flex: 1, alignItems: "center", justifyContent: "center" },
@@ -959,27 +733,6 @@ const styles = StyleSheet.create({
   browseBtn: { alignSelf: "flex-start", marginTop: 4 },
   folderRow: { flexDirection: "row", gap: 8, marginTop: 4, flexWrap: "wrap" },
   folderBtn: { alignSelf: "flex-start" },
-  browseModal: {
-    backgroundColor: "white",
-    margin: 16,
-    borderRadius: 12,
-    maxHeight: "85%",
-    overflow: "hidden",
-  },
-  browseHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingLeft: 16,
-  },
-  browseBody: { padding: 16, gap: 8, flexShrink: 1 },
-  browseList: { flexGrow: 0, maxHeight: 480 },
-  browseRow: { paddingVertical: 0 },
-  browseLoading: { padding: 32, alignItems: "center", gap: 8 },
-  browseLoadingText: { opacity: 0.7 },
-  browseCount: { opacity: 0.6, paddingHorizontal: 4 },
-  browseSubheader: { paddingHorizontal: 0, paddingTop: 4 },
-  browseEmpty: { textAlign: "center", opacity: 0.6, padding: 24 },
   notificationSection: { marginTop: 16 },
   notificationRow: { paddingHorizontal: 0 },
   sectionTitle: { paddingHorizontal: 0, paddingTop: 16 },
