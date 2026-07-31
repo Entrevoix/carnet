@@ -56,16 +56,21 @@ describe("confirmSaveIdea", () => {
     });
   });
 
+  // The fixture body deliberately has NO `# ` heading and NO frontmatter. With
+  // a heading, deriveTitle returns the same string either way, so the test
+  // would pass even if the title were taken from the COMPOSED markdown — the
+  // exact regression it is supposed to catch. Headingless, mergeUserTags
+  // prepends a `---` frontmatter block, so a post-merge title reads "---".
   it("derives the title from the PRE-merge markdown, not the composed one", async () => {
     writeIdeaMock.mockResolvedValue({ filepath: "file:///v/Ideas/x.md" });
     const result = await confirmSaveIdea({
       slug: "x",
-      markdown: "# Original Title",
+      markdown: "just a plain body line",
       refs: [],
       tags: ["should-not-affect-title"],
       location: null,
     });
-    expect(result.title).toBe("Original Title");
+    expect(result.title).toBe("just a plain body line");
   });
 
   it("skips composition steps that have nothing to add", async () => {
