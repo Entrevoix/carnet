@@ -148,10 +148,16 @@ export default function SettingsScreen() {
             enabledNative,
             permissionGranted,
           });
-          initialNotificationEnabled = reconciled.value;
+          // Ordering is load-bearing: stop() first, THEN assign the
+          // reconciled value. If stop() rejects, the catch below must keep
+          // the JS-side hint (not silently adopt `reconciled.value`) —
+          // otherwise the toggle would render OFF while the native service
+          // is still running, with no UI path left to turn it off (ON would
+          // just hit the same denied permission again).
           if (reconciled.shouldStopNative) {
             await captureNotification.stop();
           }
+          initialNotificationEnabled = reconciled.value;
         } catch {
           // Native module read failed — keep the JS-side value as the hint.
         }
@@ -191,10 +197,10 @@ export default function SettingsScreen() {
       },
       { getSettings, saveSettings, setOmniRouteApiKey, setKarakeepApiKey, setLocalLlmApiKey },
     );
-    if (!result.ok) {
-      setPickerError(result.error);
-      return;
-    }
+    // Apply keysWritten BEFORE checking `ok` — key writes are sequential, so
+    // a later one can reject after earlier ones already succeeded. Skipping
+    // this on failure would leave an actually-stored key showing as
+    // unconfigured with its typed value stuck in the field.
     if (result.keysWritten.omniRoute) {
       setPendingKey("");
       setKeyConfigured(true);
@@ -206,6 +212,10 @@ export default function SettingsScreen() {
     if (result.keysWritten.localLlm) {
       setPendingLocalLlmKey("");
       setLocalLlmKeyConfigured(true);
+    }
+    if (!result.ok) {
+      setPickerError(result.error);
+      return;
     }
     setSaved(true);
   };

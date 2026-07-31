@@ -41,7 +41,7 @@ export interface SaveSettingsIO {
 
 export type SaveSettingsResult =
   | { ok: true; keysWritten: KeysWritten }
-  | { ok: false; error: string };
+  | { ok: false; error: string; keysWritten: KeysWritten };
 
 /**
  * Persist `form` plus any newly-typed API keys. Guarded end-to-end: this is
@@ -49,23 +49,28 @@ export type SaveSettingsResult =
  * (AsyncStorage or either SecureStore write) previously failed SILENTLY —
  * worst case persisting settings while dropping a newly-typed API key, so
  * later captures fail auth with no signal. A pending key is only reported as
- * written after its store confirms, so a failed save leaves the caller's
- * pending-key state (and thus the typed key in the field) untouched for
- * retry.
+ * written after its store confirms.
+ *
+ * `keysWritten` is always returned, even on `ok: false` — key writes happen
+ * sequentially (OmniRoute, then Karakeep, then Local-LLM), so a later write
+ * can reject after earlier ones already succeeded. The caller MUST apply
+ * `keysWritten` regardless of `ok`, or a key that IS now stored (and whose
+ * pending value should clear) will keep showing as unconfigured with its
+ * typed value still sitting in the field.
  */
 export async function saveSettingsWithKeys(
   form: FormState,
   pending: PendingApiKeys,
   io: SaveSettingsIO,
 ): Promise<SaveSettingsResult> {
+  const keysWritten: KeysWritten = {
+    omniRoute: false,
+    karakeep: false,
+    localLlm: false,
+  };
   try {
     const existing = existingApiKeysFromSettings(await io.getSettings());
     await io.saveSettings(composeSettingsForSave(form, existing));
-    const keysWritten: KeysWritten = {
-      omniRoute: false,
-      karakeep: false,
-      localLlm: false,
-    };
     if (pending.omniRoute.length > 0) {
       await io.setOmniRouteApiKey(pending.omniRoute);
       keysWritten.omniRoute = true;
@@ -80,7 +85,7 @@ export async function saveSettingsWithKeys(
     }
     return { ok: true, keysWritten };
   } catch (e: unknown) {
-    return { ok: false, error: errorMessage(e, "Save failed") };
+    return { ok: false, error: errorMessage(e, "Save failed"), keysWritten };
   }
 }
 

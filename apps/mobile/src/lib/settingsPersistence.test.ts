@@ -131,7 +131,11 @@ describe("saveSettingsWithKeys", () => {
       { omniRoute: "sk-new", karakeep: "", localLlm: "" },
       io,
     );
-    expect(result).toEqual({ ok: false, error: "Save failed: disk full" });
+    expect(result).toEqual({
+      ok: false,
+      error: "Save failed: disk full",
+      keysWritten: { omniRoute: false, karakeep: false, localLlm: false },
+    });
     // The key write must not have been attempted after the settings save failed.
     expect(io.setOmniRouteApiKey).not.toHaveBeenCalled();
   });
@@ -147,7 +151,39 @@ describe("saveSettingsWithKeys", () => {
       { omniRoute: "sk-new", karakeep: "", localLlm: "" },
       io,
     );
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({
+      ok: false,
+      error: "Save failed: keychain locked",
+      keysWritten: { omniRoute: false, karakeep: false, localLlm: false },
+    });
+  });
+
+  it("credits an earlier key write as written even when a LATER key write rejects (partial failure)", async () => {
+    // Regression test: writes happen sequentially (OmniRoute, then Karakeep,
+    // then Local-LLM). If OmniRoute's write succeeds and Karakeep's then
+    // rejects, the caller MUST still know the OmniRoute key was written —
+    // otherwise the screen shows it as unconfigured with the typed value
+    // stuck in the field, even though it's now actually stored.
+    // Mutation-catch: if keysWritten were only returned on the `ok: true`
+    // branch (or reset in the catch), this assertion on the `ok: false`
+    // result's keysWritten.omniRoute would fail.
+    const io = makeSaveIO({
+      setKarakeepApiKey: async () => {
+        throw new Error("keychain locked");
+      },
+    });
+    const result = await saveSettingsWithKeys(
+      baseForm,
+      { omniRoute: "sk-new", karakeep: "kk-new", localLlm: "" },
+      io,
+    );
+    expect(io.setOmniRouteApiKey).toHaveBeenCalledWith("sk-new");
+    expect(io.setLocalLlmApiKey).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: false,
+      error: "Save failed: keychain locked",
+      keysWritten: { omniRoute: true, karakeep: false, localLlm: false },
+    });
   });
 });
 
@@ -193,7 +229,11 @@ describe("toggleNotification", () => {
   it("returns ok:false without touching native calls when unavailable", async () => {
     const io = makeNotificationIO({ isAvailable: () => false });
     const result = await toggleNotification(true, io);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({
+      ok: false,
+      error:
+        "Persistent notification needs a native build (Expo Go can't host it).",
+    });
     expect(io.requestPermission).not.toHaveBeenCalled();
     expect(io.start).not.toHaveBeenCalled();
   });
@@ -298,23 +338,38 @@ describe("reconcileInitialNotificationState", () => {
 });
 
 describe("persistNotificationHint", () => {
+  // The fixture's own persistentNotificationEnabled (false) deliberately
+  // DIFFERS from the value passed to persistNotificationHint (true) below.
+  // If the fixture and the passed value matched, a broken implementation
+  // that just re-saved `current` unchanged (dropping the merge entirely)
+  // would still pass — see the mutation-catch note on the first test.
+  const settingsBeforeToggle: Settings = { ...storedSettings, persistentNotificationEnabled: false };
+
   it("saves the settings blob with the new notification value merged in", async () => {
-    const getSettings = vi.fn(async () => storedSettings);
+    // Mutation-catch: if the merge were dropped (e.g. `saveSettings(current)`
+    // instead of `saveSettings({...current, persistentNotificationEnabled: next})`),
+    // this would assert persistentNotificationEnabled: false (the fixture's
+    // own value) against the expected true and fail.
+    const getSettings = vi.fn(async () => settingsBeforeToggle);
     const saveSettings = vi.fn(async () => undefined);
     await persistNotificationHint(true, { getSettings, saveSettings });
     expect(saveSettings).toHaveBeenCalledWith({
-      ...storedSettings,
+      ...settingsBeforeToggle,
       persistentNotificationEnabled: true,
     });
   });
 
-  it("swallows a save failure instead of throwing (best-effort)", async () => {
-    const getSettings = vi.fn(async () => storedSettings);
+  it("swallows a save failure instead of throwing (best-effort), after still attempting the merged save", async () => {
+    const getSettings = vi.fn(async () => settingsBeforeToggle);
     const saveSettings = vi.fn(async () => {
       throw new Error("disk full");
     });
     await expect(
-      persistNotificationHint(false, { getSettings, saveSettings }),
+      persistNotificationHint(true, { getSettings, saveSettings }),
     ).resolves.toBeUndefined();
+    expect(saveSettings).toHaveBeenCalledWith({
+      ...settingsBeforeToggle,
+      persistentNotificationEnabled: true,
+    });
   });
 });

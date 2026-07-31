@@ -47,7 +47,7 @@ export function LocalLlmSection({
 }: LocalLlmSectionProps) {
   return (
     <View style={styles.section}>
-      <Text variant="titleMedium" style={styles.sectionTitle}>
+      <Text variant="titleMedium" style={styles.subsectionTitle}>
         Local LLM
       </Text>
       <HelperText type="info" visible>
@@ -142,7 +142,10 @@ export function LocalLlmSection({
 
 const styles = StyleSheet.create({
   section: { marginTop: 16 },
-  sectionTitle: { paddingHorizontal: 0, paddingTop: 8 },
+  // Named `subsectionTitle` (not `sectionTitle`) — SettingsScreen's own
+  // `styles.sectionTitle` uses paddingTop: 16, not 8. Same-named keys with
+  // different values across files is a copy-paste trap; keep them distinct.
+  subsectionTitle: { paddingHorizontal: 0, paddingTop: 8 },
   clearKey: { alignSelf: "flex-start", marginTop: 4 },
   testBtn: { alignSelf: "flex-start", marginTop: 4 },
 });
