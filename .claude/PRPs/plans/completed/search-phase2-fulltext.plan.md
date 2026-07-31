@@ -1,6 +1,7 @@
 # Plan: Search Phase 2 — on-demand full-text search
 
-Status: design, approved by user, ready for implementation plan
+Status: shipped
+Status-detail: design, approved by user, ready for implementation plan (superseded — shipped via PR #104, `searchNoteBodies` in `lib/vault.ts`)
 Date: 2026-07-19
 Origin: `.claude/PRPs/prds/v0.5-browse-search.prd.md` §"Phase 2 — on-demand
 full-text search" (design, not scheduled, 2026-07-04). Phase 1 (note-metadata

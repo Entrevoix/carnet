@@ -14,7 +14,11 @@ Read first, in this order, before making changes:
 3. `DESIGN.md` **before any visual/UI change** — it owns color/typography/spacing tokens
    and has its own "For AI tooling" rules section; do not restate or fork those rules here.
 4. `TODO.md` for what's deliberately deferred (don't "fix" deferred scope without checking).
-5. `.claude/PRPs/` for the plan → execute → report → review pipeline already in use, and
+5. `.claude/PRPs/` for the plan → execute → report → review pipeline already in use
+   (every `*.plan.md` directly under `plans/` needs a `Status: draft|in-progress|shipped`
+   header, and a `shipped` one must be moved to `plans/completed/` — enforced in CI by
+   `scripts/check-stale-plans.sh`, because stale plans describing already-shipped work
+   have cost a full human audit cycle before), and
    `docs/session-handoffs/` for the latest cross-session state.
 
 ## Workspaces (npm workspaces monorepo)

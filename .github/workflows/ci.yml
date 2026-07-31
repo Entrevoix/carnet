@@ -11,6 +11,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # PRP plan lifecycle (issue #92). Runs before install so it fails fast and
+      # needs no toolchain. --self-test guards the checker itself: the real
+      # plans/ dir currently holds zero *.plan.md, so the plain run passes over
+      # an empty glob and would stay green even if the checker were broken.
+      # If this ever blocks unrelated work, deleting these two steps is the fix.
+      - name: PRP plan lifecycle — self-test
+        run: ./scripts/check-stale-plans.sh --self-test
+
+      - name: PRP plan lifecycle — check
+        run: ./scripts/check-stale-plans.sh
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
