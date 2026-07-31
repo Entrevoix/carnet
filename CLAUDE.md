@@ -132,12 +132,18 @@ anything that can't be reproduced this way (voice/OCR/native share-sheet/Syncthi
   co-located `*.test.ts` (~600 tests total across the repo). Follow this pattern for new
   logic.
 - Several screen files in `apps/mobile/src/screens/` carry business logic inline and exceed
-  this project's file-size norms (`RecentDetailScreen.tsx` ~1458 lines, `CaptureScreen.tsx`
-  ~1039, `SettingsScreen.tsx` ~934), and `lib/writer.ts` (~1148) / `lib/omniroute.ts` (~710)
-  are large too. **Zero screens have test coverage today.** When touching these files,
+  this project's file-size norms — `RecentDetailScreen.tsx` (~1614 lines) is the last one
+  still over, after `CaptureScreen.tsx` (→777, #88) and `SettingsScreen.tsx` (→750, #90)
+  were brought under 800; `lib/writer.ts` (~1148) / `lib/omniroute.ts` (~710) are large too. **Seven screens have `*.test.tsx` coverage** today (CaptureScreen,
+  HomeScreen, RecentDetailScreen, SearchScreen, SettingsScreen, ShareReceiveScreen,
+  TagBrowserScreen) — jsdom + @testing-library/react smoke tests rendering the real
+  component tree under `PaperProvider` (pattern: see `TagBrowserScreen.test.tsx`). This is
+  smoke-level coverage (happy paths plus a handful of regression guards), not exhaustive
+  per-branch testing, and several screens still have none. When touching these files,
   prefer extracting the non-UI logic into a new `lib/*.ts` module with its own tests (as
   `lib/ideaSaveFirst.ts` and `lib/journalTagIndex.ts` already do) over adding more inline
-  logic. See `.agent_native/agent_roadmap.md` item #2 for the full list.
+  logic — screen-level tests are for wiring/rendering, not a substitute for unit-testing the
+  extracted logic. See `.agent_native/agent_roadmap.md` item #2 for the full list.
 - `packages/shared` has no circular dependencies on the apps; keep it that way.
 
 ## Where deeper agent-native audit findings live

@@ -23,10 +23,16 @@ import {
   DEFAULT_VISION_MODEL,
 } from "./settings";
 import {
+  apiKeyFieldLabel,
+  apiKeyFieldPlaceholder,
   captureFolderLabel,
   composeSettingsForSave,
+  errorMessage,
+  existingApiKeysFromSettings,
+  formStateFromSettings,
   type FormState,
 } from "./settingsForm";
+import type { Settings } from "./settings";
 
 const baseForm: FormState = {
   omniRouteUrl: "https://llm.grepon.cc",
@@ -158,5 +164,154 @@ describe("captureFolderLabel", () => {
     expect(captureFolderLabel("content://provider/document%2Ffoo")).toBe(
       "content://provider/document/foo",
     );
+  });
+});
+
+describe("errorMessage", () => {
+  it("uses the Error's message when e is an Error instance", () => {
+    expect(errorMessage(new Error("boom"), "Save failed")).toBe(
+      "Save failed: boom",
+    );
+  });
+
+  it("stringifies non-Error values", () => {
+    expect(errorMessage("plain string", "Save failed")).toBe(
+      "Save failed: plain string",
+    );
+  });
+
+  it("truncates the underlying message to 120 chars", () => {
+    const long = "x".repeat(200);
+    const result = errorMessage(new Error(long), "Save failed");
+    // "Save failed: " (13 chars) + 120 chars of message
+    expect(result).toBe(`Save failed: ${"x".repeat(120)}`);
+  });
+});
+
+describe("existingApiKeysFromSettings", () => {
+  const base: Settings = {
+    omniRouteUrl: "https://llm.grepon.cc",
+    omniRouteApiKey: "sk-existing",
+    omniRouteModel: "gemini/gemini-2.5-flash",
+    omniRouteVisionModel: "openai/gpt-4o-mini",
+    llmBackend: DEFAULT_LLM_BACKEND,
+    localLlmUrl: "",
+    localLlmModel: "",
+    localLlmApiKey: "local-secret",
+    persistentNotificationEnabled: false,
+    autoTranscribeOnSave: false,
+    richEditorEnabled: true,
+    previewBeforeSave: false,
+    captureFolderPath: "",
+    promptOverrides: {},
+    karakeepUrl: "",
+    karakeepApiKey: "kk-existing",
+  };
+
+  it("reads each key straight through when present", () => {
+    expect(existingApiKeysFromSettings(base)).toEqual({
+      omniRouteApiKey: "sk-existing",
+      karakeepApiKey: "kk-existing",
+      localLlmApiKey: "local-secret",
+    });
+  });
+
+  it("defaults missing/undefined keys to empty string, not undefined", () => {
+    // Mutation-catch: if the implementation returned `s.omniRouteApiKey`
+    // verbatim (no `?? ""`), this would assert undefined !== "" and fail —
+    // a caller (saveSettings) that treats undefined as "no key" differently
+    // from "" would then wipe/keep the key incorrectly.
+    const sparse = {
+      ...base,
+      omniRouteApiKey: undefined as unknown as string,
+      karakeepApiKey: undefined as unknown as string,
+      localLlmApiKey: undefined as unknown as string,
+    };
+    expect(existingApiKeysFromSettings(sparse)).toEqual({
+      omniRouteApiKey: "",
+      karakeepApiKey: "",
+      localLlmApiKey: "",
+    });
+  });
+});
+
+describe("apiKeyFieldLabel", () => {
+  it("appends (configured) when a key is stored and nothing new is typed", () => {
+    expect(apiKeyFieldLabel("OmniRoute API key", true, 0)).toBe(
+      "OmniRoute API key (configured)",
+    );
+  });
+
+  it("drops the suffix once the user starts typing a replacement", () => {
+    expect(apiKeyFieldLabel("OmniRoute API key", true, 3)).toBe(
+      "OmniRoute API key",
+    );
+  });
+
+  it("drops the suffix when no key is configured", () => {
+    expect(apiKeyFieldLabel("OmniRoute API key", false, 0)).toBe(
+      "OmniRoute API key",
+    );
+  });
+});
+
+describe("apiKeyFieldPlaceholder", () => {
+  it("shows the configured hint when a key is stored", () => {
+    expect(apiKeyFieldPlaceholder(true, "sk-...")).toBe(
+      "•••• configured — tap to replace",
+    );
+  });
+
+  it("falls back to the caller-supplied blank-state hint otherwise", () => {
+    expect(apiKeyFieldPlaceholder(false, "sk-...")).toBe("sk-...");
+  });
+});
+
+describe("formStateFromSettings", () => {
+  const settings: Settings = {
+    omniRouteUrl: "https://llm.grepon.cc",
+    omniRouteApiKey: "sk-existing",
+    omniRouteModel: "gemini/gemini-2.5-flash",
+    omniRouteVisionModel: "openai/gpt-4o-mini",
+    llmBackend: "local",
+    localLlmUrl: "http://127.0.0.1:8080",
+    localLlmModel: "gemma-4",
+    localLlmApiKey: "",
+    persistentNotificationEnabled: false,
+    autoTranscribeOnSave: true,
+    richEditorEnabled: true,
+    previewBeforeSave: true,
+    captureFolderPath: "/storage/emulated/0/carnet",
+    promptOverrides: { idea: "custom" },
+    karakeepUrl: "https://karakeep.example.com",
+    karakeepApiKey: "",
+  };
+
+  it("maps every non-secret Settings field onto FormState", () => {
+    expect(formStateFromSettings(settings, false)).toEqual({
+      omniRouteUrl: "https://llm.grepon.cc",
+      omniRouteModel: "gemini/gemini-2.5-flash",
+      omniRouteVisionModel: "openai/gpt-4o-mini",
+      llmBackend: "local",
+      localLlmUrl: "http://127.0.0.1:8080",
+      localLlmModel: "gemma-4",
+      persistentNotificationEnabled: false,
+      autoTranscribeOnSave: true,
+      richEditorEnabled: true,
+      previewBeforeSave: true,
+      captureFolderPath: "/storage/emulated/0/carnet",
+      promptOverrides: { idea: "custom" },
+      karakeepUrl: "https://karakeep.example.com",
+    });
+  });
+
+  it("uses the passed-in notification value, NOT settings.persistentNotificationEnabled", () => {
+    // Mutation-catch: if the implementation read
+    // `s.persistentNotificationEnabled` instead of the second parameter,
+    // this would assert false (settings' own value) and fail — the whole
+    // point of the separate parameter is that the caller reconciles this
+    // value against native state before the form is built.
+    const result = formStateFromSettings(settings, true);
+    expect(result.persistentNotificationEnabled).toBe(true);
   });
 });

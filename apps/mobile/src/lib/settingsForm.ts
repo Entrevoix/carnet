@@ -82,6 +82,34 @@ export function composeSettingsForSave(
 }
 
 /**
+ * Builds the initial {@link FormState} from a loaded {@link Settings} plus
+ * the (already-reconciled) notification toggle value. The inverse of
+ * {@link composeSettingsForSave}'s field-by-field mapping — kept separate
+ * because the notification field can't be read straight off `s` (it goes
+ * through native-state reconciliation first).
+ */
+export function formStateFromSettings(
+  s: Settings,
+  persistentNotificationEnabled: boolean,
+): FormState {
+  return {
+    omniRouteUrl: s.omniRouteUrl,
+    omniRouteModel: s.omniRouteModel,
+    omniRouteVisionModel: s.omniRouteVisionModel,
+    llmBackend: s.llmBackend,
+    localLlmUrl: s.localLlmUrl,
+    localLlmModel: s.localLlmModel,
+    persistentNotificationEnabled,
+    autoTranscribeOnSave: s.autoTranscribeOnSave,
+    richEditorEnabled: s.richEditorEnabled,
+    previewBeforeSave: s.previewBeforeSave,
+    captureFolderPath: s.captureFolderPath,
+    promptOverrides: s.promptOverrides,
+    karakeepUrl: s.karakeepUrl,
+  };
+}
+
+/**
  * Best-effort human-readable label for a `content://` tree URI. SAF URIs look
  * like `content://com.android.externalstorage.documents/tree/primary%3AObsidian%2FCarnet`
  * — show the decoded tail after `tree/` so the user sees `primary:Obsidian/Carnet`.
@@ -98,4 +126,54 @@ export function captureFolderLabel(raw: string): string {
   } catch {
     return raw;
   }
+}
+
+/**
+ * Formats a caught error into a short, user-facing message: "<prefix>: <message>",
+ * truncating the underlying message to 120 chars so it stays readable in a
+ * Snackbar. Shared by every catch block on the Settings screen that surfaces
+ * a failure this way (save, clear-key, folder picker, notification toggle).
+ */
+export function errorMessage(e: unknown, prefix: string): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  return `${prefix}: ${msg.slice(0, 120)}`;
+}
+
+/**
+ * Extracts the currently-stored API keys from a loaded {@link Settings},
+ * defaulting missing/undefined keys to "" — the {@link ExistingApiKeys} shape
+ * `composeSettingsForSave` needs so a save that doesn't touch a given key
+ * doesn't wipe it.
+ */
+export function existingApiKeysFromSettings(s: Settings): ExistingApiKeys {
+  return {
+    omniRouteApiKey: s.omniRouteApiKey ?? "",
+    karakeepApiKey: s.karakeepApiKey ?? "",
+    localLlmApiKey: s.localLlmApiKey ?? "",
+  };
+}
+
+/**
+ * Label for a secret-key TextInput: shows "(configured)" only when a key is
+ * already stored AND the user hasn't started typing a replacement.
+ */
+export function apiKeyFieldLabel(
+  baseLabel: string,
+  configured: boolean,
+  pendingLength: number,
+): string {
+  return configured && pendingLength === 0
+    ? `${baseLabel} (configured)`
+    : baseLabel;
+}
+
+/**
+ * Placeholder for a secret-key TextInput: the "already configured" hint when
+ * a key is stored, otherwise the caller-supplied blank-state hint.
+ */
+export function apiKeyFieldPlaceholder(
+  configured: boolean,
+  blankPlaceholder: string,
+): string {
+  return configured ? "•••• configured — tap to replace" : blankPlaceholder;
 }
