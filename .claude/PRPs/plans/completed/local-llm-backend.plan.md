@@ -1,6 +1,7 @@
 # Plan: local-LLM backend (disconnected/no-internet enrichment)
 
-Status: design, approved by user, ready for implementation plan
+Status: shipped
+Status-detail: design, approved by user, ready for implementation plan (superseded — shipped via PR #105, `lib/localLlm.ts`)
 Date: 2026-07-19
 Origin: user request during this session — a settings option to route LLM
 enrichment through a locally-hosted LLM (specifically Relais,

@@ -1,5 +1,7 @@
 # Plan: Karakeep export — show ALL note photos inline
 
+Status: shipped
+
 ## Summary
 After a note is exported to Karakeep, rewrite the image links in the bookmark's **text body** from carnet's vault-relative form (`![](../Photos/x.jpg)`, which Karakeep can't resolve) to the **uploaded asset's Karakeep URL**, so every image renders inline in the rendered markdown — not just the first one (which the `bannerImage` cover already shows). The note's on-device markdown is untouched; only the copy sent to Karakeep is rewritten.
 

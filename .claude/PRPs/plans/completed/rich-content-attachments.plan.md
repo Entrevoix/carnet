@@ -1,6 +1,8 @@
 # Plan: Rich Content — Image/File Attachments in Notes (+ optional Karakeep export)
 
-> STATUS (2026-06-13): Phase 1 (attach images/files to Idea/Journal captures + inline render in RecentDetail) SHIPPED (#30 b15a4d8). Phase 2 (Karakeep export) NOT built — needs the Karakeep endpoint/format decisions before it can start. This plan stays active for Phase 2.
+Status: shipped
+
+> STATUS (2026-06-13, superseded — see Status header above): Phase 1 (attach images/files to Idea/Journal captures + inline render in RecentDetail) SHIPPED (#30 b15a4d8). Phase 2 (Karakeep export) NOT built at time of writing — needs the Karakeep endpoint/format decisions before it can start. Phase 2 has since shipped: v1 "Send to Karakeep" via PR #51, v2 re-export/asset-upload/incremental-sync via PRs #54/#55/#57.
 
 ## Summary
 Let users manually attach images and arbitrary files to **Idea** and **Journal** captures (today binaries only enter via Photo mode or Android share-in), persist them with the existing `writeBinary` plumbing, reference them by the established `../Subdir/file` convention, and **render them inline** in the note-detail view. This completes carnet's half-built local-first attachment model. **Phase 2** (designed here, lighter detail) adds an optional "Send to Karakeep" export so a note/link/file can be pushed to a self-hosted Karakeep archive.

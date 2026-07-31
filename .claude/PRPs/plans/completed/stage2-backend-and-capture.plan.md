@@ -1,6 +1,8 @@
 # Stage 2 plan — backend generalization + capture-surface follow-through
 
-**Status:** ready for execution (Opus / Claude Code, one branch at a time) · **Date:** 2026-07-04
+Status: shipped
+Status-detail: ready for execution (Opus / Claude Code, one branch at a time) — superseded; all branches B0–B7 shipped, gate passed 2026-07-12 (see TODO.md "Resolved in Stage 2")
+Date: 2026-07-04
 **Inputs:** `AUDIT-backend.md` (root), `capture-timing.decision.md`, `security-trust-boundaries-2026-07-04.md`, `v0.5-browse-search.prd.md`, `on-device-backend.prd.md`.
 **Constraints (verified, non-negotiable):** vitest + `tsc --noEmit` are the only CI gates (no lint script) — every branch keeps 600/600 green and adds tests. No SQLite (expo-sqlite@55 ABI-broken on SDK 54, `queue.ts:16`). Frontmatter conventions in `AUDIT-backend.md §1.5` must stay byte-compatible. Attribution disabled in commits. Branch from `main`, one PR per branch, TDD.
 
