@@ -10,10 +10,19 @@
  *
  * Deliberately NOT part of the settings blob or the queue: a draft is
  * ephemeral UI state, not a committed capture.
+ *
+ * Drafts are sealed at rest with the same construction as the offline queue
+ * (see queueCrypto). They hold exactly the data classes issue #86 was filed
+ * over — idea text, voice transcript, OCR'd business-card PII — and are
+ * autosaved throughout composition, so leaving them plaintext would mean an
+ * `adb pull` still yields the in-flight capture even though the queue is
+ * encrypted. The queue holds only captures that FAILED to send; the draft
+ * holds the one being written right now.
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { decryptPayload, encryptPayload, isEncryptedEnvelope } from "./queueCrypto";
 import type { CaptureMode } from "./storage";
 
 const DRAFT_KEY_PREFIX = "carnet:capture_draft:v1:";
@@ -62,11 +71,15 @@ export async function loadDraft(
   try {
     const raw = await AsyncStorage.getItem(keyFor(mode));
     if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
+    // Legacy drafts written before encryption shipped are plaintext JSON; they
+    // stay readable and are re-sealed by the next saveDraft.
+    const json = isEncryptedEnvelope(raw) ? await decryptPayload(raw) : raw;
+    const parsed: unknown = JSON.parse(json);
     if (!isDraft(parsed) || isEmptyDraft(parsed)) return null;
     return parsed;
   } catch {
-    // A corrupt/unreadable draft must never block the capture screen.
+    // A corrupt, unreadable, or undecryptable draft must never block the
+    // capture screen — the user simply starts from an empty form.
     return null;
   }
 }
@@ -84,7 +97,10 @@ export async function saveDraft(
     return;
   }
   const draft: CaptureDraft = { ...fields, savedAt: Date.now() };
-  await AsyncStorage.setItem(keyFor(mode), JSON.stringify(draft));
+  await AsyncStorage.setItem(
+    keyFor(mode),
+    await encryptPayload(JSON.stringify(draft)),
+  );
 }
 
 /** Drop the draft — call once the capture is safely persisted. */

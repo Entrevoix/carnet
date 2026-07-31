@@ -57,20 +57,36 @@ const KEY_BYTES = 32;
 /** AES block size in bytes — the IV is exactly one block. */
 const IV_BYTES = 16;
 
+/** Length of the base64 encoding of {@link IV_BYTES} bytes, padding included
+ * (ceil(16/3)*4 = 24). Used to length-check the encoded IV field. */
+const IV_B64_LENGTH = Math.ceil(IV_BYTES / 3) * 4;
+
 /** Domain-separation labels, so the encryption key and the MAC key derived from
  * one master are independent. */
 const ENC_LABEL = "carnet-queue-enc-v1";
 const MAC_LABEL = "carnet-queue-mac-v1";
 
-/** In-memory cache of the derived subkeys. SecureStore reads hit the Android
- * Keystore and the queue decrypts every row on every load, so re-reading per
- * row would be needlessly slow. */
-let cachedKeys: { enc: WordArray; mac: WordArray } | null = null;
+interface QueueKeys {
+  enc: WordArray;
+  mac: WordArray;
+}
+
+/** In-flight/settled key derivation. SecureStore reads hit the Android Keystore
+ * and the queue seals every row on every write, so this is cached.
+ *
+ * The cached value is the PROMISE, not the resolved keys, and it is installed
+ * synchronously before the first await. That is load-bearing, not a style
+ * choice: saveRows seals rows via `Promise.all`, so on first run every callback
+ * reaches this point before any await resolves. Caching the resolved value
+ * instead would let each of them observe an empty cache, generate its own
+ * master key, and persist it — rows would be sealed under different keys and
+ * every one but the last writer's would become permanently unreadable. */
+let keysPromise: Promise<QueueKeys> | null = null;
 
 /** Drop the cached key material. Exported for tests, which simulate reinstall
  * and key-rotation by clearing the SecureStore stub between cases. */
 export function __resetQueueKeyCache(): void {
-  cachedKeys = null;
+  keysPromise = null;
 }
 
 function bytesToWordArray(bytes: Uint8Array): WordArray {
@@ -79,28 +95,41 @@ function bytesToWordArray(bytes: Uint8Array): WordArray {
   return Hex.parse(hex);
 }
 
-/** Read the master key, generating and persisting one on first use. */
+/** Read the master key, generating and persisting one only on genuine first use.
+ *
+ * A present-but-malformed entry is treated as corruption and raised, NOT
+ * silently replaced. Overwriting it would mint a key that cannot open any
+ * already-sealed row, and since loadRows turns a decryption failure into a
+ * corrupt row that drainQueue reaps, that would quietly delete every queued
+ * capture. Failing loudly keeps the rows on disk and recoverable. */
 async function loadOrCreateMasterKey(): Promise<WordArray> {
   const existing = await SecureStore.getItemAsync(KEY_ALIAS);
   if (existing) {
     const parsed = Base64.parse(existing);
-    // sigBytes is crypto-js's byte length; a truncated entry means the key was
-    // corrupted or partially written and must not be used to decrypt.
+    // sigBytes is crypto-js's byte length.
     if (parsed.sigBytes === KEY_BYTES) return parsed;
+    throw new Error("queueCrypto: master key entry is corrupt");
   }
   const fresh = bytesToWordArray(await Crypto.getRandomBytesAsync(KEY_BYTES));
   await SecureStore.setItemAsync(KEY_ALIAS, Base64.stringify(fresh));
   return fresh;
 }
 
-async function getKeys(): Promise<{ enc: WordArray; mac: WordArray }> {
-  if (cachedKeys) return cachedKeys;
-  const master = await loadOrCreateMasterKey();
-  cachedKeys = {
-    enc: HmacSHA256(ENC_LABEL, master),
-    mac: HmacSHA256(MAC_LABEL, master),
-  };
-  return cachedKeys;
+function getKeys(): Promise<QueueKeys> {
+  if (!keysPromise) {
+    keysPromise = loadOrCreateMasterKey()
+      .then((master) => ({
+        enc: HmacSHA256(ENC_LABEL, master),
+        mac: HmacSHA256(MAC_LABEL, master),
+      }))
+      .catch((e: unknown) => {
+        // Never cache a rejection: a keystore that was momentarily unavailable
+        // must be retryable, not permanently poisoned for the process lifetime.
+        keysPromise = null;
+        throw e;
+      });
+  }
+  return keysPromise;
 }
 
 /** True when `value` looks like an envelope this module produced.
@@ -120,15 +149,39 @@ export async function encryptPayload(plaintext: string): Promise<string> {
   const encrypted = AES.encrypt(Utf8.parse(plaintext), enc, { iv });
   const ivB64 = Base64.stringify(iv);
   const ctB64 = Base64.stringify(encrypted.ciphertext);
-  // MAC covers the IV as well as the ciphertext: authenticating the ciphertext
-  // alone would leave the IV malleable, letting an attacker flip bits in the
-  // first plaintext block undetected.
-  const macB64 = Base64.stringify(HmacSHA256(ivB64 + ctB64, mac));
+  const macB64 = Base64.stringify(HmacSHA256(macInput(ivB64, ctB64), mac));
   return [ENVELOPE_TAG, ivB64, ctB64, macB64].join(":");
 }
 
-/** Constant-time string comparison, so MAC verification does not leak how much
- * of a forged tag was correct through its timing. */
+/** The exact byte string the MAC covers.
+ *
+ * The IV must be authenticated alongside the ciphertext — authenticating the
+ * ciphertext alone leaves the IV malleable, which flips bits in the first
+ * plaintext block undetected.
+ *
+ * The `:` separators are what make this encoding canonical, and they are not
+ * decorative. A bare `ivB64 + ctB64` concatenation does not authenticate where
+ * one field ends and the next begins, so an attacker can shift characters
+ * across the boundary and produce a different (iv, ciphertext) pair with an
+ * identical MAC input — the tag still verifies. The obvious length check does
+ * NOT catch this: crypto-js's Base64.parse stops at the `=` padding, which
+ * falls inside the 24-char encoding of a 16-byte IV, so an over-long IV field
+ * still parses to exactly 16 bytes. `:` is outside the base64 alphabet, so
+ * including the separators pins the split unambiguously. The version tag is
+ * bound in for the same reason: it stops an envelope from being reinterpreted
+ * under a future format. */
+function macInput(ivB64: string, ctB64: string): string {
+  return `${ENVELOPE_TAG}:${ivB64}:${ctB64}`;
+}
+
+/** Length-independent comparison over the whole tag, so MAC verification does
+ * not short-circuit on the first differing character.
+ *
+ * Not genuinely constant-time — it early-returns on a length mismatch, and JS
+ * string representation and JIT behavior make real timing guarantees
+ * impossible without byte arrays. That is acceptable here: the threat model is
+ * a one-time offline read of the storage file, which gives an attacker no
+ * repeatable timing oracle to measure. Do not reuse this where one exists. */
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -154,15 +207,20 @@ export async function decryptPayload(sealed: string): Promise<string> {
 
   // Verify BEFORE decrypting — the whole point of encrypt-then-MAC is that
   // attacker-controlled bytes never reach the cipher or the padding check.
-  const expected = Base64.stringify(HmacSHA256(ivB64 + ctB64, mac));
+  const expected = Base64.stringify(HmacSHA256(macInput(ivB64, ctB64), mac));
   if (!timingSafeEqual(expected, macB64)) {
     throw new Error("queueCrypto: payload failed authentication");
   }
 
-  const iv = Base64.parse(ivB64);
-  if (iv.sigBytes !== IV_BYTES) {
+  // Check the ENCODED length, not the parsed one: Base64.parse stops at the `=`
+  // padding, which for a 16-byte IV sits two chars from the end, so a field with
+  // trailing junk still parses to exactly 16 bytes and a sigBytes check would
+  // never fire. The MAC above already binds the field boundaries; this is
+  // defense in depth against a future change to that encoding.
+  if (ivB64.length !== IV_B64_LENGTH) {
     throw new Error("queueCrypto: bad IV length");
   }
+  const iv = Base64.parse(ivB64);
   const decrypted = AES.decrypt(
     // crypto-js's decrypt wants a CipherParams-shaped object.
     { ciphertext: Base64.parse(ctB64) } as never,

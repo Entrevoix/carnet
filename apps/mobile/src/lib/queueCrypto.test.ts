@@ -164,3 +164,98 @@ describe("queueCrypto", () => {
     });
   });
 });
+
+// ── Regressions from the adversarial review of #86 ───────────────────────────
+describe("queueCrypto hardening", () => {
+  it("mints exactly one master key under concurrent first use", async () => {
+    // saveRows encrypts every row via Promise.all, so on first run all of those
+    // callbacks reach the key check before any await resolves. A cache that
+    // stores the resolved value (rather than the in-flight promise) lets each
+    // one generate and persist its OWN key — the rows are then sealed under
+    // different keys and all but the last are unrecoverable.
+    const sealed = await Promise.all([
+      encryptPayload("capture ONE"),
+      encryptPayload("capture TWO"),
+      encryptPayload("capture THREE"),
+    ]);
+
+    expect(secureStore.size).toBe(1);
+    // Every row must still open under the single surviving key.
+    expect(await Promise.all(sealed.map(decryptPayload))).toEqual([
+      "capture ONE",
+      "capture TWO",
+      "capture THREE",
+    ]);
+  });
+
+  it("authenticates the iv/ciphertext boundary, not just their concatenation", async () => {
+    const sealed = await encryptPayload("a real queued capture");
+    const [tag, iv, ct, mac] = sealed.split(":");
+
+    // Move characters from the ciphertext field into the IV field. The MAC is
+    // unchanged, so a MAC computed over the bare `iv + ct` concatenation still
+    // verifies — the split point must be authenticated too.
+    for (const shift of [1, 2, 4, 8]) {
+      const forged = [tag, iv + ct.slice(0, shift), ct.slice(shift), mac].join(
+        ":",
+      );
+      await expect(
+        decryptPayload(forged),
+        `re-split by ${shift} must be rejected`,
+      ).rejects.toThrow();
+    }
+  });
+
+  // Two independent defenses cover this: the delimited MAC input makes the
+  // encoding canonical, and the encoded-IV length check pins the boundary.
+  // Mutation-tested — removing EITHER alone keeps these tests green; removing
+  // BOTH turns them red. That is the intended belt-and-braces, not redundancy
+  // left in by accident.
+  it("rejects every possible re-split of a genuine envelope", async () => {
+    const sealed = await encryptPayload("sensitive capture body");
+    const [tag, iv, ct, mac] = sealed.split(":");
+    const joined = iv + ct;
+    let accepted = 0;
+    for (let cut = 1; cut < joined.length; cut++) {
+      if (cut === iv.length) continue; // the genuine split
+      const forged = [tag, joined.slice(0, cut), joined.slice(cut), mac].join(
+        ":",
+      );
+      try {
+        await decryptPayload(forged);
+        accepted++;
+      } catch {
+        // expected
+      }
+    }
+    expect(accepted).toBe(0);
+  });
+
+  it("refuses to re-mint over a corrupt key entry rather than destroying rows", async () => {
+    const sealed = await encryptPayload("queued capture");
+    // Simulate a truncated / partially-written SecureStore entry.
+    const alias = [...secureStore.keys()][0];
+    secureStore.set(alias, Buffer.alloc(8).toString("base64"));
+    __resetQueueKeyCache();
+
+    // Silently generating a fresh key here would overwrite the real one and
+    // make `sealed` permanently unreadable. Failing loudly keeps it recoverable.
+    await expect(encryptPayload("new capture")).rejects.toThrow(/corrupt/i);
+    expect(secureStore.get(alias)).toBe(Buffer.alloc(8).toString("base64"));
+    void sealed;
+  });
+
+  it("does not cache a rejection — a transient keystore error stays retryable", async () => {
+    const alias = "carnet.queue.key.v1";
+    secureStore.set(alias, Buffer.alloc(8).toString("base64"));
+    __resetQueueKeyCache();
+    await expect(encryptPayload("x")).rejects.toThrow();
+
+    // Keystore recovers. The next call must succeed WITHOUT an explicit cache
+    // reset — deliberately not calling __resetQueueKeyCache here, since doing
+    // so would clear the cached rejection and make this test vacuous.
+    secureStore.delete(alias);
+    const sealed = await encryptPayload("x");
+    expect(await decryptPayload(sealed)).toBe("x");
+  });
+});

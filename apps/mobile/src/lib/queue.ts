@@ -177,6 +177,15 @@ async function loadRows(): Promise<QueueRow[]> {
 
 /** Write the queue, sealing each row's payload.
  *
+ * Only `payload_json` is sealed. The surrounding metadata — `mode`,
+ * `created_at`, `attempts`, `last_error` — stays plaintext, which is a
+ * deliberate call rather than an oversight: it lets the queue be counted,
+ * sorted and triaged without touching the keystore, and it leaks only that a
+ * capture of some kind happened and when, not its content. (`last_error` is
+ * already run through sanitizeError, so it carries no credentials.) If the
+ * capture MODE alone is ever considered sensitive — `person` implies a
+ * business card was scanned — the envelope would need to cover the whole row.
+ *
  * Encrypting here rather than at each call site means every write path —
  * enqueue, attempt bumps, removals — is covered by construction, and a new
  * caller cannot forget to encrypt. Already-sealed values are left alone so a
