@@ -33,6 +33,30 @@ vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Light: "light", Medium: "medium", Heavy: "heavy" },
 }));
 
+// ── Crypto backing for the at-rest queue encryption ──────────────────────────
+// queueCrypto pulls expo-crypto → expo-modules-core, which needs the native
+// __DEV__ global. Stub the two native modules rather than the crypto module
+// itself, so these tests exercise the REAL encrypt/decrypt path and can assert
+// that what lands in AsyncStorage is genuinely ciphertext.
+vi.mock("expo-crypto", () => ({
+  getRandomBytesAsync: async (n: number) => {
+    const out = new Uint8Array(n);
+    (globalThis.crypto as Crypto).getRandomValues(out);
+    return out;
+  },
+}));
+
+const _secureStore = new Map<string, string>();
+vi.mock("expo-secure-store", () => ({
+  getItemAsync: async (k: string) => _secureStore.get(k) ?? null,
+  setItemAsync: async (k: string, v: string) => {
+    _secureStore.set(k, v);
+  },
+  deleteItemAsync: async (k: string) => {
+    _secureStore.delete(k);
+  },
+}));
+
 vi.mock("./settings", () => ({
   getSettings: vi.fn().mockResolvedValue({
     omniRouteUrl: "",
@@ -189,7 +213,13 @@ describe("enqueue", () => {
     expect(rows().length).toBe(1);
     const row = rows()[0];
     expect(row.mode).toBe("idea");
-    expect(JSON.parse(row.payload_json)).toMatchObject({ mode: "idea", text: "my idea" });
+    // payload_json is sealed at rest — read it back through listQueueRows,
+    // which decrypts. See the "at-rest encryption" block below.
+    const [decrypted] = await listQueueRows();
+    expect(JSON.parse(decrypted.payload_json)).toMatchObject({
+      mode: "idea",
+      text: "my idea",
+    });
   });
 
   it("increments queue depth", async () => {
@@ -488,5 +518,127 @@ describe("drainQueue", () => {
     // The row should have been processed exactly once.
     expect(calls).toEqual(["only-once"]);
     expect(rows().length).toBe(0);
+  });
+});
+
+// ── At-rest encryption (#86) ─────────────────────────────────────────────────
+// The queue holds raw idea text, voice transcripts and OCR'd business-card PII.
+// AsyncStorage is an unencrypted file in the app sandbox, so a raw dump (adb
+// pull on a rooted/debug device) must yield ciphertext, not readable capture
+// content. These assert against the RAW store, not the decrypting accessors.
+describe("queue at-rest encryption", () => {
+  const PII = "Jane Doe jane@example.com +1 555 0100 confidential idea";
+
+  it("stores payloads as ciphertext, with no plaintext in the raw dump", async () => {
+    await enqueue({ mode: "idea", text: PII });
+
+    const dump = _store.get(QUEUE_KEY)!;
+    expect(dump).not.toContain("Jane Doe");
+    expect(dump).not.toContain("jane@example.com");
+    expect(dump).not.toContain("555");
+    expect(dump).not.toContain("confidential");
+    expect(rows()[0].payload_json.startsWith("carnet-q1:")).toBe(true);
+  });
+
+  it("restores the exact plaintext on read", async () => {
+    await enqueue({ mode: "idea", text: PII });
+    const [row] = await listQueueRows();
+    expect(JSON.parse(row.payload_json)).toMatchObject({
+      mode: "idea",
+      text: PII,
+    });
+  });
+
+  it("keeps the key in SecureStore and never in AsyncStorage", async () => {
+    await enqueue({ mode: "idea", text: PII });
+    expect(_secureStore.size).toBe(1);
+    const key = [..._secureStore.values()][0];
+    for (const v of _store.values()) expect(v).not.toContain(key);
+  });
+
+  it("reads legacy plaintext rows written before encryption shipped", async () => {
+    seed([
+      {
+        id: "legacy",
+        mode: "idea",
+        payload_json: JSON.stringify({ mode: "idea", text: "old capture" }),
+        created_at: 1,
+        attempts: 0,
+        last_error: null,
+      },
+    ]);
+    const [row] = await listQueueRows();
+    expect(JSON.parse(row.payload_json)).toMatchObject({ text: "old capture" });
+  });
+
+  it("seals legacy plaintext rows on the next write (upgrade migration)", async () => {
+    seed([
+      {
+        id: "legacy",
+        mode: "idea",
+        payload_json: JSON.stringify({ mode: "idea", text: "old capture" }),
+        created_at: 1,
+        attempts: 0,
+        last_error: null,
+      },
+    ]);
+    expect(_store.get(QUEUE_KEY)!).toContain("old capture");
+
+    // Any write path re-persists the whole queue; enqueue is the simplest.
+    await enqueue({ mode: "idea", text: "new capture" });
+
+    const dump = _store.get(QUEUE_KEY)!;
+    expect(dump).not.toContain("old capture");
+    expect(dump).not.toContain("new capture");
+    expect(rows().every((r) => r.payload_json.startsWith("carnet-q1:"))).toBe(
+      true,
+    );
+    // The legacy row survived the migration intact.
+    const restored = await listQueueRows();
+    expect(restored).toHaveLength(2);
+    expect(
+      restored.map((r) => JSON.parse(r.payload_json).text).sort(),
+    ).toEqual(["new capture", "old capture"]);
+  });
+
+  it("drops a row that can no longer be decrypted (key rotated / reinstall)", async () => {
+    await enqueue({ mode: "idea", text: PII });
+    expect(rows()).toHaveLength(1);
+
+    // Simulate losing the key: SecureStore cleared, cache dropped. The sealed
+    // row is now unreadable and can never be processed.
+    _secureStore.clear();
+    const { __resetQueueKeyCache } = await import("./queueCrypto");
+    __resetQueueKeyCache();
+
+    // It surfaces as a corrupt row and drainQueue removes it, rather than
+    // wedging the queue with a payload that will fail forever.
+    const surfaced = await listQueueRows();
+    expect(surfaced[0].payload_json.startsWith("carnet-q1:")).toBe(true);
+    await drainQueue();
+    expect(rows()).toHaveLength(0);
+  });
+
+  it("does not nest envelopes across repeated writes", async () => {
+    // Each write decrypts then re-seals with a fresh IV, so the stored envelope
+    // is not byte-stable — what must hold is that it stays exactly ONE envelope
+    // deep, i.e. a single decrypt yields JSON rather than another envelope.
+    await enqueue({ mode: "idea", text: "first" });
+    await enqueue({ mode: "idea", text: "second" });
+    await enqueue({ mode: "idea", text: "third" });
+
+    for (const row of rows()) {
+      expect(row.payload_json.startsWith("carnet-q1:")).toBe(true);
+    }
+    const restored = await listQueueRows();
+    for (const row of restored) {
+      expect(row.payload_json.startsWith("carnet-q1:")).toBe(false);
+      expect(() => JSON.parse(row.payload_json)).not.toThrow();
+    }
+    expect(restored.map((r) => JSON.parse(r.payload_json).text).sort()).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
   });
 });

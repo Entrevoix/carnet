@@ -25,6 +25,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Haptics from "expo-haptics";
 
 import { createLock, localId, sanitizeError } from "./asyncQueueUtils";
+import {
+  decryptPayload,
+  encryptPayload,
+  isEncryptedEnvelope,
+} from "./queueCrypto";
 
 import {
   enrichIdea,
@@ -132,19 +137,60 @@ let _draining = false;
 // The queue is a JSON array of QueueRow under QUEUE_KEY. Mirrors storage.ts's
 // recents-history persistence.
 
+/** Read the queue, decrypting each row's payload.
+ *
+ * Rows are sealed at rest (see queueCrypto) but plaintext in memory — every
+ * consumer below this line works with a normal `payload_json` string.
+ *
+ * Two kinds of unsealed row are passed through untouched rather than decrypted:
+ *   - Legacy rows written before encryption shipped. They are still valid JSON
+ *     and drain normally; the next `saveRows` seals them (see below), so the
+ *     migration completes on the first write after upgrade with no separate
+ *     migration step and no risk of dropping a queued capture.
+ *   - Rows whose decryption fails (key rotated, reinstall, tampering). These
+ *     keep their sealed text, which is not valid JSON, so `drainQueue`'s
+ *     existing corrupt-row branch removes them. Reusing that path deliberately:
+ *     a payload that cannot be read can never be processed, and inventing a
+ *     second disposal policy here would just be a second thing to keep in sync. */
 async function loadRows(): Promise<QueueRow[]> {
   const raw = await AsyncStorage.getItem(QUEUE_KEY);
   if (!raw) return [];
+  let parsed: QueueRow[];
   try {
-    const parsed = JSON.parse(raw) as QueueRow[];
-    return Array.isArray(parsed) ? parsed : [];
+    const candidate = JSON.parse(raw) as QueueRow[];
+    if (!Array.isArray(candidate)) return [];
+    parsed = candidate;
   } catch {
     return [];
   }
+  return Promise.all(
+    parsed.map(async (row) => {
+      if (!isEncryptedEnvelope(row.payload_json)) return row;
+      try {
+        return { ...row, payload_json: await decryptPayload(row.payload_json) };
+      } catch {
+        return row;
+      }
+    }),
+  );
 }
 
+/** Write the queue, sealing each row's payload.
+ *
+ * Encrypting here rather than at each call site means every write path —
+ * enqueue, attempt bumps, removals — is covered by construction, and a new
+ * caller cannot forget to encrypt. Already-sealed values are left alone so a
+ * row that failed to decrypt is not double-wrapped; real payloads are
+ * `JSON.stringify` output and so never collide with the envelope prefix. */
 async function saveRows(rows: QueueRow[]): Promise<void> {
-  await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(rows));
+  const sealed = await Promise.all(
+    rows.map(async (row) =>
+      isEncryptedEnvelope(row.payload_json)
+        ? row
+        : { ...row, payload_json: await encryptPayload(row.payload_json) },
+    ),
+  );
+  await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(sealed));
 }
 
 /** Serialize read-modify-write so a concurrent enqueue during a drain pass
