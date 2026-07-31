@@ -1,0 +1,70 @@
+/**
+ * Pure display-string / response-object derivations for CaptureScreen.
+ *
+ * Each of these was a small inline computation repeated or duplicated in
+ * the screen (the preview-response object was built identically at four
+ * call sites: idea/journal/person submit, and promote). Extracted so the
+ * derivation is unit-testable without a renderer; the screen still owns
+ * the `useMemo`/state wiring around them.
+ */
+
+import type { CaptureMode } from "./storage";
+import type { PickedAttachment } from "./attachments";
+import type { CaptureResponse } from "@carnet/shared";
+
+/** A subset of the screen's pending-preview state — only the fields the
+ * subtitle needs from each mode's pending object. */
+export interface PreviewSubtitleInputs {
+  mode: CaptureMode;
+  pendingIdea: { slug: string } | null;
+  pendingJournal: { date: string } | null;
+  pendingPerson: { firstName: string; lastName: string } | null;
+  omniModel: string | null;
+}
+
+/** Preview-card subtitle: the target filename for the active mode + the
+ * enriching model, e.g. `Ideas/my-idea.md • gpt-4`. */
+export function buildPreviewSubtitle(inputs: PreviewSubtitleInputs): string {
+  const { mode, pendingIdea, pendingJournal, pendingPerson, omniModel } = inputs;
+  const filename =
+    mode === "idea" && pendingIdea
+      ? `Ideas/${pendingIdea.slug}.md`
+      : mode === "journal" && pendingJournal
+        ? `Journal/${pendingJournal.date}.md`
+        : mode === "person" && pendingPerson
+          ? `People/${pendingPerson.firstName}-${pendingPerson.lastName}.md`
+          : "";
+  return `${filename}${omniModel ? ` • ${omniModel}` : ""}`;
+}
+
+/** One quiet summary line for what's staged behind the "+" metadata sheet
+ * (tags / attachments / location), so the user can see filing state
+ * without opening it. Empty string when nothing is staged. */
+export function buildMetaSummary(
+  tags: string[],
+  pending: readonly PickedAttachment[],
+  location: string | null,
+): string {
+  const parts: string[] = [];
+  if (tags.length > 0) parts.push(`${tags.length} tag${tags.length > 1 ? "s" : ""}`);
+  if (pending.length > 0)
+    parts.push(`${pending.length} attachment${pending.length > 1 ? "s" : ""}`);
+  if (location) parts.push("location");
+  return parts.join(" · ");
+}
+
+/** Build the ok-status preview response shown by CapturePreviewCard.
+ * `filepath` is only set once the note has been written to disk (promote
+ * after a save-first commit); the initial submit-phase preview omits it. */
+export function buildCapturePreviewResponse(
+  markdown: string,
+  filepath?: string,
+): CaptureResponse {
+  return {
+    type: "capture_response",
+    request_id: "",
+    status: "ok",
+    preview_markdown: markdown,
+    filepath,
+  };
+}

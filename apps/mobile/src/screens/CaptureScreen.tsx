@@ -33,10 +33,6 @@ import {
 } from "../lib/dispatcher";
 import {
   slugify,
-  writeIdea,
-  appendJournal,
-  writePerson,
-  injectAttachments,
   getModificationTime,
   extractNameFromMarkdown,
   type AttachmentRef,
@@ -50,14 +46,14 @@ import {
 import { classifyCaptureError } from "../lib/captureErrorDecision";
 import { planSaveFirstOutcome } from "../lib/saveFirstOutcome";
 import { persistAttachments as persistAttachmentsToVault } from "../lib/attachmentPersistence";
+import { confirmSaveIdea, confirmSaveJournal, confirmSavePerson } from "../lib/captureConfirmSave";
 import { promoteIdeaOnDisk } from "../lib/promoteIdeaOnDisk";
 import { pickAttachment, type PickedAttachment } from "../lib/attachments";
 import { clearDraft, loadDraft, saveDraft } from "../lib/captureDraft";
 import { MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
 import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
-import { mergeUserTags } from "../lib/tags";
-import { upsertFrontmatterField } from "../lib/frontmatter";
 import { getTagIndex, upsertNoteInIndex } from "../lib/vault";
+import { buildPreviewSubtitle, buildMetaSummary, buildCapturePreviewResponse } from "../lib/captureDisplay";
 import {
   deriveTitle,
   parseStatusFromMarkdown,
@@ -152,10 +148,6 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // fields were cleared.
   const saveFirstCtxRef = useRef<RawIdeaInput | null>(null);
 
-  /** Inject the selected location into a note's frontmatter (no-op when unset). */
-  const withLocation = (markdown: string): string =>
-    location ? upsertFrontmatterField(markdown, "location", location) : markdown;
-
   // Draft persistence: restore on entry, autosave (debounced) while typing,
   // cleared at every point the capture is safely persisted. State (not a
   // ref) so the autosave effect re-arms as soon as the restore completes —
@@ -219,28 +211,17 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
   // Preview-card subtitle: the target filename for this mode + the enriching
   // model. Computed here so the presentational card stays mode-agnostic.
-  const previewSubtitle = useMemo(() => {
-    const filename =
-      mode === "idea" && pendingIdea
-        ? `Ideas/${pendingIdea.slug}.md`
-        : mode === "journal" && pendingJournal
-          ? `Journal/${pendingJournal.date}.md`
-          : mode === "person" && pendingPerson
-            ? `People/${pendingPerson.firstName}-${pendingPerson.lastName}.md`
-            : "";
-    return `${filename}${omniModel ? ` • ${omniModel}` : ""}`;
-  }, [mode, pendingIdea, pendingJournal, pendingPerson, omniModel]);
+  const previewSubtitle = useMemo(
+    () => buildPreviewSubtitle({ mode, pendingIdea, pendingJournal, pendingPerson, omniModel }),
+    [mode, pendingIdea, pendingJournal, pendingPerson, omniModel],
+  );
 
   // One quiet line summarizing what's staged behind the "+" sheet, so the
   // user can see filing state without opening it.
-  const metaSummary = useMemo(() => {
-    const parts: string[] = [];
-    if (tags.length > 0) parts.push(`${tags.length} tag${tags.length > 1 ? "s" : ""}`);
-    if (pending.length > 0)
-      parts.push(`${pending.length} attachment${pending.length > 1 ? "s" : ""}`);
-    if (location) parts.push("location");
-    return parts.join(" · ");
-  }, [tags, pending, location]);
+  const metaSummary = useMemo(
+    () => buildMetaSummary(tags, pending, location),
+    [tags, pending, location],
+  );
 
   const canSubmit = useMemo(() => {
     if (phase !== "input") return false;
@@ -425,12 +406,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           const slug = slugify(title) || "untitled";
           setPendingIdea({ slug, markdown: result.markdown, model: result.model });
           setOmniModel(result.model);
-          setResponse({
-            type: "capture_response",
-            request_id: "",
-            status: "ok",
-            preview_markdown: result.markdown,
-          });
+          setResponse(buildCapturePreviewResponse(result.markdown));
           setPhase("preview");
         } catch (e: unknown) {
           await handleCaptureError(e, async () => {
@@ -506,12 +482,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         const today = todayLocal();
         setPendingJournal({ date: today, markdown: result.markdown, model: result.model });
         setOmniModel(result.model);
-        setResponse({
-          type: "capture_response",
-          request_id: "",
-          status: "ok",
-          preview_markdown: result.markdown,
-        });
+        setResponse(buildCapturePreviewResponse(result.markdown));
         setPhase("preview");
       } catch (e: unknown) {
         await handleCaptureError(e, async () => {
@@ -541,12 +512,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         model: result.model,
       });
       setOmniModel(result.model);
-      setResponse({
-        type: "capture_response",
-        request_id: "",
-        status: "ok",
-        preview_markdown: result.markdown,
-      });
+      setResponse(buildCapturePreviewResponse(result.markdown));
       setPhase("preview");
     } catch (e: unknown) {
       await handleCaptureError(e, () =>
@@ -565,15 +531,17 @@ export default function CaptureScreen({ route, navigation }: Props) {
     if (mode === "idea" && pendingIdea) {
       try {
         const refs = await persistAttachments();
-        const markdown = withLocation(
-          mergeUserTags(injectAttachments(pendingIdea.markdown, refs), tags),
-        );
-        const { filepath } = await writeIdea(pendingIdea.slug, markdown);
+        const { filepath, markdown, title } = await confirmSaveIdea({
+          slug: pendingIdea.slug,
+          markdown: pendingIdea.markdown,
+          refs,
+          tags,
+          location,
+        });
         setPending([]);
         setTags([]);
         setLocation(null);
         setSavedFilepath(filepath);
-        const title = deriveTitle(pendingIdea.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, markdown).catch(() => undefined);
         void clearDraft(mode).catch(() => undefined);
@@ -590,24 +558,24 @@ export default function CaptureScreen({ route, navigation }: Props) {
     if (mode === "journal" && pendingJournal) {
       try {
         const refs = await persistAttachments();
-        const markdown = withLocation(
-          mergeUserTags(injectAttachments(pendingJournal.markdown, refs), tags),
-        );
         // A journal day-file accumulates every same-day capture into one note:
-        // appendJournal unions each capture's tags into the file's frontmatter
-        // and returns the full accumulated markdown. Index off THAT, not the
-        // just-written fragment — otherwise the upsert would overwrite the note's
-        // index row with only this capture's tags, silently dropping earlier
-        // same-day tags from the derived tag/search index.
-        const { filepath, markdown: dayFileMarkdown } = await appendJournal(
-          pendingJournal.date,
-          markdown,
-        );
+        // confirmSaveJournal returns the full accumulated markdown (appendJournal
+        // unions this capture's tags into the file's frontmatter). Index off
+        // THAT, not the just-written fragment — otherwise the upsert would
+        // overwrite the note's index row with only this capture's tags,
+        // silently dropping earlier same-day tags from the derived tag/search
+        // index.
+        const { filepath, markdown: dayFileMarkdown, title } = await confirmSaveJournal({
+          date: pendingJournal.date,
+          markdown: pendingJournal.markdown,
+          refs,
+          tags,
+          location,
+        });
         setPending([]);
         setTags([]);
         setLocation(null);
         setSavedFilepath(filepath);
-        const title = deriveTitle(pendingJournal.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, dayFileMarkdown).catch(() => undefined);
         void clearDraft(mode).catch(() => undefined);
@@ -623,16 +591,16 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
     if (mode === "person" && pendingPerson) {
       try {
-        const markdown = withLocation(mergeUserTags(pendingPerson.markdown, tags));
-        const { filepath } = await writePerson(
-          pendingPerson.firstName,
-          pendingPerson.lastName,
-          markdown,
-        );
+        const { filepath, markdown, title } = await confirmSavePerson({
+          firstName: pendingPerson.firstName,
+          lastName: pendingPerson.lastName,
+          markdown: pendingPerson.markdown,
+          tags,
+          location,
+        });
         setTags([]);
         setLocation(null);
         setSavedFilepath(filepath);
-        const title = deriveTitle(pendingPerson.markdown);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, markdown).catch(() => undefined);
         void clearDraft(mode).catch(() => undefined);
@@ -656,13 +624,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       const newSlug = slugify(deriveTitle(result.markdown)) || pendingIdea.slug;
       setPendingIdea({ slug: newSlug, markdown: result.markdown, model: result.model });
       setOmniModel(result.model);
-      setResponse({
-        type: "capture_response",
-        request_id: "",
-        status: "ok",
-        preview_markdown: result.markdown,
-        filepath: savedFilepath ?? undefined,
-      });
+      setResponse(buildCapturePreviewResponse(result.markdown, savedFilepath ?? undefined));
 
       // If file was already written, update it on disk — guarded by the mtime
       // check so a workstation edit synced in between our read and write is kept
