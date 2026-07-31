@@ -22,13 +22,23 @@ npm -w @carnet/mobile run verify:capture-flow
 This runs `writer.test.ts`, `frontmatter.test.ts`, `queue.test.ts`,
 `vault.test.ts`, `vaultSearch.test.ts`, `journalTagIndex.test.ts`,
 `markdownRoundTrip.test.ts`, and `test/fixtures/repro.test.ts`. Sections below
-are annotated with `(automated coverage: ...)` where this script already
-checks the underlying logic; the manual steps remain necessary for anything
+are annotated with `(automated coverage: ...)` where automated tests already
+check the underlying logic; the manual steps remain necessary for anything
 device-only (voice/OCR, real share-sheet, Syncthing, Karakeep network calls).
+
+**Invariant (issue #91):** every section containing a `- [ ]` checklist states
+either the command that covers its logic or `device-only`, so a reader never has
+to guess whether a manual step is redundant. Some annotations name a suite
+outside `verify:capture-flow` — that script is the fast capture-flow gate, not
+the whole test suite. If you add a section, annotate it. (`When something
+fails` is prose, not a checklist, and is exempt.)
 
 ---
 
 ## Prerequisites
+
+_(device-only: these are the physical/toolchain preconditions for running the
+rest of the checklist — an attached device, a working adb, a synced vault.)_
 
 - [ ] Phone has carnet installed (Expo Go or a dev/release build)
 - [ ] Workstation runs the OmniRoute / navetted LLM gateway, reachable from the
@@ -38,6 +48,11 @@ device-only (voice/OCR, real share-sheet, Syncthing, Karakeep network calls).
 - [ ] *(Optional)* A reachable Karakeep instance + API key, for the export tests
 
 ## First launch & configuration
+
+_(automated coverage: `npm -w @carnet/mobile test -- settings` — the
+secure-store/AsyncStorage split is pinned by `settings.test.ts` (keys go to
+`expo-secure-store`, never the persisted blob) and `settingsPersistence.test.ts`.
+First-launch boot order and the absence of a pairing screen are device-only.)_
 
 - [ ] Fresh install (or wipe AsyncStorage): launch carnet. App boots straight to
       **Home** — there is no pairing/QR screen.
@@ -52,6 +67,9 @@ device-only (voice/OCR, real share-sheet, Syncthing, Karakeep network calls).
 (Automated: `src/lib/startupTiming.test.ts` covers the classifier/latch;
 this device check verifies the real number.)
 
+_(automated coverage: `npm -w @carnet/mobile test -- startupTiming`; the real
+cold-start number is device-only by nature.)_
+
 - [ ] Force-stop the app, relaunch from the launcher, then
       `adb logcat -d | grep "\[startup\]"`. **No line containing `EXCEEDS`**
       may appear (release builds only log on a budget breach). A breach means
@@ -60,7 +78,7 @@ this device check verifies the real number.)
 
 ## Capture — Idea (golden path)
 
-_(automated coverage: `npm run verify:capture-flow` — frontmatter shape via
+_(automated coverage: `npm -w @carnet/mobile run verify:capture-flow` — frontmatter shape via
 `writer.test.ts`/`frontmatter.test.ts`)_
 
 - [ ] Home → **Idea** → type a sentence ("test idea — verifying smoke flow").
@@ -73,7 +91,7 @@ _(automated coverage: `npm run verify:capture-flow` — frontmatter shape via
 
 ## Promote idea status
 
-_(automated coverage: `npm run verify:capture-flow` — mtime conflict guard via
+_(automated coverage: `npm -w @carnet/mobile run verify:capture-flow` — mtime conflict guard via
 `writer.test.ts` and `test/fixtures/repro.test.ts`)_
 
 - [ ] Repeat the idea capture; this time tap **developing** in the preview card
@@ -84,7 +102,7 @@ _(automated coverage: `npm run verify:capture-flow` — mtime conflict guard via
 
 ## Capture — Journal (voice + same-day append)
 
-_(automated coverage: `npm run verify:capture-flow` — same-day append/merge
+_(automated coverage: `npm -w @carnet/mobile run verify:capture-flow` — same-day append/merge
 via `writer.test.ts`, `journalTagIndex.test.ts`, and
 `test/fixtures/repro.test.ts`; voice dictation itself is still device-only)_
 
@@ -99,6 +117,10 @@ via `writer.test.ts`, `journalTagIndex.test.ts`, and
 
 ## Capture — Person (with the LLM gateway)
 
+_(automated coverage: `npm -w @carnet/mobile run verify:capture-flow` — Person frontmatter shape
+and file placement via `writer.test.ts`/`frontmatter.test.ts`. Card OCR itself
+is device-only: it needs a real camera and a reachable vision model.)_
+
 - [ ] Settings → OmniRoute URL set and reachable.
 - [ ] Home → **Contact** → **Scan card** → camera opens → **Capture** on a real
       business card. OCR runs; the OCR text field populates.
@@ -108,6 +130,10 @@ via `writer.test.ts`, `journalTagIndex.test.ts`, and
 
 ## Capture — Person (without the gateway)
 
+_(automated coverage: `npm -w @carnet/mobile test -- omniroute` — the
+not-configured error path is pinned by `omniroute.test.ts`; the banner copy and
+the manual-entry flow are device-only.)_
+
 - [ ] Settings → clear the OmniRoute URL → Save.
 - [ ] Home → **Contact** → scanning surfaces the friendly banner: *"OmniRoute not
       configured. Type the card text below, then tap Send."*
@@ -116,7 +142,7 @@ via `writer.test.ts`, `journalTagIndex.test.ts`, and
 
 ## Offline queue (capture while unreachable)
 
-_(automated coverage: `npm run verify:capture-flow` — queue persistence/drain
+_(automated coverage: `npm -w @carnet/mobile run verify:capture-flow` — queue persistence/drain
 logic via `queue.test.ts`; the airplane-mode/force-quit device behavior
 itself is still manual)_
 
@@ -129,9 +155,31 @@ itself is still manual)_
       and drains on reconnect. No orphaned/partial file in the vault (atomic
       tmp+rename write).
 
+## At-rest encryption upgrade (queue + drafts)
+
+_(automated coverage: `npm -w @carnet/mobile test -- queueCrypto captureDraft` —
+the envelope, key handling, and the legacy-plaintext migration are unit-tested.
+The device check below exists because the unit tests stub `expo-crypto` and
+`expo-secure-store`: they cannot prove `getRandomBytesAsync` works under Hermes,
+nor that a real upgrade over real queued data survives.)_
+
+- [ ] **Install a build from before the encryption change**, capture 2-3 items
+      while offline (airplane mode) so they sit in the queue, then **upgrade
+      in place** to a current release build (do NOT uninstall — that wipes the
+      queue and defeats the test).
+- [ ] Open the app. The pending-sync count still shows the same number of items.
+- [ ] Restore connectivity → the queue drains and every captured note lands in
+      the vault. **Nothing is silently dropped** — a decryption failure is
+      reaped as a corrupt row, so a migration bug shows up as vanished captures.
+- [ ] On a dev build, inspect AsyncStorage: `carnet:queue:v1` and
+      `carnet:capture_draft:v1:*` values start with `carnet-q1:` and contain no
+      readable capture text.
+- [ ] Type into a capture form, background the app, force-stop it, relaunch →
+      the draft is restored (proves encrypt+decrypt round-trips on-device).
+
 ## Rich edit (WYSIWYG / RecentDetail)
 
-_(automated coverage: `npm run verify:capture-flow` — byte-intact frontmatter
+_(automated coverage: `npm -w @carnet/mobile run verify:capture-flow` — byte-intact frontmatter
 across body-only edits via `markdownRoundTrip.test.ts`)_
 
 - [ ] Open a note from Recents → **RecentDetail**. The TenTap WYSIWYG editor loads
@@ -141,6 +189,13 @@ across body-only edits via `markdownRoundTrip.test.ts`)_
       corruption mode).
 
 ## Karakeep export (optional)
+
+_(automated coverage: `npm -w @carnet/mobile test -- karakeep` — bookmark body
+composition, re-export/update vs duplicate, incremental asset sync, the
+not-configured error, and the unsupported-file-type notice are covered by
+`karakeepNoteExport.test.ts`, `karakeepAssetSync.test.ts`, `karakeepExport.test.ts`
+and `karakeepExportUi.test.ts`. The network calls against a live instance are
+device-only.)_
 
 - [ ] Settings → Karakeep URL + API key set.
 - [ ] Open a note → **Send to Karakeep** → snackbar *"Exported to Karakeep"*. On
@@ -175,6 +230,11 @@ across body-only edits via `markdownRoundTrip.test.ts`)_
 
 ## Voice setup (STT onboarding)
 
+_(device-only: recognizer availability, on-device model download, and the
+readiness banner all depend on the device's speech services. Exercising the
+model-missing path needs a device without the English model — see the
+`pixel-stt-device-recognizer-health` note.)_
+
 - [ ] **Settings → Voice input → Check voice setup** reports the recognizer/model
       state: "ready", or an offer to **Download voice model** when the on-device
       English model is missing (the code-12 dictation dead-end).
@@ -184,7 +244,7 @@ across body-only edits via `markdownRoundTrip.test.ts`)_
 
 ## Unicode + collision edge cases
 
-_(automated coverage: `npm run verify:capture-flow` — slug collision and
+_(automated coverage: `npm -w @carnet/mobile run verify:capture-flow` — slug collision and
 non-Latin H1 handling via `writer.test.ts` and `test/fixtures/repro.test.ts`)_
 
 - [ ] Capture an idea titled `Mémoire & flux` → file lands at
