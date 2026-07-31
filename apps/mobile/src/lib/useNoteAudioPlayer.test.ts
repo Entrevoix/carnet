@@ -171,6 +171,43 @@ describe("useNoteAudioPlayer", () => {
     expect(result.current.positionMs).toBe(9876);
   });
 
+  it("reports an unknown duration as 0, never NaN or undefined", async () => {
+    const sound = makeSound({ isLoaded: true, isPlaying: true, positionMillis: 0 });
+    vi.mocked(readPairedBinaryUri).mockResolvedValue({
+      uri: "u",
+    } as Awaited<ReturnType<typeof readPairedBinaryUri>>);
+    vi.mocked(Audio.Sound.createAsync).mockResolvedValue({
+      sound,
+    } as unknown as Awaited<ReturnType<typeof Audio.Sound.createAsync>>);
+
+    const { result } = renderHook(() => useNoteAudioPlayer("md"));
+    await act(async () => {
+      await result.current.togglePlay();
+    });
+    const onStatus = vi.mocked(Audio.Sound.createAsync).mock
+      .calls[0][2] as unknown as StatusCallback;
+
+    act(() => {
+      onStatus({
+        isLoaded: true,
+        isPlaying: true,
+        positionMillis: 10,
+        durationMillis: 5000,
+      });
+    });
+    expect(result.current.durationMs).toBe(5000);
+
+    // expo-av omits durationMillis for a stream whose length it hasn't resolved
+    // yet. Without the `?? 0` coalesce this lands as undefined and the progress
+    // bar's position/duration ratio becomes NaN — a silently blank bar.
+    act(() => {
+      onStatus({ isLoaded: true, isPlaying: true, positionMillis: 20 });
+    });
+    expect(result.current.durationMs).toBe(0);
+    expect(Number.isNaN(result.current.durationMs)).toBe(false);
+    expect(result.current.positionMs).toBe(20);
+  });
+
   it("ignores an unloaded status frame", async () => {
     const sound = makeSound({ isLoaded: true, isPlaying: true, positionMillis: 0 });
     vi.mocked(readPairedBinaryUri).mockResolvedValue({
@@ -342,15 +379,23 @@ describe("useNoteAudioPlayer", () => {
     const onStatus = vi.mocked(Audio.Sound.createAsync).mock
       .calls[0][2] as unknown as StatusCallback;
     unmount();
-    // A late frame must not setState on an unmounted component.
-    expect(() =>
-      onStatus({
-        isLoaded: true,
-        isPlaying: true,
-        positionMillis: 777,
-        durationMillis: 999,
-      }),
-    ).not.toThrow();
+
+    // React silently drops setState on an unmounted fiber, so "the state did
+    // not change" cannot distinguish a working guard from a missing one. Probe
+    // the guard directly instead: `isPlaying` is the first field read AFTER the
+    // mounted check, so it must never be touched once the screen is gone.
+    let readPastTheGuard = false;
+    const lateFrame = {
+      isLoaded: true,
+      get isPlaying() {
+        readPastTheGuard = true;
+        return true;
+      },
+      positionMillis: 777,
+      durationMillis: 999,
+    };
+    expect(() => onStatus(lateFrame)).not.toThrow();
+    expect(readPastTheGuard).toBe(false);
     expect(result.current.positionMs).toBe(0);
   });
 });

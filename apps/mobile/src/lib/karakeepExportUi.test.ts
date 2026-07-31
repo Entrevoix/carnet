@@ -24,6 +24,22 @@ describe("needsReexportConfirm", () => {
     expect(needsReexportConfirm("# Just a heading\n\nBody.\n")).toBe(false);
   });
 
+  it("treats an EMPTY karakeepId as never-exported, not as a stamp", () => {
+    // Pins the assumption the `!== null` check rests on: extractFrontmatterField
+    // reports a blank value as absent, so these must behave like FRESH_NOTE
+    // rather than sending the user through a pointless confirm dialog.
+    expect(
+      needsReexportConfirm(
+        '---\ncreated: 2026-07-08T11:55:46.000Z\nkarakeepId: ""\n---\n# Title\n\nBody.\n',
+      ),
+    ).toBe(false);
+    expect(
+      needsReexportConfirm(
+        "---\ncreated: 2026-07-08T11:55:46.000Z\nkarakeepId:\n---\n# Title\n\nBody.\n",
+      ),
+    ).toBe(false);
+  });
+
   it("does not confuse a karakeepId in the BODY for a real stamp", () => {
     expect(
       needsReexportConfirm(`${FRESH_NOTE}\nkarakeepId: bm_not_frontmatter\n`),

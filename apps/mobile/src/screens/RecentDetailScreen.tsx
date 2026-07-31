@@ -115,6 +115,16 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // Mounted guard — Back-during-write can unmount before the in-flight
   // updateNote resolves; setState after that triggers a React warning. The
   // write itself still lands on disk.
+  //
+  // There are FOUR of these in play: this one plus one each inside
+  // useNoteEditSession, useKarakeepExport and useNoteAudioPlayer. They are
+  // interchangeable — all four flip false at the same instant — ONLY because
+  // all four hooks are mounted by this component and each sets its ref from a
+  // `[]`-dep effect, so they share one lifecycle. If any of these hooks is ever
+  // mounted by a separately-lifecycled component (a modal, a lazily-mounted
+  // panel, a list row), that assumption breaks and every cross-hook guard has
+  // to be re-verified; do not collapse them into a single shared ref on the
+  // strength of them agreeing today.
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;

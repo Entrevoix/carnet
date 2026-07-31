@@ -60,8 +60,13 @@ export function useNoteAudioPlayer(body: string): NoteAudioPlayer {
   const soundRef = useRef<Audio.Sound | null>(null);
   const mountedRef = useRef(true);
 
-  // Unload the sound on unmount or note-switch — keeps the audio focus
-  // returned to the system and frees the file handle.
+  // Unload the sound on UNMOUNT — keeps the audio focus returned to the system
+  // and frees the file handle. The `[]` deps mean there is deliberately no
+  // note-switch unload path: a `body` change alone would NOT re-run this. That
+  // is safe today only because related-note navigation uses navigation.push, so
+  // every note gets a fresh screen (and hook) instance rather than an in-place
+  // param update. Switching to an in-place param update would strand the
+  // previous note's sound loaded — add `body` to the deps if that ever changes.
   useEffect(() => {
     mountedRef.current = true;
     return () => {

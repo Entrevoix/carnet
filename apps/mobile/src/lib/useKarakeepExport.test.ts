@@ -236,6 +236,102 @@ describe("useKarakeepExport — guards and dismissal", () => {
     expect(exportNoteToKarakeep).toHaveBeenCalledTimes(2);
   });
 
+  // The two in-flight guards — runKarakeepExport's and handleSendToKarakeep's —
+  // mask each other under a plain double-tap: either one alone blocks the second
+  // export. The next two tests separate them, so removing either is caught.
+
+  it("ignores a re-fired Update confirm while the export it started is in flight", async () => {
+    let release: (() => void) | undefined;
+    vi.mocked(exportNoteToKarakeep).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              kind: "exported",
+              nextBody: "STAMPED-BODY",
+              didUpdate: true,
+              skippedUnsupported: [],
+            });
+        }),
+    );
+    const { result } = setup(EXPORTED_NOTE);
+    await send(result);
+    const buttons = vi.mocked(Alert.alert).mock.calls[0][2];
+
+    act(() => {
+      buttons?.[1].onPress?.();
+    });
+    expect(exportNoteToKarakeep).toHaveBeenCalledTimes(1);
+    // The dialog handler calls runKarakeepExport DIRECTLY, so handleSendToKarakeep's
+    // guard is never consulted — only runKarakeepExport's own guard can stop this.
+    act(() => {
+      buttons?.[1].onPress?.();
+    });
+    expect(exportNoteToKarakeep).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release?.();
+      await Promise.resolve();
+    });
+  });
+
+  it("does not re-open the confirm dialog while an export is already running", async () => {
+    let release: (() => void) | undefined;
+    vi.mocked(exportNoteToKarakeep).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              kind: "exported",
+              nextBody: "STAMPED-BODY",
+              didUpdate: true,
+              skippedUnsupported: [],
+            });
+        }),
+    );
+    const { result } = setup(EXPORTED_NOTE);
+    await send(result);
+    act(() => {
+      vi.mocked(Alert.alert).mock.calls[0][2]?.[1].onPress?.();
+    });
+    expect(result.current.exportingKarakeep).toBe(true);
+
+    // A second button tap mid-export must be swallowed by handleSendToKarakeep.
+    // runKarakeepExport's guard cannot help here: it sits behind the dialog, so
+    // without this guard the user gets a confusing second "Already exported".
+    await send(result);
+    expect(Alert.alert).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release?.();
+      await Promise.resolve();
+    });
+  });
+
+  it("clears a stale skip notice when a new export starts", async () => {
+    vi.mocked(exportNoteToKarakeep).mockResolvedValueOnce({
+      kind: "exported",
+      nextBody: "STAMPED-BODY",
+      didUpdate: false,
+      skippedUnsupported: ["a.zip"],
+    });
+    const { result } = setup(FRESH_NOTE);
+    await send(result);
+    expect(result.current.karakeepSkipNote).toContain("a.zip");
+
+    // The failure path never touches skipNote, so only the reset at the top of
+    // runKarakeepExport can clear it — otherwise the old "a.zip was skipped"
+    // notice re-appears under an unrelated later export.
+    vi.mocked(exportNoteToKarakeep).mockResolvedValueOnce({
+      kind: "failed",
+      reason: "401 Unauthorized",
+      unreachable: false,
+    });
+    await send(result);
+    expect(result.current.karakeepSkipNote).toBeNull();
+    expect(result.current.karakeepError).toBe("401 Unauthorized");
+  });
+
   it("clears the previous error and skip note when a new export starts", async () => {
     vi.mocked(exportNoteToKarakeep).mockResolvedValueOnce({
       kind: "failed",

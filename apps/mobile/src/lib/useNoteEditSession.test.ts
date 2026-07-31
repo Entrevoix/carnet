@@ -33,6 +33,16 @@ const HEADER = "---\ncreated: 2026-07-08T11:55:46.000Z\ntags: [qa-test]\n---\n";
 const NOTE_BODY = "# Draft Survival Test\n\nHello body text.\n";
 const NOTE = HEADER + NOTE_BODY;
 
+// A deliberately NON-CANONICAL header: block-list tags, padded key spacing and a
+// quoted, un-normalized tag value. Nothing here survives a round-trip through
+// setFrontmatterTags (which would collapse the list to `tags: [qa-test,
+// second-tag]` and drop the padding), so any test asserting these exact bytes
+// can tell "header preserved verbatim" apart from "header re-serialized and
+// happened to match".
+const BLOCK_HEADER =
+  "---\ncreated:   2026-07-08T11:55:46.000Z\ntags:\n  - qa-test\n  - 'Second Tag'\n---\n";
+const BLOCK_NOTE = BLOCK_HEADER + NOTE_BODY;
+
 function setup(overrides: Partial<Parameters<typeof useNoteEditSession>[0]> = {}) {
   const onBodyChange = vi.fn();
   const hook = renderHook(
@@ -68,6 +78,22 @@ function mountEditor(
     } as unknown as NonNullable<typeof result.current.wysiwygRef.current>;
   });
   return { insertImage };
+}
+
+/**
+ * Make the next updateNote() hang until the returned function is called, so a
+ * save can be observed mid-flight (that is the only window in which the
+ * in-flight / mounted guards are reachable).
+ */
+function deferNextUpdateNote(): () => void {
+  let release!: () => void;
+  vi.mocked(updateNote).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = () => resolve();
+      }),
+  );
+  return () => release();
 }
 
 let warn: ReturnType<typeof vi.spyOn>;
@@ -178,6 +204,23 @@ describe("entering and leaving edit mode", () => {
     act(() => result.current.confirmDiscard());
     expect(replay).not.toHaveBeenCalled();
   });
+
+  it("clears the tag chips on exit so they cannot leak into the next session", () => {
+    const { result } = setup({ richEditorEnabled: true });
+    act(() => result.current.enterEdit());
+    expect(result.current.editTags).toEqual(["qa-test"]);
+    act(() => result.current.setEditTags(["qa-test", "scratch"]));
+
+    act(() => result.current.cancelEdit());
+    act(() => result.current.confirmDiscard());
+    // Leaving edit mode must drop the abandoned chips outright — a stale
+    // "scratch" surviving here would render on the read-only screen and, worse,
+    // be re-adopted by any later code path that reads editTags before enterEdit.
+    expect(result.current.editTags).toEqual([]);
+
+    act(() => result.current.enterEdit());
+    expect(result.current.editTags).toEqual(["qa-test"]);
+  });
 });
 
 describe("toolbar editing", () => {
@@ -220,6 +263,24 @@ describe("toolbar editing", () => {
       await result.current.insertImage();
     });
     expect(result.current.draft).toBe("untouched");
+    // A cancel is not a failure: the null-write guard must SHORT-CIRCUIT, not
+    // fall through into insertAtCursor and get rescued by the catch — that
+    // path leaves the draft untouched too, but flashes a bogus TypeError in
+    // the save banner.
+    expect(result.current.editError).toBeNull();
+  });
+
+  it("writes nothing into the rich editor when the picker is cancelled", async () => {
+    vi.mocked(pickAndWriteVaultImage).mockResolvedValue(null);
+    const { result } = setup({ richEditorEnabled: true });
+    act(() => result.current.enterEdit());
+    const { insertImage } = mountEditor(result, NOTE_BODY);
+    await act(async () => {
+      await result.current.insertWysiwygImage();
+    });
+    expect(insertImage).not.toHaveBeenCalled();
+    // Same short-circuit contract as the markdown path — no banner on cancel.
+    expect(result.current.editError).toBeNull();
   });
 
   it("surfaces an image-write failure in the save banner", async () => {
@@ -247,6 +308,53 @@ describe("toolbar editing", () => {
       "../Photos/shot.jpg",
       "data:image/jpeg;base64,AAA",
     );
+  });
+
+  it("ignores a format tap while a save is committing", async () => {
+    const release = deferNextUpdateNote();
+    const { result } = setup();
+    act(() => result.current.enterEdit());
+    act(() => result.current.setDraft("plain text"));
+    act(() => result.current.setSelection({ start: 0, end: 5 }));
+    let save!: Promise<void>;
+    act(() => {
+      save = result.current.handleSaveEdit();
+    });
+    expect(result.current.saving).toBe(true);
+
+    act(() => result.current.applyFmt("bold"));
+    // The save already captured `draft`; a late transform would be written to
+    // the screen and then thrown away when the save exits edit mode.
+    expect(result.current.draft).toBe("plain text");
+
+    await act(async () => {
+      release();
+      await save;
+    });
+  });
+
+  it("ignores the image button while a save is committing", async () => {
+    vi.mocked(pickAndWriteVaultImage).mockResolvedValue(null);
+    const release = deferNextUpdateNote();
+    const { result } = setup();
+    act(() => result.current.enterEdit());
+    act(() => result.current.setDraft("plain text"));
+    let save!: Promise<void>;
+    act(() => {
+      save = result.current.handleSaveEdit();
+    });
+
+    await act(async () => {
+      await result.current.insertImage();
+    });
+    // Only the SAVE guard is armed here (no image pick is in flight), so an
+    // `&&` between the two conditions would let the picker open mid-save.
+    expect(pickAndWriteVaultImage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      release();
+      await save;
+    });
   });
 });
 
@@ -313,6 +421,68 @@ describe("markdown save", () => {
     expect(onBodyChange).toHaveBeenCalled();
     expect(result.current.editMode).toBe(false);
     expect(result.current.editError).toBeNull();
+  });
+
+  it("keeps the recents title when the saved note has no derivable heading", async () => {
+    // deriveTitle returns "" here (no H1, blank first line); without the
+    // `|| entryTitle` fallback that empty string would be pushed onto the
+    // recents row, blanking it.
+    const { result } = setup();
+    act(() => result.current.enterEdit());
+    act(() => result.current.setDraft("\njust a paragraph, no heading\n"));
+    await act(async () => {
+      await result.current.handleSaveEdit();
+    });
+
+    expect(updateNote).toHaveBeenCalledTimes(1);
+    expect(updateCaptureTitle).not.toHaveBeenCalled();
+  });
+
+  it("ignores a second Save tap while the first write is still in flight", async () => {
+    const release = deferNextUpdateNote();
+    const { result } = setup();
+    act(() => result.current.enterEdit());
+    act(() => result.current.setDraft(`${NOTE}extra`));
+    let save!: Promise<void>;
+    act(() => {
+      save = result.current.handleSaveEdit();
+    });
+    expect(result.current.saving).toBe(true);
+
+    await act(async () => {
+      await result.current.handleSaveEdit();
+    });
+    // A double-tap must not write the note twice.
+    expect(updateNote).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release();
+      await save;
+    });
+    expect(updateNote).toHaveBeenCalledTimes(1);
+    expect(result.current.editMode).toBe(false);
+  });
+
+  it("does not adopt the saved body when the screen unmounted mid-write", async () => {
+    const release = deferNextUpdateNote();
+    const { result, onBodyChange, unmount } = setup();
+    act(() => result.current.enterEdit());
+    act(() => result.current.setDraft(`${HEADER}# Renamed Note\n\nx\n`));
+    let save!: Promise<void>;
+    act(() => {
+      save = result.current.handleSaveEdit();
+    });
+    unmount();
+    await act(async () => {
+      release();
+      await save;
+    });
+
+    // The write itself still landed on disk...
+    expect(updateNote).toHaveBeenCalledTimes(1);
+    // ...but nothing may be pushed back into an unmounted screen.
+    expect(onBodyChange).not.toHaveBeenCalled();
+    expect(updateCaptureTitle).not.toHaveBeenCalled();
   });
 });
 
@@ -402,5 +572,56 @@ describe("rich (WYSIWYG) save", () => {
       await result.current.handleSaveWysiwyg();
     });
     expect(updateCaptureTitle).toHaveBeenCalledWith("r1", "Renamed In WebView");
+  });
+
+  // ── The byte-compatibility guarantee ───────────────────────────────────────
+  // These two are the strongest tests in this file: an Obsidian vault holds
+  // hand-written frontmatter that carnet did not author, and a body-only edit
+  // must never re-serialize it. BLOCK_HEADER is chosen so that "preserved" and
+  // "re-serialized" produce DIFFERENT bytes — with a canonical header the two
+  // are indistinguishable and the assertion proves nothing.
+
+  it("preserves a hand-written, non-canonical header BYTE-FOR-BYTE on a body-only edit", async () => {
+    const { result, onBodyChange } = setup({
+      body: BLOCK_NOTE,
+      richEditorEnabled: true,
+    });
+    act(() => result.current.enterEdit());
+    // The chips seed from the block list, so the tag SET is unchanged and the
+    // header must be reattached verbatim rather than rewritten.
+    expect(result.current.editTags).toEqual(["qa-test", "Second Tag"]);
+    mountEditor(result, "# Draft Survival Test\n\nEdited in the WebView.\n");
+    await act(async () => {
+      await result.current.handleSaveWysiwyg();
+    });
+
+    const written = vi.mocked(updateNote).mock.calls[0][1];
+    expect(written).toBe(
+      `${BLOCK_HEADER}# Draft Survival Test\n\nEdited in the WebView.\n`,
+    );
+    // Spelled out, so a failure names the exact corruption: the block list must
+    // still be a block list, the padded key must keep its padding, and the
+    // quoted tag must keep its case and quotes.
+    expect(written).toContain("tags:\n  - qa-test\n  - 'Second Tag'\n");
+    expect(written).toContain("created:   2026-07-08T11:55:46.000Z");
+    expect(written).not.toContain("second-tag");
+    expect(onBodyChange).toHaveBeenCalledWith(written);
+    // Unchanged tag set → the vault index is still valid.
+    expect(invalidateNoteIndex).not.toHaveBeenCalled();
+  });
+
+  it("skips the write entirely for a non-canonical header when nothing changed", async () => {
+    const { result } = setup({ body: BLOCK_NOTE, richEditorEnabled: true });
+    act(() => result.current.enterEdit());
+    mountEditor(result, NOTE_BODY);
+    await act(async () => {
+      await result.current.handleSaveWysiwyg();
+    });
+
+    // Open + Save on an untouched note must not churn the file. A re-serialized
+    // header would differ from disk and force a pointless (destructive) write.
+    expect(updateNote).not.toHaveBeenCalled();
+    expect(invalidateNoteIndex).not.toHaveBeenCalled();
+    expect(result.current.editMode).toBe(false);
   });
 });

@@ -21,6 +21,13 @@ import type { KarakeepExportOutcome } from "./karakeepNoteExport";
  * a second one. The screen confirms with the user first in that case.
  */
 export function needsReexportConfirm(body: string): boolean {
+  // `!== null` is equivalent to a truthiness check ONLY because
+  // extractFrontmatterField never returns "" for a present key: its own
+  // `if (value) return value` guard treats an empty/blank value as absent and
+  // keeps scanning, so a `karakeepId:` with nothing after it yields null, not
+  // "". If that guard ever relaxes, this must become a truthiness check —
+  // otherwise a blank stamp would suppress the export behind a confirm dialog
+  // for a bookmark that does not exist.
   return extractFrontmatterField(body, "karakeepId") !== null;
 }
 
