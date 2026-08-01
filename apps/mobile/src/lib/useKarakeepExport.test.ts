@@ -412,6 +412,13 @@ describe("useKarakeepExport — guards and dismissal", () => {
 // bookmark with content the user had already replaced.
 describe("re-export confirm reads the current body, not the press-time one (#115)", () => {
   it("exports the body as it is when Update is tapped", async () => {
+    
+    vi.mocked(exportNoteToKarakeep).mockResolvedValue({
+      kind: "exported",
+      nextBody: "STAMPED",
+      didUpdate: true,
+      skippedUnsupported: [],
+    });
     const onBodyChange = vi.fn();
     const { result, rerender } = renderHook(
       (props: { body: string }) =>
@@ -444,6 +451,13 @@ describe("re-export confirm reads the current body, not the press-time one (#115
   });
 
   it("gates on the current body too — a stamp added while open still confirms", async () => {
+    
+    vi.mocked(exportNoteToKarakeep).mockResolvedValue({
+      kind: "exported",
+      nextBody: "STAMPED",
+      didUpdate: true,
+      skippedUnsupported: [],
+    });
     const onBodyChange = vi.fn();
     const { result, rerender } = renderHook(
       (props: { body: string }) =>
