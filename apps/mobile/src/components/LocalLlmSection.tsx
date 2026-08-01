@@ -1,3 +1,4 @@
+import type { HealthResult } from "../lib/localLlm";
 import { StyleSheet, View } from "react-native";
 import { Button, HelperText, Text, TextInput } from "react-native-paper";
 
@@ -19,7 +20,7 @@ interface LocalLlmSectionProps {
   model: string;
   onModelChange: (next: string) => void;
   testingConnection: boolean;
-  connectionResult: "ok" | "unreachable" | null;
+  connectionResult: HealthResult | null;
   onTestConnection: () => void;
 }
 
@@ -66,9 +67,15 @@ export function LocalLlmSection({
         onChangeText={onUrlChange}
         placeholder="http://127.0.0.1:8080"
       />
+      {/* This copy previously claimed LAN addresses could use plain http://.
+          They cannot: Android permits cleartext to loopback but refuses it to
+          any other address on a release build (device-verified 2026-08-01), so
+          users following that advice hit a bare "Unreachable" with a Relais
+          that was running perfectly. */}
       <HelperText type="info" visible>
-        Local LLM base URL — loopback (127.0.0.1) or LAN addresses are
-        allowed over plain http://; anything else must use https://.
+        Local LLM base URL — only 127.0.0.1 may use plain http://. A Relais on
+        another machine must serve https://, because Android blocks plaintext to
+        anything but loopback.
       </HelperText>
 
       <TextInput
@@ -134,6 +141,18 @@ export function LocalLlmSection({
       {connectionResult === "unreachable" && (
         <HelperText type="error" visible>
           Unreachable — check the URL and that the server is running.
+        </HelperText>
+      )}
+      {connectionResult === "blocked-cleartext" && (
+        <HelperText type="error" visible>
+          Android blocked this plain http:// connection. Only 127.0.0.1 may use
+          http:// — a Relais on another machine needs https://.
+        </HelperText>
+      )}
+      {connectionResult === "unsafe-url" && (
+        <HelperText type="error" visible>
+          Not a valid local address. Use http:// with 127.0.0.1, or https:// for
+          anything else.
         </HelperText>
       )}
     </View>

@@ -144,20 +144,40 @@ describe("localLlm.listModels", () => {
 });
 
 describe("localLlm.healthCheck", () => {
-  it("returns true when /health responds ok", async () => {
+  it("returns 'ok' when /health responds ok", async () => {
     fetchMock.mockResolvedValueOnce(new Response("", { status: 200 }));
-    expect(await healthCheck("http://127.0.0.1:8080")).toBe(true);
+    expect(await healthCheck("http://127.0.0.1:8080")).toBe("ok");
     const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://127.0.0.1:8080/health");
   });
 
-  it("returns false when /health is unreachable", async () => {
+  it("returns 'unreachable' when /health cannot be reached", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
-    expect(await healthCheck("http://127.0.0.1:8080")).toBe(false);
+    expect(await healthCheck("http://127.0.0.1:8080")).toBe("unreachable");
   });
 
-  it("returns false when /health responds non-2xx", async () => {
+  it("returns 'unreachable' when /health responds non-2xx", async () => {
     fetchMock.mockResolvedValueOnce(new Response("", { status: 500 }));
-    expect(await healthCheck("http://127.0.0.1:8080")).toBe(false);
+    expect(await healthCheck("http://127.0.0.1:8080")).toBe("unreachable");
+  });
+
+  // Device-verified 2026-08-01: on a release build Android permits cleartext to
+  // loopback but REFUSES it to a LAN address. That surfaces as a rejected fetch
+  // indistinguishable from a stopped server, so the user was told "check that
+  // the server is running" while their Relais was running fine.
+  it("returns 'blocked-cleartext' when the platform refuses plaintext", async () => {
+    fetchMock.mockRejectedValueOnce(
+      new TypeError(
+        "Cleartext HTTP traffic to 192.168.1.5 not permitted by network security policy",
+      ),
+    );
+    expect(await healthCheck("http://192.168.1.5:8080")).toBe(
+      "blocked-cleartext",
+    );
+  });
+
+  it("returns 'unsafe-url' without issuing a request", async () => {
+    expect(await healthCheck("http://example.com:8080")).toBe("unsafe-url");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
