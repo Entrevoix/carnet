@@ -23,7 +23,7 @@ import {
   CapturePreviewCard,
   CaptureSavedCard,
 } from "../components/CaptureViews";
-import { getSettings, type LlmBackend } from "../lib/settings";
+import { getSettings } from "../lib/settings";
 import { recordCapture, type CaptureMode } from "../lib/storage";
 import {
   enrichIdea,
@@ -137,7 +137,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // Which backend the submitting-phase label names — read once alongside
   // previewBeforeSave so "OmniRoute is structuring…" doesn't show while a
   // capture is actually enriching via the local backend (or vice versa).
-  const [llmBackend, setLlmBackend] = useState<LlmBackend>("omniroute");
+  const [llmBackend, setLlmBackend] = useState<"omniroute" | "local">("omniroute");
   // Saved-screen state for the save-first Idea failure paths (mirrors photo):
   // `degradedReason` = permanent enrichment failure (raw note kept, Re-enrich
   // offered); `enrichNotice` = an info line (queued offline, or conflict).
@@ -199,7 +199,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
     void getSettings()
       .then((s) => {
         setPreviewBeforeSave(s.previewBeforeSave);
-        setLlmBackend(s.llmBackend);
+        setLlmBackend(s.activeProviderId === "relais" ? "local" : "omniroute");
       })
       .catch(() => {});
   }, []);

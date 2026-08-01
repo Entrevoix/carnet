@@ -27,6 +27,7 @@ import { PaperProvider } from "react-native-paper";
 
 import { carnetLight } from "../lib/theme";
 import type { Settings } from "../lib/settings";
+import { buildDefaultProviders } from "../lib/llmProviders";
 
 // Both DEFAULT_OMNIROUTE_MODEL and DEFAULT_VISION_MODEL are this same
 // literal in the real lib/settings.ts — used as the placeholder for both
@@ -36,13 +37,11 @@ const MODEL_PLACEHOLDER = "openrouter/openai/gpt-4o-mini";
 
 function baseSettings(overrides: Partial<Settings> = {}): Settings {
   return {
-    omniRouteUrl: "https://llm.grepon.cc",
+    llmProviders: buildDefaultProviders().map((p) =>
+      p.id === "omniroute" ? { ...p, baseUrl: "https://llm.grepon.cc" } : p,
+    ),
+    activeProviderId: "omniroute",
     omniRouteApiKey: "",
-    omniRouteModel: "",
-    omniRouteVisionModel: "",
-    llmBackend: "omniroute",
-    localLlmUrl: "",
-    localLlmModel: "",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,
     autoTranscribeOnSave: false,
@@ -192,7 +191,7 @@ describe("SettingsScreen", () => {
   });
 
   it("renders the Local-LLM section (URL, key, model, Test connection) when llmBackend is local", async () => {
-    getSettings.mockResolvedValue(baseSettings({ llmBackend: "local" }));
+    getSettings.mockResolvedValue(baseSettings({ activeProviderId: "relais" }));
 
     renderScreen();
 
@@ -244,7 +243,7 @@ describe("SettingsScreen", () => {
       ["unsafe-url", /Not a valid local address/i],
       ["ok", /Reachable/],
     ] as const)("renders the %s message", async (result, pattern) => {
-      getSettings.mockResolvedValue(baseSettings({ llmBackend: "local" }));
+      getSettings.mockResolvedValue(baseSettings({ activeProviderId: "relais" }));
       healthCheck.mockResolvedValueOnce(result as never);
 
       renderScreen();

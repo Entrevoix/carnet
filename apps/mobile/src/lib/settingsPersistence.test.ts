@@ -18,9 +18,9 @@ vi.mock("expo-secure-store", () => ({
   deleteItemAsync: vi.fn(async () => undefined),
 }));
 
-import { DEFAULT_LLM_BACKEND } from "./settings";
 import type { Settings } from "./settings";
 import type { FormState } from "./settingsForm";
+import { buildDefaultProviders } from "./llmProviders";
 import {
   clearApiKey,
   persistNotificationHint,
@@ -33,7 +33,7 @@ const baseForm: FormState = {
   omniRouteUrl: "https://llm.grepon.cc",
   omniRouteModel: "gemini/gemini-2.5-flash",
   omniRouteVisionModel: "openai/gpt-4o-mini",
-  llmBackend: DEFAULT_LLM_BACKEND,
+  llmBackend: "omniroute",
   localLlmUrl: "",
   localLlmModel: "",
   persistentNotificationEnabled: true,
@@ -46,9 +46,17 @@ const baseForm: FormState = {
 };
 
 const storedSettings: Settings = {
-  ...baseForm,
+  llmProviders: buildDefaultProviders(),
+  activeProviderId: "omniroute",
   omniRouteApiKey: "sk-existing",
   localLlmApiKey: "local-existing",
+  persistentNotificationEnabled: true,
+  autoTranscribeOnSave: false,
+  richEditorEnabled: true,
+  previewBeforeSave: false,
+  captureFolderPath: "",
+  promptOverrides: {},
+  karakeepUrl: "",
   karakeepApiKey: "kk-existing",
 };
 

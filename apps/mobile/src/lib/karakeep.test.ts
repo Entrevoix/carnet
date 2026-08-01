@@ -6,13 +6,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // (which vitest hoists above module scope) and by per-test overrides.
 const { BASE_SETTINGS } = vi.hoisted(() => ({
   BASE_SETTINGS: {
-    omniRouteUrl: "https://llm.example.com",
+    llmProviders: [
+      {
+        id: "omniroute",
+        label: "OmniRoute",
+        baseUrl: "https://llm.example.com",
+        model: "gpt-4o-mini",
+        visionModel: "vision-model-xyz",
+        preset: "omniroute",
+      },
+    ],
+    activeProviderId: "omniroute",
     omniRouteApiKey: "omni-key",
-    omniRouteModel: "gpt-4o-mini",
-    omniRouteVisionModel: "vision-model-xyz",
-    llmBackend: "omniroute" as const,
-    localLlmUrl: "",
-    localLlmModel: "",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,
     autoTranscribeOnSave: false,

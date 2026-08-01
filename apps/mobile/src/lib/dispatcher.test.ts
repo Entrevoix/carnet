@@ -16,13 +16,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { BASE_SETTINGS } = vi.hoisted(() => ({
   BASE_SETTINGS: {
-    omniRouteUrl: "https://llm.example.com",
+    llmProviders: [
+      {
+        id: "omniroute",
+        label: "OmniRoute",
+        baseUrl: "https://llm.example.com",
+        model: "gpt-4o-mini",
+        visionModel: "vision-model-xyz",
+        preset: "omniroute",
+      },
+      {
+        id: "relais",
+        label: "Relais (local)",
+        baseUrl: "http://127.0.0.1:8080",
+        model: "",
+        visionModel: "",
+        preset: "relais",
+      },
+    ],
+    activeProviderId: "omniroute",
     omniRouteApiKey: "test-key",
-    omniRouteModel: "gpt-4o-mini",
-    omniRouteVisionModel: "vision-model-xyz",
-    llmBackend: "omniroute" as const,
-    localLlmUrl: "",
-    localLlmModel: "",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,
     autoTranscribeOnSave: false,
@@ -39,6 +52,20 @@ vi.mock("./settings", () => ({
   getSettings: vi.fn().mockResolvedValue(BASE_SETTINGS),
   getPromptOverrides: vi.fn().mockResolvedValue({}),
   DEFAULT_OMNIROUTE_MODEL: "openrouter/openai/gpt-4o-mini",
+}));
+
+// providerKeys.ts is the real per-provider SecureStore lookup — mocked here
+// so this suite doesn't need a native SecureStore shim. Routes the two known
+// ids to BASE_SETTINGS' key fields; anything else gets "" (no custom-provider
+// key tests in this file).
+vi.mock("./providerKeys", () => ({
+  getKey: vi.fn(async (id: string) => {
+    if (id === "omniroute") return BASE_SETTINGS.omniRouteApiKey;
+    if (id === "relais") return BASE_SETTINGS.localLlmApiKey;
+    return "";
+  }),
+  setKey: vi.fn(),
+  deleteKey: vi.fn(),
 }));
 
 vi.mock("./writer", () => ({
@@ -120,9 +147,12 @@ describe("dispatcher backend routing", () => {
   it("routes to the local-LLM config when llmBackend is 'local'", async () => {
     vi.mocked(getSettings).mockResolvedValueOnce({
       ...BASE_SETTINGS,
-      llmBackend: "local",
-      localLlmUrl: "http://127.0.0.1:8080",
-      localLlmModel: "local-model",
+      activeProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais"
+          ? { ...p, baseUrl: "http://127.0.0.1:8080", model: "local-model" }
+          : p,
+      ),
     });
     fetchMock.mockResolvedValueOnce(
       makeOkResponse("# from local\n", "local-model"),
@@ -153,9 +183,10 @@ describe("dispatcher backend routing", () => {
     // buildConfig (it used to live in localLlm.ts's getBaseUrl()).
     vi.mocked(getSettings).mockResolvedValueOnce({
       ...BASE_SETTINGS,
-      llmBackend: "local",
-      localLlmUrl: "",
-      localLlmModel: "local-model",
+      activeProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais" ? { ...p, baseUrl: "", model: "local-model" } : p,
+      ),
     });
     fetchMock.mockResolvedValueOnce(makeOkResponse("# from local\n"));
 
@@ -199,11 +230,12 @@ describe("dispatcher online path (enrichIdea) hits the same HTTP request", () =>
     const [dispUrl, dispInit] = fetchMock.mock.calls[0] as [string, RequestInit];
 
     fetchMock.mockClear();
+    const omniroute = BASE_SETTINGS.llmProviders.find((p) => p.id === "omniroute")!;
     await llmClient.enrichIdea("parity check", {
-      baseUrl: BASE_SETTINGS.omniRouteUrl,
+      baseUrl: omniroute.baseUrl,
       apiKey: BASE_SETTINGS.omniRouteApiKey,
-      model: BASE_SETTINGS.omniRouteModel,
-      visionModel: BASE_SETTINGS.omniRouteVisionModel,
+      model: omniroute.model,
+      visionModel: omniroute.visionModel,
       label: "OmniRoute",
     });
     const [directUrl, directInit] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -238,7 +270,9 @@ describe("dispatcher preserves error classification", () => {
   it("classifies a blank-URL failure through the dispatcher as not-configured", async () => {
     vi.mocked(getSettings).mockResolvedValue({
       ...BASE_SETTINGS,
-      omniRouteUrl: "",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "omniroute" ? { ...p, baseUrl: "" } : p,
+      ),
     });
 
     const err = await enrichIdea("no url set").then(

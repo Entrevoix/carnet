@@ -12,7 +12,12 @@ import {
   type PromptOverrides,
   type Settings,
 } from "./settings";
-import type { LlmBackend } from "./settings";
+import { resolveActiveProvider, type LlmProvider } from "./llmProviders";
+
+/** The two providers the current (pre-Phase-4) Settings UI exposes a picker
+ * for. The full provider list may hold more entries (other presets, custom
+ * ones) — those pass through composeSettingsForSave untouched. */
+export type FormLlmBackend = "omniroute" | "local";
 
 /** Editable slice of {@link Settings} the Settings form renders. The API keys
  * are intentionally excluded — they live in SecureStore and are never read
@@ -22,7 +27,7 @@ export interface FormState {
   omniRouteUrl: string;
   omniRouteModel: string;
   omniRouteVisionModel: string;
-  llmBackend: LlmBackend;
+  llmBackend: FormLlmBackend;
   localLlmUrl: string;
   localLlmModel: string;
   persistentNotificationEnabled: boolean;
@@ -48,26 +53,42 @@ export interface ExistingApiKeys {
 }
 
 /**
- * Compose the {@link Settings} object to persist from the form state and the
- * existing keys. Applies the blank→default fallbacks for the chat/vision
- * models and passes through the user's selected llmBackend and local-LLM
- * configuration. The keys are passed through unchanged: when the user typed a
- * new key the screen writes it separately via setOmniRouteApiKey/
- * setKarakeepApiKey after this save, and passing the existing (or empty) key
- * here matches the prior behavior where saveSettings preserves — or clears —
- * the stored key.
+ * Compose the {@link Settings} object to persist from the form state, the
+ * existing keys, and the provider list as it stood before this save.
+ * Applies the blank→default fallbacks for the chat/vision models and
+ * passes through the user's selected llmBackend and local-LLM
+ * configuration by updating the `omniroute`/`relais` entries in
+ * `currentProviders` — every other entry (other presets, custom providers;
+ * this form has no UI for them yet) passes through unchanged. The keys are
+ * passed through unchanged: when the user typed a new key the screen writes
+ * it separately via setOmniRouteApiKey/setKarakeepApiKey after this save,
+ * and passing the existing (or empty) key here matches the prior behavior
+ * where saveSettings preserves — or clears — the stored key.
  */
 export function composeSettingsForSave(
   form: FormState,
   existing: ExistingApiKeys,
+  currentProviders: readonly LlmProvider[],
 ): Settings {
+  const omniRouteModel = form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL;
+  const omniRouteVisionModel = form.omniRouteVisionModel || DEFAULT_VISION_MODEL;
+  const llmProviders = currentProviders.map((p) => {
+    if (p.id === "omniroute") {
+      return {
+        ...p,
+        baseUrl: form.omniRouteUrl,
+        model: omniRouteModel,
+        visionModel: omniRouteVisionModel,
+      };
+    }
+    if (p.id === "relais") {
+      return { ...p, baseUrl: form.localLlmUrl, model: form.localLlmModel };
+    }
+    return p;
+  });
   return {
-    omniRouteUrl: form.omniRouteUrl,
-    omniRouteModel: form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL,
-    omniRouteVisionModel: form.omniRouteVisionModel || DEFAULT_VISION_MODEL,
-    llmBackend: form.llmBackend,
-    localLlmUrl: form.localLlmUrl,
-    localLlmModel: form.localLlmModel,
+    llmProviders,
+    activeProviderId: form.llmBackend === "local" ? "relais" : "omniroute",
     localLlmApiKey: existing.localLlmApiKey,
     persistentNotificationEnabled: form.persistentNotificationEnabled,
     autoTranscribeOnSave: form.autoTranscribeOnSave,
@@ -92,13 +113,15 @@ export function formStateFromSettings(
   s: Settings,
   persistentNotificationEnabled: boolean,
 ): FormState {
+  const omniroute = resolveActiveProvider(s.llmProviders, "omniroute");
+  const relais = resolveActiveProvider(s.llmProviders, "relais");
   return {
-    omniRouteUrl: s.omniRouteUrl,
-    omniRouteModel: s.omniRouteModel,
-    omniRouteVisionModel: s.omniRouteVisionModel,
-    llmBackend: s.llmBackend,
-    localLlmUrl: s.localLlmUrl,
-    localLlmModel: s.localLlmModel,
+    omniRouteUrl: omniroute.baseUrl,
+    omniRouteModel: omniroute.model,
+    omniRouteVisionModel: omniroute.visionModel,
+    llmBackend: s.activeProviderId === "relais" ? "local" : "omniroute",
+    localLlmUrl: relais.baseUrl,
+    localLlmModel: relais.model,
     persistentNotificationEnabled,
     autoTranscribeOnSave: s.autoTranscribeOnSave,
     richEditorEnabled: s.richEditorEnabled,

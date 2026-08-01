@@ -30,14 +30,13 @@ vi.mock("expo-secure-store", () => ({
 }));
 
 import {
-  DEFAULT_OMNIROUTE_MODEL,
-  DEFAULT_VISION_MODEL,
   getSettings,
   hasLocalLlmApiKey,
   saveSettings,
   setLocalLlmApiKey,
   type Settings,
 } from "./settings";
+import { resolveActiveProvider, type LlmProvider } from "./llmProviders";
 
 const SETTINGS_KEY = "carnet:settings:v2";
 
@@ -74,7 +73,10 @@ describe("previewBeforeSave default merge", () => {
     const s = await getSettings();
     expect(s.previewBeforeSave).toBe(false);
     // The rest of the blob still loaded — no crash / no reset to defaults.
-    expect(s.omniRouteUrl).toBe("https://example.com");
+    // (this blob predates llmProviders too, so it's migrated on read).
+    expect(findProvider(s.llmProviders, "omniroute").baseUrl).toBe(
+      "https://example.com",
+    );
   });
 
   it("round-trips a previewBeforeSave=true opt-in through save + load", async () => {
@@ -117,17 +119,73 @@ describe("Person + Journal ignore previewBeforeSave", () => {
   });
 });
 
-// ── B7: old blob without llmBackend defaults to "omniroute" ──────────────────
+function findProvider(providers: readonly LlmProvider[], id: string): LlmProvider {
+  const p = providers.find((x) => x.id === id);
+  if (!p) throw new Error(`test fixture missing provider "${id}"`);
+  return p;
+}
 
-describe("llmBackend default merge (B7 dispatcher)", () => {
-  it("defaults to omniroute when no settings blob exists", async () => {
+// ── LLM provider list migration (Phase 2) ─────────────────────────────────────
+// A pre-provider-list blob (a `llmBackend` field and/or flat
+// omniRoute*/localLlm* fields, no `llmProviders` yet) is folded into the
+// provider list on first read. Covers every llmBackend value (including the
+// never-implemented "on-device"), a blob predating llmBackend entirely, the
+// blank-local-URL loopback default, idempotency, round-tripping, and — the
+// constraint most likely to break silently — that migration never touches
+// SecureStore (the design spec's proposed key re-filing is deliberately NOT
+// implemented; see providerKeys.ts).
+
+describe("LLM provider list migration", () => {
+  it("defaults to the omniroute preset (activeProviderId) with no persisted blob", async () => {
     const s = await getSettings();
-    expect(s.llmBackend).toBe("omniroute");
+    expect(s.activeProviderId).toBe("omniroute");
+    expect(s.llmProviders.map((p) => p.id).sort()).toEqual(
+      ["relais", "omniroute", "openai", "groq", "openrouter"].sort(),
+    );
   });
 
-  it("defaults an old blob missing llmBackend to omniroute without crashing", async () => {
-    // A settings blob persisted before B7 added the field (mirrors the real
-    // upgrade shape — post-B1/B4 keys present, llmBackend absent).
+  it.each([
+    ["omniroute", "omniroute"],
+    ["local", "relais"],
+    ["on-device", "relais"],
+  ] as const)(
+    'migrates llmBackend "%s" to activeProviderId "%s"',
+    async (legacyBackend, expectedActiveId) => {
+      _async.set(
+        SETTINGS_KEY,
+        JSON.stringify({
+          omniRouteUrl: "https://llm.example.com",
+          omniRouteModel: "gpt-4o-mini",
+          omniRouteVisionModel: "claude/claude-sonnet-4-6",
+          llmBackend: legacyBackend,
+          localLlmUrl: "http://192.168.1.5:8080",
+          localLlmModel: "local-model",
+          persistentNotificationEnabled: false,
+          autoTranscribeOnSave: false,
+          richEditorEnabled: true,
+          previewBeforeSave: false,
+          captureFolderPath: "",
+          promptOverrides: {},
+          karakeepUrl: "",
+        }),
+      );
+
+      const s = await getSettings();
+      expect(s.activeProviderId).toBe(expectedActiveId);
+      const omniroute = findProvider(s.llmProviders, "omniroute");
+      expect(omniroute.baseUrl).toBe("https://llm.example.com");
+      expect(omniroute.model).toBe("gpt-4o-mini");
+      expect(omniroute.visionModel).toBe("claude/claude-sonnet-4-6");
+      const relais = findProvider(s.llmProviders, "relais");
+      expect(relais.baseUrl).toBe("http://192.168.1.5:8080");
+      expect(relais.model).toBe("local-model");
+    },
+  );
+
+  it("defaults an old blob missing llmBackend entirely to activeProviderId omniroute (pre-B7 shape)", async () => {
+    // Mirrors the real upgrade shape from before the llmBackend field
+    // existed at all (post-B1/B4 keys present, llmBackend absent) —
+    // DEFAULT_LLM_BACKEND was always "omniroute", so this must still be.
     _async.set(
       SETTINGS_KEY,
       JSON.stringify({
@@ -146,110 +204,73 @@ describe("llmBackend default merge (B7 dispatcher)", () => {
     );
 
     const s = await getSettings();
-    expect(s.llmBackend).toBe("omniroute");
-    // The rest of the blob still loaded — no crash / no reset to defaults.
-    expect(s.omniRouteUrl).toBe("https://llm.example.com");
-    expect(s.omniRouteVisionModel).toBe("claude/claude-sonnet-4-6");
+    expect(s.activeProviderId).toBe("omniroute");
+    expect(findProvider(s.llmProviders, "omniroute").baseUrl).toBe(
+      "https://llm.example.com",
+    );
   });
 
-  it("round-trips llmBackend through save + load", async () => {
+  it("a blank legacy local URL keeps the relais preset's loopback default", async () => {
+    _async.set(
+      SETTINGS_KEY,
+      JSON.stringify({
+        omniRouteUrl: "",
+        omniRouteModel: "",
+        omniRouteVisionModel: "",
+        llmBackend: "local",
+        localLlmUrl: "",
+        localLlmModel: "local-model",
+        persistentNotificationEnabled: false,
+        autoTranscribeOnSave: false,
+        richEditorEnabled: true,
+        previewBeforeSave: false,
+        captureFolderPath: "",
+        promptOverrides: {},
+        karakeepUrl: "",
+      }),
+    );
+
+    const s = await getSettings();
+    const relais = findProvider(s.llmProviders, "relais");
+    expect(relais.baseUrl).toBe("http://127.0.0.1:8080");
+    expect(relais.model).toBe("local-model");
+  });
+
+  it("is idempotent — reading the same unmigrated blob twice yields structurally identical llmProviders/activeProviderId", async () => {
+    _async.set(
+      SETTINGS_KEY,
+      JSON.stringify({
+        omniRouteUrl: "https://llm.example.com",
+        omniRouteModel: "gpt-4o-mini",
+        llmBackend: "local",
+        localLlmUrl: "http://192.168.1.5:8080",
+        localLlmModel: "local-model",
+        persistentNotificationEnabled: false,
+        autoTranscribeOnSave: false,
+        richEditorEnabled: true,
+        previewBeforeSave: false,
+        captureFolderPath: "",
+        promptOverrides: {},
+        karakeepUrl: "",
+      }),
+    );
+
+    const first = await getSettings();
+    const second = await getSettings();
+    expect(second.activeProviderId).toBe(first.activeProviderId);
+    expect(second.llmProviders).toEqual(first.llmProviders);
+  });
+
+  it("round-trips llmProviders + activeProviderId through save + load", async () => {
     const base = await getSettings();
-    await saveSettings({ ...base, llmBackend: "omniroute" });
-    const persisted = JSON.parse(_async.get(SETTINGS_KEY) ?? "{}") as Record<
-      string,
-      unknown
-    >;
-    expect(persisted.llmBackend).toBe("omniroute");
-    const reloaded = await getSettings();
-    expect(reloaded.llmBackend).toBe("omniroute");
-  });
-});
-
-describe("getSettings — persisted-blob migration (B1 vision model split)", () => {
-  it("loads a pre-B1 blob (transcription-model key, no vision-model key) without crashing and defaults the vision model", async () => {
-    // Exactly the shape a user upgrading from the pre-B1 build has on disk:
-    // the vestigial transcription key is present, the new vision key is not.
-    _async.set(
-      SETTINGS_KEY,
-      JSON.stringify({
-        omniRouteUrl: "https://llm.example.com",
-        omniRouteModel: "gpt-4o-mini",
-        omniRouteTranscriptionModel: "whisper-1",
-        persistentNotificationEnabled: false,
-        autoTranscribeOnSave: false,
-        richEditorEnabled: true,
-        captureFolderPath: "",
-        promptOverrides: {},
-        karakeepUrl: "",
-      }),
-    );
-
-    const settings = await getSettings();
-
-    // No crash; the user's real settings survive.
-    expect(settings.omniRouteUrl).toBe("https://llm.example.com");
-    expect(settings.omniRouteModel).toBe("gpt-4o-mini");
-    // The new vision field is absent from the old blob → sensible default,
-    // never undefined (a bare `.trim()` on undefined would throw downstream).
-    expect(settings.omniRouteVisionModel).toBe(DEFAULT_VISION_MODEL);
-    // The stale transcription key is not exposed on the Settings surface.
-    expect(
-      (settings as unknown as Record<string, unknown>)
-        .omniRouteTranscriptionModel,
-    ).toBeUndefined();
-  });
-
-  it("preserves an explicit vision model from a post-B1 blob", async () => {
-    _async.set(
-      SETTINGS_KEY,
-      JSON.stringify({
-        omniRouteUrl: "https://llm.example.com",
-        omniRouteModel: "gpt-4o-mini",
-        omniRouteVisionModel: "claude/claude-sonnet-4-6",
-        persistentNotificationEnabled: false,
-        autoTranscribeOnSave: false,
-        richEditorEnabled: true,
-        captureFolderPath: "",
-        promptOverrides: {},
-        karakeepUrl: "",
-      }),
-    );
-
-    const settings = await getSettings();
-    expect(settings.omniRouteVisionModel).toBe("claude/claude-sonnet-4-6");
-  });
-
-  it("returns defaults (incl. vision model) when there is no persisted blob", async () => {
-    const settings = await getSettings();
-    expect(settings.omniRouteModel).toBe(DEFAULT_OMNIROUTE_MODEL);
-    expect(settings.omniRouteVisionModel).toBe(DEFAULT_VISION_MODEL);
-  });
-
-  it("round-trips the vision model through saveSettings → getSettings and drops the stale transcription key", async () => {
-    // Seed a stale blob, then save over it; the persisted shape must no
-    // longer carry omniRouteTranscriptionModel.
-    _async.set(
-      SETTINGS_KEY,
-      JSON.stringify({ omniRouteTranscriptionModel: "whisper-1" }),
-    );
-
     const next: Settings = {
-      omniRouteUrl: "https://llm.example.com",
-      omniRouteApiKey: "",
-      omniRouteModel: "gpt-4o-mini",
-      omniRouteVisionModel: "gemini/gemini-2.5-flash",
-      llmBackend: "omniroute",
-      localLlmUrl: "",
-      localLlmModel: "",
-      localLlmApiKey: "",
-      persistentNotificationEnabled: false,
-      autoTranscribeOnSave: false,
-      richEditorEnabled: true,
-      captureFolderPath: "",
-      promptOverrides: {},
-      karakeepUrl: "",
-      karakeepApiKey: "",
-      previewBeforeSave: false,
+      ...base,
+      activeProviderId: "relais",
+      llmProviders: base.llmProviders.map((p) =>
+        p.id === "relais"
+          ? { ...p, baseUrl: "http://192.168.1.9:8080", model: "gemma-4" }
+          : p,
+      ),
     };
     await saveSettings(next);
 
@@ -257,11 +278,49 @@ describe("getSettings — persisted-blob migration (B1 vision model split)", () 
       string,
       unknown
     >;
-    expect(persisted.omniRouteVisionModel).toBe("gemini/gemini-2.5-flash");
-    expect(persisted.omniRouteTranscriptionModel).toBeUndefined();
+    expect(persisted.activeProviderId).toBe("relais");
 
     const reloaded = await getSettings();
-    expect(reloaded.omniRouteVisionModel).toBe("gemini/gemini-2.5-flash");
+    expect(reloaded.activeProviderId).toBe("relais");
+    expect(findProvider(reloaded.llmProviders, "relais").baseUrl).toBe(
+      "http://192.168.1.9:8080",
+    );
+    expect(findProvider(reloaded.llmProviders, "relais").model).toBe(
+      "gemma-4",
+    );
+  });
+
+  it("never touches SecureStore — omniRoute/local-LLM keys stay at their original aliases, unmoved", async () => {
+    _secure.set("carnet_omniroute_api_key", "omni-secret");
+    _secure.set("carnet_local_llm_api_key", "local-secret");
+    _async.set(
+      SETTINGS_KEY,
+      JSON.stringify({
+        omniRouteUrl: "https://llm.example.com",
+        omniRouteModel: "gpt-4o-mini",
+        llmBackend: "omniroute",
+        localLlmUrl: "",
+        localLlmModel: "",
+        persistentNotificationEnabled: false,
+        autoTranscribeOnSave: false,
+        richEditorEnabled: true,
+        previewBeforeSave: false,
+        captureFolderPath: "",
+        promptOverrides: {},
+        karakeepUrl: "",
+      }),
+    );
+
+    const s = await getSettings();
+    // Readable at their ORIGINAL aliases, unmoved.
+    expect(s.omniRouteApiKey).toBe("omni-secret");
+    expect(s.localLlmApiKey).toBe("local-secret");
+    expect(_secure.get("carnet_omniroute_api_key")).toBe("omni-secret");
+    expect(_secure.get("carnet_local_llm_api_key")).toBe("local-secret");
+    // No re-filed alias was ever written (the spec's proposed
+    // carnet.llm.key.<id> re-filing step is deliberately not implemented).
+    expect(_secure.has("carnet.llm.key.omniroute")).toBe(false);
+    expect(_secure.has("carnet.llm.key.relais")).toBe(false);
   });
 });
 
@@ -277,19 +336,28 @@ describe("hasLocalLlmApiKey / setLocalLlmApiKey", () => {
   });
 });
 
-describe("localLlmUrl / localLlmModel default via getSettings", () => {
-  it("defaults localLlmUrl and localLlmModel to empty strings on a fresh install", async () => {
+describe("relais provider default via getSettings", () => {
+  it("defaults the relais entry to the loopback URL and an empty model on a fresh install", async () => {
     const s = await getSettings();
-    expect(s.localLlmUrl).toBe("");
-    expect(s.localLlmModel).toBe("");
+    const relais = resolveActiveProvider(s.llmProviders, "relais");
+    expect(relais.baseUrl).toBe("http://127.0.0.1:8080");
+    expect(relais.model).toBe("");
     expect(s.localLlmApiKey).toBe("");
   });
 
-  it("round-trips localLlmUrl/localLlmModel through saveSettings", async () => {
+  it("round-trips an edited relais entry through saveSettings", async () => {
     const s = await getSettings();
-    await saveSettings({ ...s, localLlmUrl: "http://127.0.0.1:8080", localLlmModel: "gemma-4" });
+    await saveSettings({
+      ...s,
+      llmProviders: s.llmProviders.map((p) =>
+        p.id === "relais"
+          ? { ...p, baseUrl: "http://127.0.0.1:8080", model: "gemma-4" }
+          : p,
+      ),
+    });
     const after = await getSettings();
-    expect(after.localLlmUrl).toBe("http://127.0.0.1:8080");
-    expect(after.localLlmModel).toBe("gemma-4");
+    const relais = resolveActiveProvider(after.llmProviders, "relais");
+    expect(relais.baseUrl).toBe("http://127.0.0.1:8080");
+    expect(relais.model).toBe("gemma-4");
   });
 });

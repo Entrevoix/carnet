@@ -69,8 +69,11 @@ export async function saveSettingsWithKeys(
     localLlm: false,
   };
   try {
-    const existing = existingApiKeysFromSettings(await io.getSettings());
-    await io.saveSettings(composeSettingsForSave(form, existing));
+    const currentSettings = await io.getSettings();
+    const existing = existingApiKeysFromSettings(currentSettings);
+    await io.saveSettings(
+      composeSettingsForSave(form, existing, currentSettings.llmProviders),
+    );
     if (pending.omniRoute.length > 0) {
       await io.setOmniRouteApiKey(pending.omniRoute);
       keysWritten.omniRoute = true;
