@@ -1,18 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  applyPickedModel,
   filterAndSplitModels,
   resolveBrowseApiKey,
+  RECOMMENDED_MODELS as RECOMMENDED,
 } from "./modelBrowser";
-import type { FormState } from "./settingsForm";
-
-const RECOMMENDED = [
-  "gemini/gemini-2.5-flash-lite",
-  "gemini/gemini-2.5-flash",
-  "claude/claude-haiku-4-5-20251001",
-  "claude/claude-sonnet-4-6",
-] as const;
 
 describe("filterAndSplitModels", () => {
   it("returns empty partitions when the catalog is null", () => {
@@ -102,43 +94,5 @@ describe("resolveBrowseApiKey", () => {
 
   it("falls back to the stored key when nothing is pending", () => {
     expect(resolveBrowseApiKey("", "sk-stored")).toBe("sk-stored");
-  });
-});
-
-describe("applyPickedModel", () => {
-  const form: FormState = {
-    omniRouteUrl: "https://llm.grepon.cc",
-    omniRouteModel: "old-chat-model",
-    omniRouteVisionModel: "old-vision-model",
-    llmBackend: "omniroute",
-    localLlmUrl: "",
-    localLlmModel: "",
-    persistentNotificationEnabled: false,
-    autoTranscribeOnSave: false,
-    richEditorEnabled: true,
-    previewBeforeSave: false,
-    captureFolderPath: "",
-    promptOverrides: {},
-    karakeepUrl: "",
-  };
-
-  it("updates omniRouteModel for the chat target and leaves vision untouched", () => {
-    const next = applyPickedModel(form, "chat", "new-model");
-    expect(next.omniRouteModel).toBe("new-model");
-    expect(next.omniRouteVisionModel).toBe("old-vision-model");
-  });
-
-  it("updates omniRouteVisionModel for the vision target and leaves chat untouched", () => {
-    // Mutation-catch: if the branch condition were flipped (or removed),
-    // a vision pick would land on omniRouteModel instead — this assertion
-    // on BOTH fields would catch that.
-    const next = applyPickedModel(form, "vision", "new-vision-model");
-    expect(next.omniRouteVisionModel).toBe("new-vision-model");
-    expect(next.omniRouteModel).toBe("old-chat-model");
-  });
-
-  it("does not mutate the input form", () => {
-    applyPickedModel(form, "chat", "new-model");
-    expect(form.omniRouteModel).toBe("old-chat-model");
   });
 });

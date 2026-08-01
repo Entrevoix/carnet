@@ -12,11 +12,15 @@
 //       reconcileInitialNotificationState and the comment at its call
 //       site); (a) alone can't, because both orderings converge when
 //       stop() resolves.
-//   (b) LocalLlmSection prop threading — llmBackend === "local" must render
-//       its URL/key/model fields and Test-connection button via the real
-//       extracted component, not a stub.
-//   (c) ModelBrowserModal + applyPickedModel wiring — picking a model while
-//       browseTarget === "vision" must update ONLY the vision field.
+//
+// The LLM provider UI (Phase 4 — see
+// docs/superpowers/specs/2026-07-31-llm-provider-list-design.md, "UI") is
+// components/LlmProviderSection.tsx, rendered here for real (not stubbed) —
+// it owns its own persistence (savePersistedOnly) and its own SecureStore
+// key IO (lib/providerKeys.ts, real, backed by an in-memory
+// expo-secure-store mock below — same pattern as providerKeys.test.ts), so
+// these tests exercise the actual switch/add/delete/health-check flows
+// end-to-end, not a stub.
 //
 // Native-module-heavy children (DiagnosticsSection, VoiceSetupCheck) are
 // stubbed out — they have their own dedicated tests and pull in
@@ -27,13 +31,16 @@ import { PaperProvider } from "react-native-paper";
 
 import { carnetLight } from "../lib/theme";
 import type { Settings } from "../lib/settings";
-import { buildDefaultProviders } from "../lib/llmProviders";
+import { buildDefaultProviders, type LlmProvider } from "../lib/llmProviders";
 
-// Both DEFAULT_OMNIROUTE_MODEL and DEFAULT_VISION_MODEL are this same
-// literal in the real lib/settings.ts — used as the placeholder for both
-// the chat-model and vision-model TextInputs, so getAllByPlaceholderText
-// against it returns [chatInput, visionInput] in that JSX order.
-const MODEL_PLACEHOLDER = "openrouter/openai/gpt-4o-mini";
+const customProvider: LlmProvider = {
+  id: "custom-1",
+  label: "My Server",
+  baseUrl: "https://my.server",
+  model: "",
+  visionModel: "",
+  preset: null,
+};
 
 function baseSettings(overrides: Partial<Settings> = {}): Settings {
   return {
@@ -58,30 +65,40 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
   };
 }
 
+// In-memory SecureStore mock — same pattern as providerKeys.test.ts. LLM
+// provider keys (lib/providerKeys.ts) are REAL in this test file, not
+// stubbed, so the key-deletion mandatory case has real evidence to assert
+// against — a mocked providerKeys module could pass that test for the wrong
+// reason (see the "mutate the source, confirm red" instruction).
+const _secure = new Map<string, string>();
+vi.mock("expo-secure-store", () => ({
+  getItemAsync: vi.fn(async (k: string) => _secure.get(k) ?? null),
+  setItemAsync: vi.fn(async (k: string, v: string) => {
+    _secure.set(k, v);
+  }),
+  deleteItemAsync: vi.fn(async (k: string) => {
+    _secure.delete(k);
+  }),
+}));
+
 const getSettings = vi.fn(async () => baseSettings());
 const saveSettings = vi.fn(async (_s: Settings) => undefined);
-const hasOmniRouteApiKey = vi.fn(async () => false);
+const savePersistedOnly = vi.fn(async (_s: Settings) => undefined);
 const hasKarakeepApiKey = vi.fn(async () => false);
-const hasLocalLlmApiKey = vi.fn(async () => false);
 const shouldShowMigrationBanner = vi.fn(async () => false);
 const dismissMigrationBanner = vi.fn(async () => undefined);
-const setOmniRouteApiKey = vi.fn(async (_key: string) => undefined);
 const setKarakeepApiKey = vi.fn(async (_key: string) => undefined);
-const setLocalLlmApiKey = vi.fn(async (_key: string) => undefined);
 
 vi.mock("../lib/settings", () => ({
   DEFAULT_OMNIROUTE_MODEL: "openrouter/openai/gpt-4o-mini",
   DEFAULT_VISION_MODEL: "openrouter/openai/gpt-4o-mini",
   getSettings: () => getSettings(),
   saveSettings: (s: Settings) => saveSettings(s),
-  hasOmniRouteApiKey: () => hasOmniRouteApiKey(),
+  savePersistedOnly: (s: Settings) => savePersistedOnly(s),
   hasKarakeepApiKey: () => hasKarakeepApiKey(),
-  hasLocalLlmApiKey: () => hasLocalLlmApiKey(),
   shouldShowMigrationBanner: () => shouldShowMigrationBanner(),
   dismissMigrationBanner: () => dismissMigrationBanner(),
-  setOmniRouteApiKey: (key: string) => setOmniRouteApiKey(key),
   setKarakeepApiKey: (key: string) => setKarakeepApiKey(key),
-  setLocalLlmApiKey: (key: string) => setLocalLlmApiKey(key),
 }));
 
 const listModels = vi.fn(async (_url: string, _key: string) => [
@@ -132,13 +149,14 @@ function renderScreen() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  _secure.clear();
   getSettings.mockResolvedValue(baseSettings());
   saveSettings.mockResolvedValue(undefined);
-  hasOmniRouteApiKey.mockResolvedValue(false);
+  savePersistedOnly.mockResolvedValue(undefined);
   hasKarakeepApiKey.mockResolvedValue(false);
-  hasLocalLlmApiKey.mockResolvedValue(false);
   shouldShowMigrationBanner.mockResolvedValue(false);
   listModels.mockResolvedValue(["pick-me-model", "other-model"]);
+  healthCheck.mockResolvedValue("ok");
   isAvailable.mockReturnValue(true);
   requestPermission.mockResolvedValue(true);
   start.mockResolvedValue(undefined);
@@ -193,66 +211,136 @@ describe("SettingsScreen", () => {
     expect(switches[2].checked).toBe(true);
   });
 
-  it("renders the Local-LLM section (URL, key, model, Test connection) when llmBackend is local", async () => {
-    getSettings.mockResolvedValue(baseSettings({ activeProviderId: "relais" }));
+  describe("LLM provider section", () => {
+    it("switching the active provider persists it", async () => {
+      renderScreen();
 
-    renderScreen();
+      fireEvent.click(await screen.findByText("Active provider — tap to change"));
+      fireEvent.click(await screen.findByText("Relais (local)"));
 
-    expect(await screen.findByText("Local LLM")).toBeTruthy();
-    expect(screen.getByPlaceholderText("http://127.0.0.1:8080")).toBeTruthy();
-    expect(
-      screen.getByPlaceholderText(
-        "e.g. litert-community/gemma-4-E4B-it-litert-lm",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByText("Test connection")).toBeTruthy();
-    // Local-LLM key field is optional and unconfigured by default.
-    expect(
-      screen.getByPlaceholderText(
-        "optional — leave blank for an unauthenticated loopback server",
-      ),
-    ).toBeTruthy();
-  });
-
-  it("picking a model for the vision target updates only the vision field, not the chat model", async () => {
-    renderScreen();
-
-    const browseButtons = await screen.findAllByText("Browse available models");
-    expect(browseButtons).toHaveLength(2); // [chat, vision]
-    fireEvent.click(browseButtons[1]);
-
-    const pick = await screen.findByText("pick-me-model");
-    fireEvent.click(pick);
-
-    await waitFor(() => {
-      const [chatInput, visionInput] = screen.getAllByPlaceholderText(
-        MODEL_PLACEHOLDER,
-      ) as HTMLInputElement[];
-      expect(visionInput.value).toBe("pick-me-model");
-      expect(chatInput.value).toBe("");
+      await waitFor(() => {
+        expect(savePersistedOnly).toHaveBeenCalledWith(
+          expect.objectContaining({ activeProviderId: "relais" }),
+        );
+      });
+      // The section re-renders around the newly active entry.
+      expect(await screen.findByPlaceholderText("http://127.0.0.1:8080")).toBeTruthy();
     });
-  });
 
-  // (d) Test-connection result threading. healthCheck used to return a boolean
-  // folded through `ok ? "ok" : "unreachable"`. When it became a discriminated
-  // string, that ternary made EVERY outcome truthy — a blocked or unreachable
-  // server would have rendered "✓ Reachable". typecheck cannot catch that,
-  // because a string is a valid ternary condition. This asserts the failure
-  // states actually reach the UI.
-  describe("Test connection result", () => {
-    it.each([
-      ["unreachable", /check the URL and that the server is running/i],
-      ["blocked-cleartext", /Android blocked this plain http/i],
-      ["unsafe-url", /Not a valid local address/i],
-      ["ok", /Reachable/],
-    ] as const)("renders the %s message", async (result, pattern) => {
-      getSettings.mockResolvedValue(baseSettings({ activeProviderId: "relais" }));
-      healthCheck.mockResolvedValueOnce(result as never);
+    it("adding a custom entry, then deleting it, deletes its stored key", async () => {
+      // Mutation-catch target: swapping providerKeys.removeProviderAndKey
+      // for llmProviders.removeProvider in LlmProviderSection.tsx must turn
+      // this test red — removeProvider never touches SecureStore, so the
+      // key would still be sitting under "carnet.llm.key.custom-1" at the
+      // final assertion.
+      renderScreen();
+
+      fireEvent.click(await screen.findByText("Add custom provider"));
+      fireEvent.change(await screen.findByPlaceholderText("e.g. My Ollama"), {
+        target: { value: "My Server" },
+      });
+      fireEvent.change(screen.getByPlaceholderText("e.g. https://192.168.1.50:11434"), {
+        target: { value: "https://my.server" },
+      });
+      fireEvent.click(screen.getByText("Add"));
+
+      await waitFor(() =>
+        expect(savePersistedOnly).toHaveBeenCalledWith(
+          expect.objectContaining({ nextCustomSeq: 2 }),
+        ),
+      );
+
+      // Make the new entry active so its fields (and key field) render.
+      fireEvent.click(await screen.findByText("Active provider — tap to change"));
+      fireEvent.click(await screen.findByText("My Server"));
+      await waitFor(() =>
+        expect(savePersistedOnly).toHaveBeenCalledWith(
+          expect.objectContaining({ activeProviderId: "custom-1" }),
+        ),
+      );
+
+      // Type and save an API key for it.
+      fireEvent.change(screen.getByPlaceholderText("sk-..."), {
+        target: { value: "sk-custom-secret" },
+      });
+      fireEvent.click(screen.getByText("Save provider"));
+      await waitFor(() => expect(_secure.get("carnet.llm.key.custom-1")).toBe("sk-custom-secret"));
+
+      // Delete it via the active-entry delete affordance (visible because
+      // it's a custom entry) and confirm.
+      fireEvent.click(await screen.findByText("Delete this provider"));
+      fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+      await waitFor(() => expect(_secure.has("carnet.llm.key.custom-1")).toBe(false));
+    });
+
+    it("a preset offers no delete affordance", async () => {
+      renderScreen();
+
+      // Seed a custom entry so the picker has both kinds of rows to compare.
+      fireEvent.click(await screen.findByText("Add custom provider"));
+      fireEvent.change(await screen.findByPlaceholderText("e.g. My Ollama"), {
+        target: { value: "My Server" },
+      });
+      fireEvent.change(screen.getByPlaceholderText("e.g. https://192.168.1.50:11434"), {
+        target: { value: "https://my.server" },
+      });
+      fireEvent.click(screen.getByText("Add"));
+      await waitFor(() =>
+        expect(savePersistedOnly).toHaveBeenCalledWith(
+          expect.objectContaining({ nextCustomSeq: 2 }),
+        ),
+      );
+
+      fireEvent.click(await screen.findByText("Active provider — tap to change"));
+
+      expect(await screen.findByLabelText("Delete My Server")).toBeTruthy();
+      expect(screen.queryByLabelText("Delete OmniRoute")).toBeNull();
+      expect(screen.queryByLabelText("Delete Relais (local)")).toBeNull();
+    });
+
+    it("deleting the active provider does not leave activeProviderId dangling", async () => {
+      getSettings.mockResolvedValue(
+        baseSettings({
+          llmProviders: [...buildDefaultProviders(), customProvider],
+          activeProviderId: "custom-1",
+        }),
+      );
 
       renderScreen();
 
-      fireEvent.click(await screen.findByText("Test connection"));
-      expect(await screen.findByText(pattern)).toBeTruthy();
+      expect(await screen.findByText("Delete this provider")).toBeTruthy();
+      fireEvent.click(screen.getByText("Delete this provider"));
+      fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+      await waitFor(() =>
+        expect(savePersistedOnly).toHaveBeenCalledWith(
+          expect.objectContaining({
+            activeProviderId: "omniroute",
+            fallbackProviderId: null,
+            visionProviderId: null,
+          }),
+        ),
+      );
+      // The section re-renders around the reassigned active entry, not a
+      // dangling reference to the just-deleted one.
+      expect(await screen.findByText("OmniRoute")).toBeTruthy();
+    });
+
+    describe("Test connection result", () => {
+      it.each([
+        ["unreachable", /check the URL and that the server is running/i],
+        ["blocked-cleartext", /Android blocked this plain http/i],
+        ["unsafe-url", /Not a valid local address/i],
+        ["ok", /Reachable/],
+      ] as const)("renders the %s message", async (result, pattern) => {
+        healthCheck.mockResolvedValueOnce(result as never);
+
+        renderScreen();
+
+        fireEvent.click(await screen.findByText("Test connection"));
+        expect(await screen.findByText(pattern)).toBeTruthy();
+      });
     });
   });
 });

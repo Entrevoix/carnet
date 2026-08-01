@@ -30,12 +30,6 @@ import {
 } from "./settingsPersistence";
 
 const baseForm: FormState = {
-  omniRouteUrl: "https://llm.grepon.cc",
-  omniRouteModel: "gemini/gemini-2.5-flash",
-  omniRouteVisionModel: "openai/gpt-4o-mini",
-  llmBackend: "omniroute",
-  localLlmUrl: "",
-  localLlmModel: "",
   persistentNotificationEnabled: true,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
@@ -66,27 +60,19 @@ const storedSettings: Settings = {
 function makeSaveIO(overrides: Partial<{
   getSettings: () => Promise<Settings>;
   saveSettings: () => Promise<void>;
-  setOmniRouteApiKey: () => Promise<void>;
   setKarakeepApiKey: () => Promise<void>;
-  setLocalLlmApiKey: () => Promise<void>;
 }> = {}) {
   return {
     getSettings: vi.fn(overrides.getSettings ?? (async () => storedSettings)),
     saveSettings: vi.fn(overrides.saveSettings ?? (async () => undefined)),
-    setOmniRouteApiKey: vi.fn(overrides.setOmniRouteApiKey ?? (async () => undefined)),
     setKarakeepApiKey: vi.fn(overrides.setKarakeepApiKey ?? (async () => undefined)),
-    setLocalLlmApiKey: vi.fn(overrides.setLocalLlmApiKey ?? (async () => undefined)),
   };
 }
 
 describe("saveSettingsWithKeys", () => {
   it("threads the existing stored keys into the saved Settings", async () => {
     const io = makeSaveIO();
-    await saveSettingsWithKeys(
-      baseForm,
-      { omniRoute: "", karakeep: "", localLlm: "" },
-      io,
-    );
+    await saveSettingsWithKeys(baseForm, { karakeep: "" }, io);
     expect(io.saveSettings).toHaveBeenCalledWith(
       expect.objectContaining({
         omniRouteApiKey: "sk-existing",
@@ -96,39 +82,34 @@ describe("saveSettingsWithKeys", () => {
     );
   });
 
-  it("writes only the pending keys that are non-empty, and reports which", async () => {
-    // Mutation-catch: if the `.length > 0` guards were removed (always
-    // write), all three setters would be called even with empty pending
-    // strings — this assertion on call counts would fail.
+  it("threads the LLM provider identity through unchanged from getSettings' snapshot", async () => {
     const io = makeSaveIO();
-    const result = await saveSettingsWithKeys(
-      baseForm,
-      { omniRoute: "sk-new", karakeep: "", localLlm: "" },
-      io,
+    await saveSettingsWithKeys(baseForm, { karakeep: "" }, io);
+    expect(io.saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        llmProviders: storedSettings.llmProviders,
+        activeProviderId: storedSettings.activeProviderId,
+        nextCustomSeq: storedSettings.nextCustomSeq,
+        fallbackProviderId: storedSettings.fallbackProviderId,
+        visionProviderId: storedSettings.visionProviderId,
+      }),
     );
-    expect(io.setOmniRouteApiKey).toHaveBeenCalledWith("sk-new");
-    expect(io.setKarakeepApiKey).not.toHaveBeenCalled();
-    expect(io.setLocalLlmApiKey).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      ok: true,
-      keysWritten: { omniRoute: true, karakeep: false, localLlm: false },
-    });
   });
 
-  it("writes all three pending keys when all are provided", async () => {
+  it("writes the pending karakeep key only when non-empty, and reports it", async () => {
+    // Mutation-catch: if the `.length > 0` guard were removed (always
+    // write), the setter would be called even with an empty pending string.
     const io = makeSaveIO();
-    const result = await saveSettingsWithKeys(
-      baseForm,
-      { omniRoute: "sk-new", karakeep: "kk-new", localLlm: "local-new" },
-      io,
-    );
-    expect(io.setOmniRouteApiKey).toHaveBeenCalledWith("sk-new");
+    const result = await saveSettingsWithKeys(baseForm, { karakeep: "" }, io);
+    expect(io.setKarakeepApiKey).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true, keysWritten: { karakeep: false } });
+  });
+
+  it("writes the pending karakeep key when provided", async () => {
+    const io = makeSaveIO();
+    const result = await saveSettingsWithKeys(baseForm, { karakeep: "kk-new" }, io);
     expect(io.setKarakeepApiKey).toHaveBeenCalledWith("kk-new");
-    expect(io.setLocalLlmApiKey).toHaveBeenCalledWith("local-new");
-    expect(result).toEqual({
-      ok: true,
-      keysWritten: { omniRoute: true, karakeep: true, localLlm: true },
-    });
+    expect(result).toEqual({ ok: true, keysWritten: { karakeep: true } });
   });
 
   it("returns ok:false with a formatted error when saveSettings rejects", async () => {
@@ -137,63 +118,27 @@ describe("saveSettingsWithKeys", () => {
         throw new Error("disk full");
       },
     });
-    const result = await saveSettingsWithKeys(
-      baseForm,
-      { omniRoute: "sk-new", karakeep: "", localLlm: "" },
-      io,
-    );
+    const result = await saveSettingsWithKeys(baseForm, { karakeep: "kk-new" }, io);
     expect(result).toEqual({
       ok: false,
       error: "Save failed: disk full",
-      keysWritten: { omniRoute: false, karakeep: false, localLlm: false },
+      keysWritten: { karakeep: false },
     });
     // The key write must not have been attempted after the settings save failed.
-    expect(io.setOmniRouteApiKey).not.toHaveBeenCalled();
+    expect(io.setKarakeepApiKey).not.toHaveBeenCalled();
   });
 
-  it("returns ok:false when a key write rejects, without crediting it as written", async () => {
-    const io = makeSaveIO({
-      setOmniRouteApiKey: async () => {
-        throw new Error("keychain locked");
-      },
-    });
-    const result = await saveSettingsWithKeys(
-      baseForm,
-      { omniRoute: "sk-new", karakeep: "", localLlm: "" },
-      io,
-    );
-    expect(result).toEqual({
-      ok: false,
-      error: "Save failed: keychain locked",
-      keysWritten: { omniRoute: false, karakeep: false, localLlm: false },
-    });
-  });
-
-  it("credits an earlier key write as written even when a LATER key write rejects (partial failure)", async () => {
-    // Regression test: writes happen sequentially (OmniRoute, then Karakeep,
-    // then Local-LLM). If OmniRoute's write succeeds and Karakeep's then
-    // rejects, the caller MUST still know the OmniRoute key was written —
-    // otherwise the screen shows it as unconfigured with the typed value
-    // stuck in the field, even though it's now actually stored.
-    // Mutation-catch: if keysWritten were only returned on the `ok: true`
-    // branch (or reset in the catch), this assertion on the `ok: false`
-    // result's keysWritten.omniRoute would fail.
+  it("returns ok:false when the key write rejects, without crediting it as written", async () => {
     const io = makeSaveIO({
       setKarakeepApiKey: async () => {
         throw new Error("keychain locked");
       },
     });
-    const result = await saveSettingsWithKeys(
-      baseForm,
-      { omniRoute: "sk-new", karakeep: "kk-new", localLlm: "" },
-      io,
-    );
-    expect(io.setOmniRouteApiKey).toHaveBeenCalledWith("sk-new");
-    expect(io.setLocalLlmApiKey).not.toHaveBeenCalled();
+    const result = await saveSettingsWithKeys(baseForm, { karakeep: "kk-new" }, io);
     expect(result).toEqual({
       ok: false,
       error: "Save failed: keychain locked",
-      keysWritten: { omniRoute: true, karakeep: false, localLlm: false },
+      keysWritten: { karakeep: false },
     });
   });
 });

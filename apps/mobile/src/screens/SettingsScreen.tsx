@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Platform, ScrollView, StyleSheet, View } from "react-native";
 import { StorageAccessFramework } from "expo-file-system/legacy";
 import {
@@ -14,18 +14,12 @@ import {
 } from "react-native-paper";
 
 import {
-  DEFAULT_OMNIROUTE_MODEL,
-  DEFAULT_VISION_MODEL,
   dismissMigrationBanner,
   getSettings,
   hasKarakeepApiKey,
-  hasLocalLlmApiKey,
-  hasOmniRouteApiKey,
   saveSettings,
   savePersistedOnly,
   setKarakeepApiKey,
-  setLocalLlmApiKey,
-  setOmniRouteApiKey,
   shouldShowMigrationBanner,
 } from "../lib/settings";
 import {
@@ -37,23 +31,15 @@ import {
   type FormState,
 } from "../lib/settingsForm";
 import {
-  applyPickedModel,
-  filterAndSplitModels,
-  resolveBrowseApiKey,
-} from "../lib/modelBrowser";
-import {
   clearApiKey,
   persistNotificationHint,
   reconcileInitialNotificationState,
   saveSettingsWithKeys,
   toggleNotification,
 } from "../lib/settingsPersistence";
-import { listModels } from "../lib/dispatcher";
-import { healthCheck, type HealthResult } from "../lib/llmClient";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { DiagnosticsSection } from "../components/DiagnosticsSection";
-import { ModelBrowserModal } from "../components/ModelBrowserModal";
-import { LocalLlmSection } from "../components/LocalLlmSection";
+import { LlmProviderSection } from "../components/LlmProviderSection";
 import { caretProps, spacing, useCarnetTheme } from "../lib/theme";
 import {
   useThemePreference,
@@ -62,73 +48,30 @@ import {
 import * as captureNotification from "../lib/captureNotification";
 import { VoiceSetupCheck } from "../voice/VoiceSetupCheck";
 
-/**
- * Pinned at the top of the model browser. Verified-working chat models on
- * llm.grepon.cc for carnet's structured-markdown use case — the catalog also
- * contains embeddings, image gen, and broken upstream routes the user has no
- * reason to click. Order is rough quality/cost tradeoff.
- */
-const RECOMMENDED_MODELS = [
-  "gemini/gemini-2.5-flash-lite",
-  "gemini/gemini-2.5-flash",
-  "claude/claude-haiku-4-5-20251001",
-  "claude/claude-sonnet-4-6",
-] as const;
-
 export default function SettingsScreen() {
   const theme = useCarnetTheme();
   const themePreference = useThemePreference();
   const [form, setForm] = useState<FormState | null>(null);
-  const [keyConfigured, setKeyConfigured] = useState<boolean>(false);
-  /** Holds a NEW API key the user is entering. Empty string means "no change". */
-  const [pendingKey, setPendingKey] = useState<string>("");
-  /** Karakeep key state — mirrors the OmniRoute key pattern. The key is never
-   * read into render state; we only track whether one is configured and any
-   * newly-typed replacement. */
+  /** Karakeep key state — the key is never read into render state; we only
+   * track whether one is configured and any newly-typed replacement. LLM
+   * provider keys are NOT tracked here — LlmProviderSection owns its own key
+   * state end-to-end via providerKeys.ts. */
   const [karakeepKeyConfigured, setKarakeepKeyConfigured] =
     useState<boolean>(false);
   const [pendingKarakeepKey, setPendingKarakeepKey] = useState<string>("");
-  /** Local-LLM key state — mirrors the OmniRoute/Karakeep key pattern. */
-  const [localLlmKeyConfigured, setLocalLlmKeyConfigured] = useState<boolean>(false);
-  const [pendingLocalLlmKey, setPendingLocalLlmKey] = useState<string>("");
-  /** Test Connection state for the Local LLM section. */
-  const [testingConnection, setTestingConnection] = useState(false);
-  const [connectionResult, setConnectionResult] = useState<HealthResult | null>(null);
   const [saved, setSaved] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
-  /** Surfaced via Snackbar when the SAF folder picker fails. Previous
-   * behavior wrote "error: ..." into the path field, which then got
-   * persisted on Save as a broken capture folder. */
+  /** Surfaced via Snackbar when the SAF folder picker fails, or when
+   * LlmProviderSection reports a failed IO operation. Previous behavior
+   * wrote "error: ..." into the path field, which then got persisted on
+   * Save as a broken capture folder. */
   const [pickerError, setPickerError] = useState<string | null>(null);
-
-  // Model browser state — opens a modal that lists available models from
-  // GET /v1/models so the user can pick from the actual catalog instead of
-  // guessing a model name.
-  const [browseOpen, setBrowseOpen] = useState(false);
-  const [browseLoading, setBrowseLoading] = useState(false);
-  const [browseError, setBrowseError] = useState<string | null>(null);
-  const [models, setModels] = useState<string[] | null>(null);
-  const [modelFilter, setModelFilter] = useState("");
-  // Which model field the browser is picking for — the same modal drives both
-  // the chat and the vision picker so the listModels catalog is fetched once
-  // per open and routed to the right form field on select.
-  const [browseTarget, setBrowseTarget] = useState<"chat" | "vision">("chat");
-
-  // useMemo MUST run on every render in the same order — must live above
-  // the `if (!form) return …` early return below, or hook count changes
-  // between renders and React throws "Rendered more hooks than…".
-  const { recommended, others } = useMemo(
-    () => filterAndSplitModels(models, modelFilter, RECOMMENDED_MODELS),
-    [models, modelFilter],
-  );
 
   useEffect(() => {
     void (async () => {
-      const [s, hasKey, hasKkKey, hasLocalKey, banner] = await Promise.all([
+      const [s, hasKkKey, banner] = await Promise.all([
         getSettings(),
-        hasOmniRouteApiKey(),
         hasKarakeepApiKey(),
-        hasLocalLlmApiKey(),
         shouldShowMigrationBanner(),
       ]);
       // Source-of-truth for the notification toggle is native
@@ -164,9 +107,7 @@ export default function SettingsScreen() {
         }
       }
       setForm(formStateFromSettings(s, initialNotificationEnabled));
-      setKeyConfigured(hasKey);
       setKarakeepKeyConfigured(hasKkKey);
-      setLocalLlmKeyConfigured(hasLocalKey);
       setShowBanner(banner);
     })();
   }, []);
@@ -191,28 +132,16 @@ export default function SettingsScreen() {
   const save = async () => {
     const result = await saveSettingsWithKeys(
       form,
-      {
-        omniRoute: pendingKey,
-        karakeep: pendingKarakeepKey,
-        localLlm: pendingLocalLlmKey,
-      },
-      { getSettings, saveSettings, setOmniRouteApiKey, setKarakeepApiKey, setLocalLlmApiKey },
+      { karakeep: pendingKarakeepKey },
+      { getSettings, saveSettings, setKarakeepApiKey },
     );
     // Apply keysWritten BEFORE checking `ok` — key writes are sequential, so
     // a later one can reject after earlier ones already succeeded. Skipping
     // this on failure would leave an actually-stored key showing as
     // unconfigured with its typed value stuck in the field.
-    if (result.keysWritten.omniRoute) {
-      setPendingKey("");
-      setKeyConfigured(true);
-    }
     if (result.keysWritten.karakeep) {
       setPendingKarakeepKey("");
       setKarakeepKeyConfigured(true);
-    }
-    if (result.keysWritten.localLlm) {
-      setPendingLocalLlmKey("");
-      setLocalLlmKeyConfigured(true);
     }
     if (!result.ok) {
       setPickerError(result.error);
@@ -221,33 +150,13 @@ export default function SettingsScreen() {
     setSaved(true);
   };
 
-  // Each clear flips UI state only AFTER the keychain write confirms — a
-  // reject must not show "cleared" while the key is still stored.
-  const clearKey = async () => {
-    const result = await clearApiKey(setOmniRouteApiKey);
-    if (result.ok) {
-      setKeyConfigured(false);
-      setPendingKey("");
-    } else {
-      setPickerError(result.error);
-    }
-  };
-
+  // Clear flips UI state only AFTER the keychain write confirms — a reject
+  // must not show "cleared" while the key is still stored.
   const clearKarakeepKey = async () => {
     const result = await clearApiKey(setKarakeepApiKey);
     if (result.ok) {
       setKarakeepKeyConfigured(false);
       setPendingKarakeepKey("");
-    } else {
-      setPickerError(result.error);
-    }
-  };
-
-  const clearLocalLlmKey = async () => {
-    const result = await clearApiKey(setLocalLlmApiKey);
-    if (result.ok) {
-      setLocalLlmKeyConfigured(false);
-      setPendingLocalLlmKey("");
     } else {
       setPickerError(result.error);
     }
@@ -276,30 +185,6 @@ export default function SettingsScreen() {
     setShowBanner(false);
   };
 
-  /** Open the model browser. Uses the URL from form state and the API key
-   * from SecureStore (via getSettings) — or the freshly-typed pendingKey
-   * if the user hasn't saved it yet. */
-  const openBrowse = async (target: "chat" | "vision" = "chat") => {
-    if (!form) return;
-    setBrowseTarget(target);
-    setBrowseError(null);
-    setBrowseOpen(true);
-    setModelFilter("");
-    // Refetch every open — the user may have changed URL/key since last time.
-    setBrowseLoading(true);
-    try {
-      const stored = await getSettings();
-      const key = resolveBrowseApiKey(pendingKey, stored.omniRouteApiKey);
-      const list = await listModels(form.omniRouteUrl, key);
-      setModels(list);
-    } catch (e: unknown) {
-      setBrowseError(e instanceof Error ? e.message : String(e));
-      setModels(null);
-    } finally {
-      setBrowseLoading(false);
-    }
-  };
-
   /**
    * Open Android's Storage Access Framework folder picker. Returns a
    * `content://...tree/...` URI the OS has granted persistent permission
@@ -322,23 +207,6 @@ export default function SettingsScreen() {
       // (that would persist a broken capture folder on the next Save).
       setPickerError(errorMessage(e, "Folder picker failed"));
     }
-  };
-
-  const testLocalLlmConnection = async () => {
-    if (!form) return;
-    setTestingConnection(true);
-    setConnectionResult(null);
-    // Pass the result straight through. It used to be a boolean folded into a
-    // ternary; now that healthCheck returns a discriminated string, a truthiness
-    // check would report every outcome — including "unreachable" — as success.
-    setConnectionResult(await healthCheck(form.localLlmUrl));
-    setTestingConnection(false);
-  };
-
-  const pickModel = (id: string) => {
-    if (!form) return;
-    setForm(applyPickedModel(form, browseTarget, id));
-    setBrowseOpen(false);
   };
 
   return (
@@ -374,135 +242,7 @@ export default function SettingsScreen() {
         style={{ marginBottom: spacing.sm }}
       />
 
-      <Text variant="titleMedium" style={styles.sectionTitle}>
-        Enrichment backend
-      </Text>
-      <HelperText type="info" visible>
-        Where AI enrichment runs. OmniRoute is your self-hosted cloud-routed
-        proxy; Local runs entirely on-device (or LAN) with no internet
-        required.
-      </HelperText>
-      <SegmentedButtons
-        value={form.llmBackend}
-        onValueChange={(v) => update({ llmBackend: v as FormState["llmBackend"] })}
-        buttons={[
-          { value: "omniroute", label: "OmniRoute", icon: "cloud-outline" },
-          { value: "local", label: "Local", icon: "cellphone-off" },
-        ]}
-        style={{ marginBottom: spacing.sm }}
-      />
-
-      {form.llmBackend === "omniroute" && (
-        <>
-          <Text variant="titleMedium" style={styles.sectionTitle}>
-            Connection
-          </Text>
-          <HelperText type="info" visible>
-            Where AI enrichment runs — your self-hosted OmniRoute endpoint.
-          </HelperText>
-          <TextInput
-            {...caretProps(theme)}
-            label="OmniRoute URL"
-            mode="outlined"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            value={form.omniRouteUrl}
-            onChangeText={(v) => update({ omniRouteUrl: v })}
-          />
-          <HelperText type="info" visible>
-            OmniRoute base URL — must start with https:// (e.g. https://llm.grepon.cc)
-          </HelperText>
-
-          <TextInput
-            {...caretProps(theme)}
-            label={apiKeyFieldLabel("OmniRoute API key", keyConfigured, pendingKey.length)}
-            mode="outlined"
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-            placeholder={apiKeyFieldPlaceholder(keyConfigured, "sk-...")}
-            value={pendingKey}
-            onChangeText={setPendingKey}
-          />
-          <HelperText type="info" visible>
-            Stored in the secure keychain. The existing key is never shown again.
-          </HelperText>
-          {keyConfigured && (
-            <Button mode="text" compact onPress={clearKey} style={styles.clearKey}>
-              Clear key
-            </Button>
-          )}
-
-          <TextInput
-            {...caretProps(theme)}
-            label="Model"
-            mode="outlined"
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={form.omniRouteModel}
-            onChangeText={(v) => update({ omniRouteModel: v })}
-            placeholder={DEFAULT_OMNIROUTE_MODEL}
-          />
-          <HelperText type="info" visible>
-            OmniRoute model — tap Browse to pick from your provider's catalog
-          </HelperText>
-          <Button
-            mode="text"
-            icon="format-list-bulleted"
-            compact
-            onPress={() => openBrowse("chat")}
-            disabled={!form.omniRouteUrl.trim()}
-            style={styles.browseBtn}
-          >
-            Browse available models
-          </Button>
-
-          <TextInput
-            {...caretProps(theme)}
-            label="Vision model"
-            mode="outlined"
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={form.omniRouteVisionModel}
-            onChangeText={(v) => update({ omniRouteVisionModel: v })}
-            placeholder={DEFAULT_VISION_MODEL}
-          />
-          <HelperText type="info" visible>
-            Vision-capable model used when you share a photo or image into carnet.
-            Held separate from the chat model so a text-only model can't silently
-            drop the image. Must handle image input (e.g. gpt-4o-mini, Gemini
-            Flash, Claude). Tap Browse to pick from your provider's catalog.
-          </HelperText>
-          <Button
-            mode="text"
-            icon="format-list-bulleted"
-            compact
-            onPress={() => openBrowse("vision")}
-            disabled={!form.omniRouteUrl.trim()}
-            style={styles.browseBtn}
-          >
-            Browse available models
-          </Button>
-        </>
-      )}
-
-      {form.llmBackend === "local" && (
-        <LocalLlmSection
-          theme={theme}
-          url={form.localLlmUrl}
-          onUrlChange={(v) => update({ localLlmUrl: v })}
-          keyConfigured={localLlmKeyConfigured}
-          pendingKey={pendingLocalLlmKey}
-          onPendingKeyChange={setPendingLocalLlmKey}
-          onClearKey={clearLocalLlmKey}
-          model={form.localLlmModel}
-          onModelChange={(v) => update({ localLlmModel: v })}
-          testingConnection={testingConnection}
-          connectionResult={connectionResult}
-          onTestConnection={() => void testLocalLlmConnection()}
-        />
-      )}
+      <LlmProviderSection theme={theme} onError={setPickerError} />
 
       <Text variant="titleMedium" style={styles.sectionTitle}>
         Storage
@@ -720,19 +460,6 @@ export default function SettingsScreen() {
         {pickerError ?? ""}
       </Snackbar>
 
-      <ModelBrowserModal
-        theme={theme}
-        visible={browseOpen}
-        onDismiss={() => setBrowseOpen(false)}
-        loading={browseLoading}
-        error={browseError}
-        onRetry={() => openBrowse(browseTarget)}
-        filter={modelFilter}
-        onFilterChange={setModelFilter}
-        recommended={recommended}
-        others={others}
-        onPickModel={pickModel}
-      />
     </ScrollView>
   );
 }
@@ -743,7 +470,6 @@ const styles = StyleSheet.create({
   content: { padding: 16, gap: 4 },
   save: { marginTop: 12 },
   clearKey: { alignSelf: "flex-start", marginTop: 4 },
-  browseBtn: { alignSelf: "flex-start", marginTop: 4 },
   folderRow: { flexDirection: "row", gap: 8, marginTop: 4, flexWrap: "wrap" },
   folderBtn: { alignSelf: "flex-start" },
   notificationSection: { marginTop: 16 },

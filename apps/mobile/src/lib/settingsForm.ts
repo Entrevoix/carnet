@@ -6,30 +6,18 @@
  * shape data.
  */
 
-import {
-  DEFAULT_OMNIROUTE_MODEL,
-  DEFAULT_VISION_MODEL,
-  type PromptOverrides,
-  type Settings,
-} from "./settings";
-import { resolveActiveProvider, type LlmProvider } from "./llmProviders";
-
-/** The two providers the current (pre-Phase-4) Settings UI exposes a picker
- * for. The full provider list may hold more entries (other presets, custom
- * ones) — those pass through composeSettingsForSave untouched. */
-export type FormLlmBackend = "omniroute" | "local";
+import type { PromptOverrides, Settings } from "./settings";
 
 /** Editable slice of {@link Settings} the Settings form renders. The API keys
  * are intentionally excluded — they live in SecureStore and are never read
  * into render state; only a "configured?" flag and a newly-typed replacement
- * are tracked by the screen. */
+ * are tracked by the screen. The LLM provider list itself (`llmProviders`,
+ * `activeProviderId`, `nextCustomSeq`, `fallbackProviderId`,
+ * `visionProviderId`) is NOT part of FormState as of Phase 4 —
+ * `components/LlmProviderSection.tsx` owns that slice end-to-end (its own
+ * reads, its own immediate writes), independent of this form's Save button.
+ * See docs/superpowers/specs/2026-07-31-llm-provider-list-design.md, "UI". */
 export interface FormState {
-  omniRouteUrl: string;
-  omniRouteModel: string;
-  omniRouteVisionModel: string;
-  llmBackend: FormLlmBackend;
-  localLlmUrl: string;
-  localLlmModel: string;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
@@ -54,54 +42,31 @@ export interface ExistingApiKeys {
 
 /**
  * Compose the {@link Settings} object to persist from the form state, the
- * existing keys, and the provider list as it stood before this save.
- * Applies the blank→default fallbacks for the chat/vision models and
- * passes through the user's selected llmBackend and local-LLM
- * configuration by updating the `omniroute`/`relais` entries in
- * `currentProviders` — every other entry (other presets, custom providers;
- * this form has no UI for them yet) passes through unchanged. The keys are
- * passed through unchanged: when the user typed a new key the screen writes
- * it separately via setOmniRouteApiKey/setKarakeepApiKey after this save,
- * and passing the existing (or empty) key here matches the prior behavior
- * where saveSettings preserves — or clears — the stored key.
- *
- * `nextCustomSeq` is threaded straight through unchanged — this form has no
- * UI for adding custom providers yet (Phase 4), so nothing here ever
- * advances the counter; it just must not be dropped on save. `fallbackProviderId`
- * and `visionProviderId` are threaded through the same way — this form
- * predates the Phase 4 fallback/vision selectors, so nothing here ever
- * changes them; they just must not be dropped on save.
+ * existing keys, and a freshly-read `currentSettings` snapshot. The LLM
+ * identity fields (`llmProviders`, `activeProviderId`, `nextCustomSeq`,
+ * `fallbackProviderId`, `visionProviderId`) are threaded straight through
+ * from `currentSettings` UNCHANGED — as of Phase 4,
+ * `components/LlmProviderSection.tsx` persists that slice itself, on its own
+ * immediate writes, independent of this form's Save button. This function
+ * must never overwrite it with a stale value, since the section may have
+ * changed it since `currentSettings` was captured only moments earlier — it
+ * simply must not be DROPPED by this save. The keys are passed through
+ * unchanged: when the user typed a new key the screen writes it separately
+ * via setKarakeepApiKey after this save, and passing the existing (or empty)
+ * key here matches the prior behavior where saveSettings preserves — or
+ * clears — the stored key.
  */
 export function composeSettingsForSave(
   form: FormState,
   existing: ExistingApiKeys,
-  currentProviders: readonly LlmProvider[],
-  nextCustomSeq: number,
-  fallbackProviderId: string | null = null,
-  visionProviderId: string | null = null,
+  currentSettings: Settings,
 ): Settings {
-  const omniRouteModel = form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL;
-  const omniRouteVisionModel = form.omniRouteVisionModel || DEFAULT_VISION_MODEL;
-  const llmProviders = currentProviders.map((p) => {
-    if (p.id === "omniroute") {
-      return {
-        ...p,
-        baseUrl: form.omniRouteUrl,
-        model: omniRouteModel,
-        visionModel: omniRouteVisionModel,
-      };
-    }
-    if (p.id === "relais") {
-      return { ...p, baseUrl: form.localLlmUrl, model: form.localLlmModel };
-    }
-    return p;
-  });
   return {
-    llmProviders,
-    activeProviderId: form.llmBackend === "local" ? "relais" : "omniroute",
-    nextCustomSeq,
-    fallbackProviderId,
-    visionProviderId,
+    llmProviders: currentSettings.llmProviders,
+    activeProviderId: currentSettings.activeProviderId,
+    nextCustomSeq: currentSettings.nextCustomSeq,
+    fallbackProviderId: currentSettings.fallbackProviderId,
+    visionProviderId: currentSettings.visionProviderId,
     localLlmApiKey: existing.localLlmApiKey,
     persistentNotificationEnabled: form.persistentNotificationEnabled,
     autoTranscribeOnSave: form.autoTranscribeOnSave,
@@ -126,15 +91,7 @@ export function formStateFromSettings(
   s: Settings,
   persistentNotificationEnabled: boolean,
 ): FormState {
-  const omniroute = resolveActiveProvider(s.llmProviders, "omniroute");
-  const relais = resolveActiveProvider(s.llmProviders, "relais");
   return {
-    omniRouteUrl: omniroute.baseUrl,
-    omniRouteModel: omniroute.model,
-    omniRouteVisionModel: omniroute.visionModel,
-    llmBackend: s.activeProviderId === "relais" ? "local" : "omniroute",
-    localLlmUrl: relais.baseUrl,
-    localLlmModel: relais.model,
     persistentNotificationEnabled,
     autoTranscribeOnSave: s.autoTranscribeOnSave,
     richEditorEnabled: s.richEditorEnabled,
