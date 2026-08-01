@@ -57,7 +57,7 @@ one is the offline backup.
 - Streaming responses, cost tracking, provider-specific auth beyond a bearer
   token.
 
-## Cleartext: loopback is fine (verified), LAN is an open question
+## Cleartext: loopback works, LAN is blocked (both verified on device)
 
 An earlier draft of this spec called this a blocking prerequisite and claimed
 loopback was broken on release builds. **That was wrong, and device testing
@@ -86,32 +86,52 @@ its process alive, but not serving. Worth remembering when interpreting a
 failed health check: **"unreachable" usually means the server is not running,
 not that the platform blocked it.**
 
-### What is still unknown: LAN
+### LAN cleartext IS blocked — verified, 2026-08-01
 
-The **usual** configuration is a LAN/WAN Relais, not loopback, and the loopback
-exemption does **not** extend to a private-range address. Android's default
-should still block `http://192.168.x.x:8080` on a release build.
+The **usual** configuration is a LAN/WAN Relais, and the loopback exemption does
+not extend to a private-range address. Tested on the same release APK, against
+the same HTTP server, in the same session:
 
-This was not verified — the attempt was abandoned because the Relais app
-repeatedly took foreground focus and corrupted the UI automation. It is a
-hypothesis, not a finding.
+| Path to the SAME server | Result |
+|---|---|
+| loopback `http://127.0.0.1:8080` (via `adb reverse`) | **✓ Reachable** |
+| LAN `http://192.168.178.114:8080` (direct) | **Unreachable** |
+| Chrome -> that same LAN URL | loads fine |
 
-It matters because of a mismatch already visible in the app: Carnet's own helper
-text under the URL field reads *"loopback (127.0.0.1) or LAN addresses are
-allowed over plain `http://`; anything else must use `https://`"*. That is
-Carnet's **application-level validation**, which will happily accept a LAN
-`http://` URL that the **platform** then refuses to connect to. If so, the user
-gets "Unreachable" with no indication that the OS blocked it.
+Every alternative explanation was eliminated before concluding:
 
-**Action:** verify LAN cleartext on a release build as the first task of the
-plan. If blocked, add `plugins/withCleartextLocal.js` shipping a network
+- **Not the app's own allowlist.** `netAllowlist.ts:31-32` explicitly permits
+  `192.168.0.0/16` for plaintext, so `healthCheck`'s `isCredentialSafeUrl` guard
+  passes and the fetch is actually issued.
+- **Not the server.** `http://192.168.178.114:8080/health` — the exact path
+  `healthCheck` requests — returns HTTP 200.
+- **Not the network or a host firewall.** Chrome on the same device loads the
+  same URL; the listener is bound to `0.0.0.0`.
+- **Not a response-parsing failure.** `healthCheck` only checks `response.ok`,
+  and the loopback control hit the *same server* and returned Reachable.
+
+So the platform blocks it. Note there is **no `CLEARTEXT ...` line in logcat** —
+React Native's fetch surfaces it as a caught JS error and `healthCheck` swallows
+it into `false`, so the failure is indistinguishable from "server is down" from
+the user's side. That is itself a UX bug worth fixing alongside.
+
+This exposes a real mismatch: the app's helper text tells the user *"loopback
+(127.0.0.1) or LAN addresses are allowed over plain `http://`"* — true of
+Carnet's **application-level** validation, but the **platform** then refuses the
+connection, and the user is told only "Unreachable — check the URL and that the
+server is running."
+
+**Action:** add `plugins/withCleartextLocal.js` shipping an Android network
 security config that permits cleartext **only** to RFC1918 ranges (loopback
-already works) — never a blanket `usesCleartextTraffic="true"`, so cleartext to
-arbitrary internet hosts stays blocked, consistent with #70. If not blocked,
-nothing is needed and this section becomes a note.
+already works without it) — never a blanket `usesCleartextTraffic="true"`, so
+cleartext to arbitrary internet hosts stays blocked, consistent with #70.
 
-Either way this is **not** a blocker for the rest of the design, and it is
-independent of it.
+Note while implementing: `isAllowedPlaintextHost` covers `10/8` and
+`192.168/16` but **not `172.16/12`**, which is also RFC1918. Either add it or
+document the omission; the plugin's config and that allowlist should agree.
+
+This is independent of the rest of the design and ships on its own — it fixes a
+live bug in today's local-LLM feature for every LAN user.
 
 ## Offline fallback
 
@@ -357,12 +377,13 @@ risk control: the blocking prerequisite is settled first against a real device,
 then the riskiest refactor lands alone against the existing tests with no UI to
 confuse the diff.
 
-0. **LAN cleartext check.** Loopback is already verified working on a release
-   build (see above), so the offline story is safe. Remaining question: whether
-   a LAN `http://192.168.x.x` Relais is blocked. Test on a release APK; if
-   blocked, add `plugins/withCleartextLocal.js` permitting cleartext to RFC1918
-   only. **Independent of everything below** — it ships on its own and the rest
-   of the design does not wait on it.
+0. **`plugins/withCleartextLocal.js`.** LAN cleartext is verified blocked on
+   release builds (see above); loopback is verified working. Ship a network
+   security config permitting cleartext to RFC1918 only, reconcile
+   `isAllowedPlaintextHost` (missing `172.16/12`), and make a
+   platform-blocked connection distinguishable from "server down" in the
+   health-check UI. **Independent of everything below** — it fixes a live bug
+   for every LAN user today and the rest of the design does not wait on it.
 1. **Merge the client.** `omniroute.ts` + `localLlm.ts` -> `llmClient.ts`,
    parameterized by a `ProviderConfig` the caller supplies. `dispatcher.ts`
    builds that config from today's settings fields, so **no settings change and
