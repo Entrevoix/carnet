@@ -66,7 +66,7 @@ vi.mock("../lib/dispatcher", () => ({
 
 // NOTE: ../lib/enrichSanitize is deliberately NOT mocked.
 
-vi.mock("../lib/omniroute", () => ({
+vi.mock("../lib/llmClient", () => ({
   assertBase64UnderLimit: vi.fn(),
   MAX_SHARED_IMAGE_BYTES: 8 * 1024 * 1024,
 }));

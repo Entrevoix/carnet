@@ -77,11 +77,12 @@ vi.mock("./settings", () => ({
     karakeepApiKey: "",
   }),
   getPromptOverrides: vi.fn().mockResolvedValue({}),
+  DEFAULT_OMNIROUTE_MODEL: "openrouter/openai/gpt-4o-mini",
 }));
 
-// ── Mock omniroute ────────────────────────────────────────────────────────────
+// ── Mock llmClient (dispatcher's single merged client) ───────────────────────
 
-vi.mock("./omniroute", () => ({
+vi.mock("./llmClient", () => ({
   enrichIdea: vi.fn().mockResolvedValue({
     markdown: "---\nstatus: seedling\n---\n# Test Idea\n\nbody\n",
     model: "test",
@@ -94,25 +95,20 @@ vi.mock("./omniroute", () => ({
     markdown: "---\nname: Jane Doe\n---\n# Jane Doe\n",
     model: "test",
   }),
-  // Tests inject network errors via mockRejectedValue. None of them throw
-  // OmniRouteError, so isPermanentError returns false → drain treats as
-  // transient and increments attempts (the existing test expectation).
-  isPermanentError: vi.fn().mockReturnValue(false),
-  // Default false; the not-configured drain test flips it on for one pass.
-  isNotConfiguredError: vi.fn().mockReturnValue(false),
-}));
-
-// ── Mock localLlm (dispatcher now imports it) ────────────────────────────────
-
-vi.mock("./localLlm", () => ({
-  enrichIdea: vi.fn(),
-  enrichJournal: vi.fn(),
-  enrichPerson: vi.fn(),
   enrichSharedImage: vi.fn(),
   enrichSharedLink: vi.fn(),
   promoteIdea: vi.fn(),
   ocrCardViaVision: vi.fn(),
   listModels: vi.fn(),
+  healthCheck: vi.fn(),
+  DEFAULT_LOCAL_LLM_URL: "http://127.0.0.1:8080",
+  LlmClientError: class LlmClientError extends Error {},
+  // Tests inject network errors via mockRejectedValue. None of them throw
+  // LlmClientError, so isPermanentError returns false → drain treats as
+  // transient and increments attempts (the existing test expectation).
+  isPermanentError: vi.fn().mockReturnValue(false),
+  // Default false; the not-configured drain test flips it on for one pass.
+  isNotConfiguredError: vi.fn().mockReturnValue(false),
 }));
 
 // ── Mock writer ───────────────────────────────────────────────────────────────
@@ -233,7 +229,7 @@ describe("enqueue", () => {
 
 describe("drainQueue", () => {
   it("removes rows on successful processing", async () => {
-    const { enrichIdea } = await import("./omniroute");
+    const { enrichIdea } = await import("./llmClient");
     const { writeIdea } = await import("./writer");
     vi.mocked(enrichIdea).mockResolvedValue({ markdown: "---\nstatus: seedling\n---\n# Test Idea\n\nbody\n", model: "t" });
     vi.mocked(writeIdea).mockResolvedValue({ filepath: "file:///carnet/Ideas/test-idea.md" });
@@ -254,7 +250,7 @@ describe("drainQueue", () => {
   });
 
   it("increments attempts on failure and leaves row in queue", async () => {
-    const { enrichIdea } = await import("./omniroute");
+    const { enrichIdea } = await import("./llmClient");
     vi.mocked(enrichIdea).mockRejectedValue(new Error("network error"));
 
     await enqueue({ mode: "idea", text: "fail me" });
@@ -267,7 +263,7 @@ describe("drainQueue", () => {
   });
 
   it("leaves rows untouched (no attempts burned) when OmniRoute is not configured", async () => {
-    const { enrichIdea, isNotConfiguredError } = await import("./omniroute");
+    const { enrichIdea, isNotConfiguredError } = await import("./llmClient");
     vi.mocked(enrichIdea).mockRejectedValue(new Error("not configured"));
     // Classify the first failure as a config problem (drain breaks after one,
     // so Once is enough and won't leak into later tests via clearAllMocks).
@@ -288,7 +284,7 @@ describe("drainQueue", () => {
   });
 
   it("processes rows oldest-first", async () => {
-    const { enrichIdea } = await import("./omniroute");
+    const { enrichIdea } = await import("./llmClient");
     const calls: string[] = [];
     vi.mocked(enrichIdea).mockImplementation(async (text: string) => {
       calls.push(text);
@@ -307,25 +303,33 @@ describe("drainQueue", () => {
   });
 
   it("processes journal payloads via enrichJournal + appendJournal", async () => {
-    const { enrichJournal } = await import("./omniroute");
+    const { enrichJournal } = await import("./llmClient");
     const { appendJournal } = await import("./writer");
 
     await enqueue({ mode: "journal", transcript: "today I did things", notes: "", date: "2026-05-16" });
     await drainQueue();
 
-    expect(vi.mocked(enrichJournal)).toHaveBeenCalledWith({ transcript: "today I did things", notes: "" });
+    expect(vi.mocked(enrichJournal)).toHaveBeenCalledWith(
+      { transcript: "today I did things", notes: "" },
+      expect.any(Object),
+      undefined,
+    );
     expect(vi.mocked(appendJournal)).toHaveBeenCalled();
     expect(rows().length).toBe(0);
   });
 
   it("processes person payloads via enrichPerson + writePerson", async () => {
-    const { enrichPerson } = await import("./omniroute");
+    const { enrichPerson } = await import("./llmClient");
     const { writePerson } = await import("./writer");
 
     await enqueue({ mode: "person", ocrResult: "Jane Doe CEO", context: "conference" });
     await drainQueue();
 
-    expect(vi.mocked(enrichPerson)).toHaveBeenCalledWith({ ocrResult: "Jane Doe CEO", context: "conference" });
+    expect(vi.mocked(enrichPerson)).toHaveBeenCalledWith(
+      { ocrResult: "Jane Doe CEO", context: "conference" },
+      expect.any(Object),
+      undefined,
+    );
     expect(vi.mocked(writePerson)).toHaveBeenCalled();
     expect(rows().length).toBe(0);
   });
@@ -372,7 +376,7 @@ describe("drainQueue", () => {
   });
 
   it("merges queued tags into the idea frontmatter on drain (offline parity)", async () => {
-    const { enrichIdea } = await import("./omniroute");
+    const { enrichIdea } = await import("./llmClient");
     const { writeIdea } = await import("./writer");
     vi.mocked(enrichIdea).mockResolvedValue({
       markdown: "---\nstatus: seedling\n---\n# Tagged Idea\n\nbody\n",
@@ -388,7 +392,7 @@ describe("drainQueue", () => {
   });
 
   it("preserves LLM-emitted tags when merging queued user tags (idea)", async () => {
-    const { enrichIdea } = await import("./omniroute");
+    const { enrichIdea } = await import("./llmClient");
     const { writeIdea } = await import("./writer");
     vi.mocked(enrichIdea).mockResolvedValue({
       markdown: "---\ntags: [seedling]\n---\n# Merge Idea\n\nbody\n",
@@ -420,7 +424,7 @@ describe("drainQueue", () => {
   });
 
   it("leaves the body untouched when a queued row carries no tags", async () => {
-    const { enrichIdea } = await import("./omniroute");
+    const { enrichIdea } = await import("./llmClient");
     const { writeIdea } = await import("./writer");
     vi.mocked(enrichIdea).mockResolvedValue({
       markdown: "---\nstatus: seedling\n---\n# Untagged\n\nbody\n",
@@ -434,7 +438,7 @@ describe("drainQueue", () => {
   });
 
   it("injects a queued location into the idea frontmatter on drain", async () => {
-    const { enrichIdea } = await import("./omniroute");
+    const { enrichIdea } = await import("./llmClient");
     const { writeIdea } = await import("./writer");
     vi.mocked(enrichIdea).mockResolvedValue({
       markdown: "---\nstatus: seedling\n---\n# Located\n\nbody\n",
@@ -465,7 +469,7 @@ describe("drainQueue", () => {
   });
 
   it("marks 4xx (permanent) errors as permanent failure immediately", async () => {
-    const { enrichIdea, isPermanentError } = await import("./omniroute");
+    const { enrichIdea, isPermanentError } = await import("./llmClient");
     vi.mocked(enrichIdea).mockRejectedValue(new Error("401 Unauthorized"));
     // Classify this error as permanent.
     vi.mocked(isPermanentError).mockReturnValueOnce(true);
@@ -481,7 +485,7 @@ describe("drainQueue", () => {
   });
 
   it("redacts Bearer tokens from stored last_error", async () => {
-    const { enrichIdea } = await import("./omniroute");
+    const { enrichIdea } = await import("./llmClient");
     vi.mocked(enrichIdea).mockRejectedValue(
       new Error("upstream said: Bearer sk-very-secret-token-xyz invalid"),
     );
@@ -495,7 +499,7 @@ describe("drainQueue", () => {
   });
 
   it("single-flight: parallel drainQueue calls do not double-process", async () => {
-    const { enrichIdea } = await import("./omniroute");
+    const { enrichIdea } = await import("./llmClient");
     const calls: string[] = [];
     let resolveFirst!: () => void;
     const firstHold = new Promise<void>((resolve) => { resolveFirst = resolve; });

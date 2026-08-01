@@ -32,6 +32,8 @@ vi.mock("./settings", () => ({
     karakeepUrl: "",
     karakeepApiKey: "",
   }),
+  getPromptOverrides: vi.fn().mockResolvedValue({}),
+  DEFAULT_OMNIROUTE_MODEL: "openrouter/openai/gpt-4o-mini",
 }));
 
 vi.mock("expo-file-system/legacy", () => ({
@@ -85,22 +87,16 @@ vi.mock("expo-file-system/legacy", () => ({
   },
 }));
 
-// ── Mock omniroute (ideaSaveFirst imports enrichIdea + error classifiers) ─────
+// ── Mock llmClient (dispatcher imports enrichIdea + error classifiers from it) ─
 
 const enrichIdeaMock = vi.fn();
 const isPermanentErrorMock = vi.fn().mockReturnValue(false);
 const isNotConfiguredErrorMock = vi.fn().mockReturnValue(false);
 
-vi.mock("./omniroute", () => ({
+vi.mock("./llmClient", () => ({
   enrichIdea: (...args: unknown[]) => enrichIdeaMock(...args),
   isPermanentError: (...args: unknown[]) => isPermanentErrorMock(...args),
   isNotConfiguredError: (...args: unknown[]) => isNotConfiguredErrorMock(...args),
-}));
-
-// ── Mock localLlm (dispatcher now imports it, even if tests use omniroute path) ─
-
-vi.mock("./localLlm", () => ({
-  enrichIdea: vi.fn(),
   enrichJournal: vi.fn(),
   enrichPerson: vi.fn(),
   enrichSharedImage: vi.fn(),
@@ -108,6 +104,9 @@ vi.mock("./localLlm", () => ({
   promoteIdea: vi.fn(),
   ocrCardViaVision: vi.fn(),
   listModels: vi.fn(),
+  healthCheck: vi.fn(),
+  DEFAULT_LOCAL_LLM_URL: "http://127.0.0.1:8080",
+  LlmClientError: class LlmClientError extends Error {},
 }));
 
 import {

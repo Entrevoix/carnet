@@ -1,4 +1,4 @@
-import type { HealthResult } from "../lib/localLlm";
+import type { HealthResult } from "../lib/llmClient";
 import { StyleSheet, View } from "react-native";
 import { Button, HelperText, Text, TextInput } from "react-native-paper";
 

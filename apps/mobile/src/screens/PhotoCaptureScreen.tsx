@@ -38,7 +38,7 @@ import {
   writeIdea,
 } from "../lib/writer";
 import { enrichSharedImage } from "../lib/dispatcher";
-import { assertBase64UnderLimit } from "../lib/omniroute";
+import { assertBase64UnderLimit } from "../lib/llmClient";
 import { caretProps, useCarnetTheme } from "../lib/theme";
 import { deriveTitle } from "@carnet/shared";
 
