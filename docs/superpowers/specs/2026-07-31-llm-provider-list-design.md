@@ -121,17 +121,33 @@ Carnet's **application-level** validation, but the **platform** then refuses the
 connection, and the user is told only "Unreachable — check the URL and that the
 server is running."
 
-**Action:** add `plugins/withCleartextLocal.js` shipping an Android network
-security config that permits cleartext **only** to RFC1918 ranges (loopback
-already works without it) — never a blanket `usesCleartextTraffic="true"`, so
-cleartext to arbitrary internet hosts stays blocked, consistent with #70.
+### Decision: stay strict — a LAN Relais serves https://
 
-Note while implementing: `isAllowedPlaintextHost` covers `10/8` and
-`192.168/16` but **not `172.16/12`**, which is also RFC1918. Either add it or
-document the omission; the plugin's config and that allowlist should agree.
+The obvious fix (a network security config permitting cleartext to RFC1918
+only) **cannot be built**: Android's `<domain>` element takes hostnames, and IP
+literals only exactly. There is no CIDR form, and `includeSubdomains` does
+DNS-label suffix matching, which is meaningless for addresses. `192.168.0.0/16`
+is inexpressible short of enumerating 65k entries.
 
-This is independent of the rest of the design and ships on its own — it fixes a
-live bug in today's local-LLM feature for every LAN user.
+That left three real options — a blanket `usesCleartextTraffic="true"` relying
+on the JS allowlist as the only enforcement; pinning specific LAN IPs into the
+build; or staying strict. **Decision: stay strict.** The manifest is unchanged.
+Loopback (the on-handset Relais and the airplane-mode story) keeps working; a
+Relais on another machine must serve `https://`. This keeps the platform as a
+second line of defence behind `isAllowedPlaintextHost` rather than making that
+JS guard the only thing standing between a bug and plaintext on the internet.
+
+Shipped instead (both independent of the rest of this design):
+
+- `isAllowedPlaintextHost` now covers `172.16/12`, which it had omitted while
+  allowing `10/8` and `192.168/16`. Boundaries mutation-tested — `172.15.x` and
+  `172.32.x` are public space.
+- `healthCheck` returns `"ok" | "unreachable" | "blocked-cleartext" |
+  "unsafe-url"` instead of a boolean, and the UI explains each. Previously a
+  platform block and a stopped server produced the identical message, so a user
+  with a healthy LAN Relais was told to check that their server was running.
+- The helper text claiming LAN addresses may use plain `http://` is corrected —
+  it described Carnet's own validation, not the platform's.
 
 ## Offline fallback
 

@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let Carnet reach a LAN Relais over plain `http://` on release builds, which Android currently blocks, and stop reporting that block as "server is running?".
+**Goal:** ~~Let Carnet reach a LAN Relais over plain `http://`~~ — **superseded.** Android cannot express an RFC1918 cleartext exception, so the decision was to stay strict. What shipped: reconcile the plaintext allowlist with RFC1918, and stop reporting a platform block as "is your server running?".
+
+**Status: COMPLETE.** Task 1 shipped as `4870160`, Task 3 as `a585abe`. Task 2 (the plugin) was cancelled — see the spec's "Decision: stay strict".
 
 **Architecture:** Ship an Expo config plugin that writes an Android network security config permitting cleartext **only** to RFC1918 ranges, and point the manifest at it. Then reconcile the app's own plaintext allowlist with those ranges, and make a platform-blocked connection distinguishable from an unreachable server in the health-check UI.
 
