@@ -4,7 +4,22 @@
  * (it drives which models a user sees when picking a chat/vision model).
  */
 
-import type { FormState } from "./settingsForm";
+/**
+ * Pinned at the top of the model browser. Verified-working chat models on
+ * llm.grepon.cc for carnet's structured-markdown use case — the catalog also
+ * contains embeddings, image gen, and broken upstream routes the user has no
+ * reason to click. Order is rough quality/cost tradeoff. Used for every
+ * provider's model browser (components/LlmProviderSection.tsx) — the list
+ * happens to be llm.grepon.cc-flavored model ids, which is harmless noise for
+ * a provider whose catalog doesn't contain them (they simply never match
+ * "recommended" and fall into "others").
+ */
+export const RECOMMENDED_MODELS = [
+  "gemini/gemini-2.5-flash-lite",
+  "gemini/gemini-2.5-flash",
+  "claude/claude-haiku-4-5-20251001",
+  "claude/claude-sonnet-4-6",
+] as const;
 
 export interface SplitModels {
   /** Recommended models present in the (filtered) catalog, in the order of the
@@ -42,18 +57,4 @@ export function filterAndSplitModels(
  */
 export function resolveBrowseApiKey(pendingKey: string, storedKey: string): string {
   return pendingKey.length > 0 ? pendingKey : storedKey;
-}
-
-/**
- * Applies a picked model id to the right FormState field for the browser's
- * current target ("chat" vs "vision"), without mutating `form`.
- */
-export function applyPickedModel(
-  form: FormState,
-  target: "chat" | "vision",
-  id: string,
-): FormState {
-  return target === "vision"
-    ? { ...form, omniRouteVisionModel: id }
-    : { ...form, omniRouteModel: id };
 }

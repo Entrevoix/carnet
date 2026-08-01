@@ -225,6 +225,81 @@ describe("validateProvider", () => {
     };
     expect(validateProvider(provider)).toHaveLength(2);
   });
+
+  it("rejects a non-http(s) scheme instead of persisting it as a base URL", () => {
+    // Reproduced against the review: LlmProviderSection's saveEntry used to
+    // call nothing, so `javascript:alert(1)` would persist untouched. This
+    // is the structural check that makes that impossible regardless of
+    // which caller forgets to gate on it.
+    const provider: LlmProvider = {
+      id: "custom-1",
+      label: "My Server",
+      baseUrl: "javascript:alert(1)",
+      model: "",
+      visionModel: "",
+      preset: null,
+    };
+    expect(validateProvider(provider)).toContain(
+      "Base URL must be a valid http:// or https:// address",
+    );
+  });
+
+  it("rejects an unparseable base URL", () => {
+    const provider: LlmProvider = {
+      id: "custom-1",
+      label: "My Server",
+      baseUrl: "not a url at all",
+      model: "",
+      visionModel: "",
+      preset: null,
+    };
+    expect(validateProvider(provider)).toContain(
+      "Base URL must be a valid http:// or https:// address",
+    );
+  });
+
+  it("flags a label over the length cap", () => {
+    const provider: LlmProvider = {
+      id: "custom-1",
+      label: "x".repeat(61),
+      baseUrl: "https://my.server",
+      model: "",
+      visionModel: "",
+      preset: null,
+    };
+    expect(validateProvider(provider)).toContain(
+      "Label must be 60 characters or fewer",
+    );
+  });
+
+  it("flags a base URL over the length cap", () => {
+    const provider: LlmProvider = {
+      id: "custom-1",
+      label: "My Server",
+      baseUrl: `https://my.server/${"x".repeat(2048)}`,
+      model: "",
+      visionModel: "",
+      preset: null,
+    };
+    expect(validateProvider(provider)).toContain(
+      "Base URL must be 2048 characters or fewer",
+    );
+  });
+
+  it("accepts a plain http:// URL (scheme-only check, not a cleartext-safety check)", () => {
+    // validateProvider is a structural check, not the credential-safety
+    // guard (netAllowlist.ts's isCredentialSafeUrl owns that) — a
+    // loopback/LAN http:// entry must remain a valid provider.
+    const provider: LlmProvider = {
+      id: "relais",
+      label: "Relais (local)",
+      baseUrl: "http://127.0.0.1:8080",
+      model: "",
+      visionModel: "",
+      preset: "relais",
+    };
+    expect(validateProvider(provider)).toEqual([]);
+  });
 });
 
 describe("addCustomProvider", () => {

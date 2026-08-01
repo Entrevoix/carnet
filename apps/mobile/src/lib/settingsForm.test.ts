@@ -17,7 +17,6 @@ vi.mock("expo-secure-store", () => ({
   deleteItemAsync: vi.fn(async () => undefined),
 }));
 
-import { DEFAULT_OMNIROUTE_MODEL, DEFAULT_VISION_MODEL } from "./settings";
 import {
   apiKeyFieldLabel,
   apiKeyFieldPlaceholder,
@@ -29,21 +28,9 @@ import {
   type FormState,
 } from "./settingsForm";
 import type { Settings } from "./settings";
-import { buildDefaultProviders, type LlmProvider } from "./llmProviders";
-
-function findProvider(providers: readonly LlmProvider[], id: string): LlmProvider {
-  const p = providers.find((x) => x.id === id);
-  if (!p) throw new Error(`test fixture missing provider "${id}"`);
-  return p;
-}
+import { buildDefaultProviders } from "./llmProviders";
 
 const baseForm: FormState = {
-  omniRouteUrl: "https://llm.grepon.cc",
-  omniRouteModel: "gemini/gemini-2.5-flash",
-  omniRouteVisionModel: "openai/gpt-4o-mini",
-  llmBackend: "omniroute",
-  localLlmUrl: "",
-  localLlmModel: "",
   persistentNotificationEnabled: true,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
@@ -59,10 +46,31 @@ const keys = {
   localLlmApiKey: "",
 };
 
+function baseSettings(overrides: Partial<Settings> = {}): Settings {
+  return {
+    llmProviders: buildDefaultProviders(),
+    activeProviderId: "omniroute",
+    nextCustomSeq: 3,
+    fallbackProviderId: "relais",
+    visionProviderId: "openai",
+    omniRouteApiKey: "sk-existing",
+    localLlmApiKey: "",
+    persistentNotificationEnabled: false,
+    autoTranscribeOnSave: false,
+    richEditorEnabled: true,
+    previewBeforeSave: false,
+    captureFolderPath: "",
+    promptOverrides: {},
+    karakeepUrl: "",
+    karakeepApiKey: "",
+    ...overrides,
+  };
+}
+
 describe("composeSettingsForSave", () => {
   it("threads form fields through verbatim and carries the existing keys", () => {
-    const next = composeSettingsForSave(baseForm, keys, buildDefaultProviders(), 1);
-    expect(next.activeProviderId).toBe("omniroute");
+    const current = baseSettings();
+    const next = composeSettingsForSave(baseForm, keys, current);
     expect(next.omniRouteApiKey).toBe("sk-existing");
     expect(next.karakeepApiKey).toBe("kk-existing");
     expect(next.localLlmApiKey).toBe("");
@@ -73,110 +81,52 @@ describe("composeSettingsForSave", () => {
     expect(next.captureFolderPath).toBe("content://tree/primary%3AObsidian");
     expect(next.promptOverrides).toEqual({ idea: "custom idea prompt" });
     expect(next.karakeepUrl).toBe("https://karakeep.example.com");
-
-    const omniroute = findProvider(next.llmProviders, "omniroute");
-    expect(omniroute.baseUrl).toBe("https://llm.grepon.cc");
-    expect(omniroute.model).toBe("gemini/gemini-2.5-flash");
-    expect(omniroute.visionModel).toBe("openai/gpt-4o-mini");
   });
 
-  it("falls back to the default chat model when the field is blank", () => {
-    const next = composeSettingsForSave(
-      { ...baseForm, omniRouteModel: "" },
-      keys,
-      buildDefaultProviders(),
-      1,
-    );
-    expect(findProvider(next.llmProviders, "omniroute").model).toBe(
-      DEFAULT_OMNIROUTE_MODEL,
-    );
-  });
-
-  it("falls back to the default vision model when the field is blank", () => {
-    const next = composeSettingsForSave(
-      { ...baseForm, omniRouteVisionModel: "" },
-      keys,
-      buildDefaultProviders(),
-      1,
-    );
-    expect(findProvider(next.llmProviders, "omniroute").visionModel).toBe(
-      DEFAULT_VISION_MODEL,
-    );
+  it("threads the LLM identity fields straight through from currentSettings, unchanged", () => {
+    // This is the load-bearing behavior of Phase 4: the Settings Save button
+    // must never overwrite what LlmProviderSection has already persisted on
+    // its own, independent writes.
+    const current = baseSettings({
+      activeProviderId: "custom-1",
+      nextCustomSeq: 7,
+      fallbackProviderId: "relais",
+      visionProviderId: "custom-1",
+    });
+    const next = composeSettingsForSave(baseForm, keys, current);
+    expect(next.llmProviders).toBe(current.llmProviders);
+    expect(next.activeProviderId).toBe("custom-1");
+    expect(next.nextCustomSeq).toBe(7);
+    expect(next.fallbackProviderId).toBe("relais");
+    expect(next.visionProviderId).toBe("custom-1");
   });
 
   it("passes empty existing keys straight through (so saveSettings clears them)", () => {
     const next = composeSettingsForSave(
       baseForm,
       { omniRouteApiKey: "", karakeepApiKey: "", localLlmApiKey: "" },
-      buildDefaultProviders(),
-      1,
+      baseSettings(),
     );
     expect(next.omniRouteApiKey).toBe("");
     expect(next.karakeepApiKey).toBe("");
   });
 
-  it("threads the existing localLlmApiKey through unchanged (no picker UI yet)", () => {
+  it("threads the existing localLlmApiKey through unchanged", () => {
     const next = composeSettingsForSave(
       baseForm,
       { ...keys, localLlmApiKey: "local-secret" },
-      buildDefaultProviders(),
-      1,
+      baseSettings(),
     );
     expect(next.localLlmApiKey).toBe("local-secret");
   });
 
-  it("passes the user's selected llmBackend through instead of forcing the default", () => {
-    const form: FormState = {
-      ...baseForm,
-      llmBackend: "local",
-      localLlmUrl: "http://127.0.0.1:8080",
-      localLlmModel: "gemma-4",
-    };
-    const result = composeSettingsForSave(
-      form,
-      { omniRouteApiKey: "", karakeepApiKey: "", localLlmApiKey: "local-key" },
-      buildDefaultProviders(),
-      1,
-    );
-
-    expect(result.activeProviderId).toBe("relais");
-    const relais = findProvider(result.llmProviders, "relais");
-    expect(relais.baseUrl).toBe("http://127.0.0.1:8080");
-    expect(relais.model).toBe("gemma-4");
-    expect(result.localLlmApiKey).toBe("local-key");
-  });
-
-  it("preserves provider entries the current form has no UI for (e.g. openai, custom)", () => {
-    const providers = [
-      ...buildDefaultProviders(),
-      {
-        id: "custom-1",
-        label: "My Server",
-        baseUrl: "https://my.server",
-        model: "some-model",
-        visionModel: "",
-        preset: null,
-      },
-    ];
-    const next = composeSettingsForSave(baseForm, keys, providers, 1);
-    expect(findProvider(next.llmProviders, "openai")).toBeTruthy();
-    expect(findProvider(next.llmProviders, "custom-1")).toEqual({
-      id: "custom-1",
-      label: "My Server",
-      baseUrl: "https://my.server",
-      model: "some-model",
-      visionModel: "",
-      preset: null,
-    });
-  });
-
-  it("does not mutate the input form or the input provider list", () => {
-    const form = { ...baseForm, omniRouteModel: "" };
-    const providers = buildDefaultProviders();
-    const providersSnapshot = providers.map((p) => ({ ...p }));
-    composeSettingsForSave(form, keys, providers, 1);
-    expect(form.omniRouteModel).toBe("");
-    expect(providers).toEqual(providersSnapshot);
+  it("does not mutate the input form or currentSettings", () => {
+    const current = baseSettings();
+    const currentSnapshot = { ...current };
+    const form = { ...baseForm };
+    composeSettingsForSave(form, keys, current);
+    expect(form).toEqual(baseForm);
+    expect(current).toEqual(currentSnapshot);
   });
 });
 
@@ -228,23 +178,11 @@ describe("errorMessage", () => {
 });
 
 describe("existingApiKeysFromSettings", () => {
-  const base: Settings = {
-    llmProviders: buildDefaultProviders(),
-    activeProviderId: "omniroute",
-    nextCustomSeq: 1,
-    fallbackProviderId: null,
-    visionProviderId: null,
+  const base: Settings = baseSettings({
     omniRouteApiKey: "sk-existing",
     localLlmApiKey: "local-secret",
-    persistentNotificationEnabled: false,
-    autoTranscribeOnSave: false,
-    richEditorEnabled: true,
-    previewBeforeSave: false,
-    captureFolderPath: "",
-    promptOverrides: {},
-    karakeepUrl: "",
     karakeepApiKey: "kk-existing",
-  };
+  });
 
   it("reads each key straight through when present", () => {
     expect(existingApiKeysFromSettings(base)).toEqual({
@@ -306,45 +244,17 @@ describe("apiKeyFieldPlaceholder", () => {
 });
 
 describe("formStateFromSettings", () => {
-  const settings: Settings = {
-    llmProviders: buildDefaultProviders().map((p) => {
-      if (p.id === "omniroute") {
-        return {
-          ...p,
-          baseUrl: "https://llm.grepon.cc",
-          model: "gemini/gemini-2.5-flash",
-          visionModel: "openai/gpt-4o-mini",
-        };
-      }
-      if (p.id === "relais") {
-        return { ...p, baseUrl: "http://127.0.0.1:8080", model: "gemma-4" };
-      }
-      return p;
-    }),
+  const settings: Settings = baseSettings({
     activeProviderId: "relais",
-    nextCustomSeq: 1,
-    fallbackProviderId: null,
-    visionProviderId: null,
-    omniRouteApiKey: "sk-existing",
-    localLlmApiKey: "",
-    persistentNotificationEnabled: false,
     autoTranscribeOnSave: true,
-    richEditorEnabled: true,
     previewBeforeSave: true,
     captureFolderPath: "/storage/emulated/0/carnet",
     promptOverrides: { idea: "custom" },
     karakeepUrl: "https://karakeep.example.com",
-    karakeepApiKey: "",
-  };
+  });
 
-  it("maps every non-secret Settings field onto FormState", () => {
+  it("maps every non-secret, non-LLM-identity Settings field onto FormState", () => {
     expect(formStateFromSettings(settings, false)).toEqual({
-      omniRouteUrl: "https://llm.grepon.cc",
-      omniRouteModel: "gemini/gemini-2.5-flash",
-      omniRouteVisionModel: "openai/gpt-4o-mini",
-      llmBackend: "local",
-      localLlmUrl: "http://127.0.0.1:8080",
-      localLlmModel: "gemma-4",
       persistentNotificationEnabled: false,
       autoTranscribeOnSave: true,
       richEditorEnabled: true,
@@ -363,13 +273,5 @@ describe("formStateFromSettings", () => {
     // value against native state before the form is built.
     const result = formStateFromSettings(settings, true);
     expect(result.persistentNotificationEnabled).toBe(true);
-  });
-
-  it("maps activeProviderId 'omniroute' to llmBackend 'omniroute'", () => {
-    const result = formStateFromSettings(
-      { ...settings, activeProviderId: "omniroute" },
-      false,
-    );
-    expect(result.llmBackend).toBe("omniroute");
   });
 });

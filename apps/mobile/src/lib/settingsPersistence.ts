@@ -14,29 +14,26 @@ import {
 } from "./settingsForm";
 import type { Settings } from "./settings";
 
-/** New key values the user typed but hasn't saved yet. Empty string means
- * "no change" for that key — mirrors the screen's pendingKey state. */
+/** New key value the user typed but hasn't saved yet. Empty string means
+ * "no change" — mirrors the screen's pendingKey state. As of Phase 4, only
+ * Karakeep's key flows through this Save-button path; the LLM provider keys
+ * are written immediately by components/LlmProviderSection.tsx via
+ * providerKeys.ts, independent of this form's Save button. */
 export interface PendingApiKeys {
-  omniRoute: string;
   karakeep: string;
-  localLlm: string;
 }
 
 /** Which pending keys `saveSettingsWithKeys` actually wrote — the caller uses
  * this to know which pending-key state to clear and which "configured" flag
  * to flip. */
 export interface KeysWritten {
-  omniRoute: boolean;
   karakeep: boolean;
-  localLlm: boolean;
 }
 
 export interface SaveSettingsIO {
   getSettings: () => Promise<Settings>;
   saveSettings: (s: Settings) => Promise<void>;
-  setOmniRouteApiKey: (key: string) => Promise<void>;
   setKarakeepApiKey: (key: string) => Promise<void>;
-  setLocalLlmApiKey: (key: string) => Promise<void>;
 }
 
 export type SaveSettingsResult =
@@ -63,35 +60,14 @@ export async function saveSettingsWithKeys(
   pending: PendingApiKeys,
   io: SaveSettingsIO,
 ): Promise<SaveSettingsResult> {
-  const keysWritten: KeysWritten = {
-    omniRoute: false,
-    karakeep: false,
-    localLlm: false,
-  };
+  const keysWritten: KeysWritten = { karakeep: false };
   try {
     const currentSettings = await io.getSettings();
     const existing = existingApiKeysFromSettings(currentSettings);
-    await io.saveSettings(
-      composeSettingsForSave(
-        form,
-        existing,
-        currentSettings.llmProviders,
-        currentSettings.nextCustomSeq,
-        currentSettings.fallbackProviderId,
-        currentSettings.visionProviderId,
-      ),
-    );
-    if (pending.omniRoute.length > 0) {
-      await io.setOmniRouteApiKey(pending.omniRoute);
-      keysWritten.omniRoute = true;
-    }
+    await io.saveSettings(composeSettingsForSave(form, existing, currentSettings));
     if (pending.karakeep.length > 0) {
       await io.setKarakeepApiKey(pending.karakeep);
       keysWritten.karakeep = true;
-    }
-    if (pending.localLlm.length > 0) {
-      await io.setLocalLlmApiKey(pending.localLlm);
-      keysWritten.localLlm = true;
     }
     return { ok: true, keysWritten };
   } catch (e: unknown) {

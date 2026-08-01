@@ -158,13 +158,48 @@ export function resolveVisionProvider(
   return null;
 }
 
+/** Labels/URLs beyond this length are almost certainly pasted garbage, not
+ * a real endpoint — capped so a fat-fingered paste can't wedge a multi-KB
+ * string into the persisted settings blob (and, for baseUrl, into every
+ * enrichment request's URL going forward). */
+const MAX_LABEL_LENGTH = 60;
+const MAX_BASE_URL_LENGTH = 2048;
+
 /** Validation errors for a provider entry — empty array means valid. Checked
- * before a custom entry is saved/used; presets are only invalid if a user
- * blanked the base URL out. */
+ * before a custom entry is saved/used, AND before an edit to any entry
+ * (including a preset) is persisted — see LlmProviderSection.tsx's
+ * saveEntry, which used to skip this call entirely and let something like
+ * `javascript:alert(1)` persist as a "base URL". Presets are only invalid if
+ * a user blanked the base URL out or typed something unparseable into it. */
 export function validateProvider(provider: LlmProvider): string[] {
   const errors: string[] = [];
-  if (!provider.label.trim()) errors.push("Label is required");
-  if (!provider.baseUrl.trim()) errors.push("Base URL is required");
+  const label = provider.label.trim();
+  const baseUrl = provider.baseUrl.trim();
+
+  if (!label) errors.push("Label is required");
+  else if (label.length > MAX_LABEL_LENGTH) {
+    errors.push(`Label must be ${MAX_LABEL_LENGTH} characters or fewer`);
+  }
+
+  if (!baseUrl) {
+    errors.push("Base URL is required");
+  } else if (baseUrl.length > MAX_BASE_URL_LENGTH) {
+    errors.push(`Base URL must be ${MAX_BASE_URL_LENGTH} characters or fewer`);
+  } else {
+    // Any scheme other than http/https (javascript:, data:, file:, a bare
+    // unparseable string) is rejected here — this is the ONLY structural
+    // check on the field, so it must not be skippable via the edit path.
+    let scheme: string | null = null;
+    try {
+      scheme = new URL(baseUrl).protocol;
+    } catch {
+      scheme = null;
+    }
+    if (scheme !== "http:" && scheme !== "https:") {
+      errors.push("Base URL must be a valid http:// or https:// address");
+    }
+  }
+
   return errors;
 }
 
