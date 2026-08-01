@@ -47,7 +47,7 @@ import { sanitizeMarkdown } from "../lib/enrichSanitize";
 import {
   assertBase64UnderLimit,
   MAX_SHARED_IMAGE_BYTES,
-} from "../lib/omniroute";
+} from "../lib/llmClient";
 import {
   BASE64_EXPANSION,
   MAX_SAFE_SHARE_BYTES,

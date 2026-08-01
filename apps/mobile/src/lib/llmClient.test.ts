@@ -1,62 +1,20 @@
+// ── llmClient.test.ts ─────────────────────────────────────────────────────────
+// The retargeted omniroute.test.ts + localLlm.test.ts suites — the safety net
+// for the Phase 1 client merge (docs/superpowers/specs/2026-07-31-llm-provider-
+// list-design.md). llmClient.ts reads no settings, so every call site here
+// passes an explicit ProviderConfig instead of the old settings-mock-driven
+// getBaseUrl/getApiKey/getModel plumbing. Test bodies are otherwise unchanged
+// from their omniroute/localLlm origin — same assertions, same fixtures,
+// same fetch-mock shapes — the config argument is the only structural change,
+// exactly the class of change the merge's evidence tests were designed to
+// tolerate.
+//
+// transcribeAudio/autoTranscribeIfEnabled moved to dispatcher.ts (they read
+// settings + touch the writer, outside llmClient's "reads no settings"
+// contract) — their retargeted tests live in dispatcher.test.ts instead.
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// ── Mock settings ─────────────────────────────────────────────────────────────
-// BASE_SETTINGS is the default getSettings() shape (autoTranscribeOnSave OFF).
-// Hoisted via vi.hoisted so it can be referenced BOTH inside the vi.mock
-// factory (which vitest hoists above module scope) AND by SETTINGS_TOGGLE_ON
-// in the autoTranscribeIfEnabled block — one source of truth for the 8-field
-// Settings shape, so an interface change touches one fixture, not two.
-const { BASE_SETTINGS } = vi.hoisted(() => ({
-  BASE_SETTINGS: {
-    omniRouteUrl: "https://llm.example.com",
-    omniRouteApiKey: "test-key",
-    omniRouteModel: "gpt-4o-mini",
-    omniRouteVisionModel: "vision-model-xyz",
-    llmBackend: "omniroute" as const,
-    localLlmUrl: "",
-    localLlmModel: "",
-    localLlmApiKey: "",
-    persistentNotificationEnabled: false,
-    autoTranscribeOnSave: false,
-    richEditorEnabled: false,
-    previewBeforeSave: false,
-    captureFolderPath: "",
-    promptOverrides: {},
-    karakeepUrl: "",
-    karakeepApiKey: "",
-  },
-}));
-
-vi.mock("./settings", () => ({
-  getSettings: vi.fn().mockResolvedValue(BASE_SETTINGS),
-  // Used by each enrich entry point to load per-mode prompt overrides.
-  // Default-empty so existing tests get the default-prompt behavior.
-  getPromptOverrides: vi.fn().mockResolvedValue({}),
-}));
-
-// Mock the writer module so autoTranscribeIfEnabled's readNote /
-// readPairedBinaryFromNote / updateNote / upsertSection paths are
-// controllable per-test. Only autoTranscribeIfEnabled in omniroute.ts
-// touches writer; existing tests don't care about the mocked shape.
-vi.mock("./writer", () => ({
-  readNote: vi.fn(),
-  readPairedBinaryFromNote: vi.fn(),
-  updateNote: vi.fn(),
-  upsertSection: vi.fn(
-    (md: string, heading: string, body: string) =>
-      `${md}\n\n## ${heading}\n\n${body}\n`,
-  ),
-}));
-
-// Mock the on-device transcription wrapper at the module boundary.
-// transcribeAudio dynamic-imports this module; vitest's hoisted vi.mock
-// intercepts both static and dynamic imports, so the mock is live inside
-// transcribeAudio's `await import("./audioTranscribeOnDevice")`.
-vi.mock("./audioTranscribeOnDevice", () => ({
-  transcribeOnDevice: vi.fn(),
-}));
-
-// ── Mock fetch ────────────────────────────────────────────────────────────────
 function makeOkResponse(markdown: string, model = "test-model"): Response {
   const body = JSON.stringify({
     model,
@@ -76,7 +34,13 @@ function makeErrorResponse(status: number, message: string): Response {
   });
 }
 
-// Use a global fetch mock
+function makeHtmlResponse(body: string): Response {
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
 const fetchMock = vi.fn();
 globalThis.fetch = fetchMock as unknown as typeof fetch;
 
@@ -87,17 +51,17 @@ import {
   enrichSharedImage,
   enrichSharedLink,
   ocrCardViaVision,
-  autoTranscribeIfEnabled,
   promoteIdea,
-  transcribeAudio,
-  OmniRouteError,
+  listModels,
+  healthCheck,
+  LlmClientError,
   isPermanentError,
   isNotConfiguredError,
   assertBase64UnderLimit,
   MAX_SHARED_IMAGE_BYTES,
-  MAX_TRANSCRIPTION_BYTES,
   withSystemOverride,
-} from "./omniroute";
+  type ProviderConfig,
+} from "./llmClient";
 import { HttpError } from "./httpClient";
 import {
   buildIdeaPrompt,
@@ -106,17 +70,30 @@ import {
   buildPromoteIdeaPrompt,
 } from "./prompts";
 
-function makeHtmlResponse(body: string): Response {
-  return new Response(body, {
-    status: 200,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
-}
-
 interface RequestBody {
   model: string;
   messages: Array<{ role: string; content: string }>;
 }
+
+// Mirrors omniroute.test.ts's BASE_SETTINGS-derived config: an https gateway
+// with distinct chat/vision models — the OmniRoute-shaped case.
+const CONFIG: ProviderConfig = {
+  baseUrl: "https://llm.example.com",
+  apiKey: "test-key",
+  model: "gpt-4o-mini",
+  visionModel: "vision-model-xyz",
+  label: "OmniRoute",
+};
+
+// Mirrors localLlm.test.ts's BASE_SETTINGS-derived config: a loopback server,
+// no key, ONE model covering text and vision.
+const LOCAL_CONFIG: ProviderConfig = {
+  baseUrl: "http://127.0.0.1:8080",
+  apiKey: "",
+  model: "test-local-model",
+  visionModel: "test-local-model",
+  label: "Local LLM",
+};
 
 beforeEach(() => {
   fetchMock.mockReset();
@@ -124,17 +101,18 @@ beforeEach(() => {
 
 // ── network hard timeout ──────────────────────────────────────────────────────
 
-describe("OmniRoute request hard timeout", () => {
+describe("LLM client request hard timeout", () => {
   it("rejects instead of hanging when the fetch never settles (unreachable host)", async () => {
-    // Simulates OmniRoute unreachable (e.g. Tailscale down): the fetch promise
-    // never resolves and RN's AbortController.abort() does NOT cancel a stuck
-    // connect. Without the Promise.race hard timeout this would hang forever.
+    // Simulates the provider unreachable (e.g. Tailscale down): the fetch
+    // promise never resolves and RN's AbortController.abort() does NOT
+    // cancel a stuck connect. Without the Promise.race hard timeout this
+    // would hang forever.
     vi.useFakeTimers();
     try {
       fetchMock.mockReturnValueOnce(new Promise<Response>(() => {}));
-      const assertion = expect(enrichIdea("offline thought")).rejects.toThrow(
-        /timed out/i,
-      );
+      const assertion = expect(
+        enrichIdea("offline thought", CONFIG),
+      ).rejects.toThrow(/timed out/i);
       await vi.advanceTimersByTimeAsync(21_000);
       await assertion;
     } finally {
@@ -142,19 +120,19 @@ describe("OmniRoute request hard timeout", () => {
     }
   });
 
-  it("surfaces the timeout as an OmniRouteError with status 0 (network-class)", async () => {
+  it("surfaces the timeout as an LlmClientError with status 0 (network-class)", async () => {
     vi.useFakeTimers();
     try {
       fetchMock.mockReturnValueOnce(new Promise<Response>(() => {}));
       // Capture the rejection without an unhandled-rejection while advancing.
-      const caught = enrichIdea("offline thought").then(
+      const caught = enrichIdea("offline thought", CONFIG).then(
         () => null,
         (e: unknown) => e,
       );
       await vi.advanceTimersByTimeAsync(21_000);
       const err = await caught;
-      expect(err).toBeInstanceOf(OmniRouteError);
-      expect((err as OmniRouteError).status).toBe(0);
+      expect(err).toBeInstanceOf(LlmClientError);
+      expect((err as LlmClientError).status).toBe(0);
     } finally {
       vi.useRealTimers();
     }
@@ -172,9 +150,9 @@ describe("OmniRoute request hard timeout", () => {
         status: 200,
         json: () => new Promise(() => {}), // body never resolves
       } as unknown as Response);
-      const assertion = expect(enrichIdea("offline thought")).rejects.toThrow(
-        /timed out/i,
-      );
+      const assertion = expect(
+        enrichIdea("offline thought", CONFIG),
+      ).rejects.toThrow(/timed out/i);
       await vi.advanceTimersByTimeAsync(21_000);
       await assertion;
     } finally {
@@ -199,10 +177,10 @@ describe("assertBase64UnderLimit", () => {
     expect(() => assertBase64UnderLimit(base64)).not.toThrow();
   });
 
-  it("throws OmniRouteError when payload exceeds the cap", () => {
+  it("throws LlmClientError when payload exceeds the cap", () => {
     // 16 MB worth of base64 chars — decodes to 12 MB, clearly over the 8 MB cap.
     const base64 = "A".repeat(16 * 1024 * 1024);
-    expect(() => assertBase64UnderLimit(base64)).toThrow(OmniRouteError);
+    expect(() => assertBase64UnderLimit(base64)).toThrow(LlmClientError);
   });
 
   it("error carries status 413 and a descriptive MB message", () => {
@@ -211,8 +189,8 @@ describe("assertBase64UnderLimit", () => {
       assertBase64UnderLimit(base64);
       throw new Error("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(OmniRouteError);
-      const err = e as OmniRouteError;
+      expect(e).toBeInstanceOf(LlmClientError);
+      const err = e as LlmClientError;
       expect(err.status).toBe(413);
       expect(err.message).toMatch(/MB/);
       expect(err.message).toMatch(/caps at/);
@@ -231,7 +209,7 @@ describe("assertBase64UnderLimit", () => {
 });
 
 describe("isPermanentError / isNotConfiguredError generalize to HttpError", () => {
-  it("classifies a non-OmniRouteError HttpError subclass by its status/notConfigured fields", () => {
+  it("classifies a non-LlmClientError HttpError subclass by its status/notConfigured fields", () => {
     class FakeBackendError extends HttpError {}
     const permanent = new FakeBackendError("bad request", 400);
     const notConfigured = new FakeBackendError("no url", 0, { notConfigured: true });
@@ -252,7 +230,7 @@ describe("enrichIdea", () => {
     const expectedMarkdown = "---\nstatus: seedling\n---\n# My Idea\n\nbody\n";
     fetchMock.mockResolvedValueOnce(makeOkResponse(expectedMarkdown));
 
-    const result = await enrichIdea("my raw idea");
+    const result = await enrichIdea("my raw idea", CONFIG);
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -279,7 +257,7 @@ describe("enrichIdea", () => {
   it("parses choices[0].message.content correctly", async () => {
     const md = "---\nstatus: seedling\n---\n# Cool\n\nThought.\n";
     fetchMock.mockResolvedValueOnce(makeOkResponse(md, "omni-v2"));
-    const result = await enrichIdea("cool thought");
+    const result = await enrichIdea("cool thought", CONFIG);
     expect(result.markdown).toBe(md);
     expect(result.model).toBe("omni-v2");
   });
@@ -287,62 +265,57 @@ describe("enrichIdea", () => {
   it("strips defensive code fences from LLM response", async () => {
     const inner = "---\nstatus: seedling\n---\n# Title\n\nbody\n";
     fetchMock.mockResolvedValueOnce(makeOkResponse("```markdown\n" + inner + "```"));
-    const result = await enrichIdea("fenced idea");
+    const result = await enrichIdea("fenced idea", CONFIG);
     expect(result.markdown).toBe(inner.trimEnd());
   });
 
   it("surfaces HTTP errors with response body in the message", async () => {
     fetchMock.mockResolvedValueOnce(makeErrorResponse(401, "Invalid API key"));
-    await expect(enrichIdea("x")).rejects.toThrow("Invalid API key");
+    await expect(enrichIdea("x", CONFIG)).rejects.toThrow("Invalid API key");
   });
 
-  it("throws OmniRouteError with the HTTP status on a 4xx", async () => {
+  it("throws LlmClientError with the HTTP status on a 4xx", async () => {
     fetchMock.mockResolvedValueOnce(makeErrorResponse(401, "Invalid API key"));
     let caught: unknown;
     try {
-      await enrichIdea("x");
+      await enrichIdea("x", CONFIG);
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(OmniRouteError);
-    expect((caught as OmniRouteError).status).toBe(401);
+    expect(caught).toBeInstanceOf(LlmClientError);
+    expect((caught as LlmClientError).status).toBe(401);
     expect(isPermanentError(caught)).toBe(true);
   });
 
-  it("throws OmniRouteError with status 0 on network failure", async () => {
+  it("throws LlmClientError with status 0 on network failure", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
     let caught: unknown;
     try {
-      await enrichIdea("x");
+      await enrichIdea("x", CONFIG);
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(OmniRouteError);
-    expect((caught as OmniRouteError).status).toBe(0);
+    expect(caught).toBeInstanceOf(LlmClientError);
+    expect((caught as LlmClientError).status).toBe(0);
     expect(isPermanentError(caught)).toBe(false);
     // A real network failure is transient (queue it), NOT a config problem.
     expect(isNotConfiguredError(caught)).toBe(false);
   });
 
-  it("throws a not-configured OmniRouteError when the URL is blank", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValueOnce({
-      ...BASE_SETTINGS,
-      omniRouteUrl: "",
-    });
+  it("throws a not-configured LlmClientError when the URL is blank", async () => {
     let caught: unknown;
     try {
-      await enrichIdea("x");
+      await enrichIdea("x", { ...CONFIG, baseUrl: "" });
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(OmniRouteError);
+    expect(caught).toBeInstanceOf(LlmClientError);
     // Status 0 like a network error, but flagged not-configured so callers
     // surface it instead of silently queuing for an endpoint that can't exist.
-    expect((caught as OmniRouteError).status).toBe(0);
+    expect((caught as LlmClientError).status).toBe(0);
     expect(isNotConfiguredError(caught)).toBe(true);
     expect(isPermanentError(caught)).toBe(false);
-    expect((caught as OmniRouteError).message).toMatch(/not configured/i);
+    expect((caught as LlmClientError).message).toMatch(/not configured/i);
     // No fetch should even be attempted with a blank URL.
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -353,7 +326,7 @@ describe("enrichIdea", () => {
     );
     let caught: unknown;
     try {
-      await enrichIdea("x");
+      await enrichIdea("x", CONFIG);
     } catch (e) {
       caught = e;
     }
@@ -365,7 +338,43 @@ describe("enrichIdea", () => {
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ model: "x" }), { status: 200 }),
     );
-    await expect(enrichIdea("x")).rejects.toThrow("empty or malformed");
+    await expect(enrichIdea("x", CONFIG)).rejects.toThrow("empty or malformed");
+  });
+
+  it("posts to the configured base URL's /v1/chat/completions with no Authorization header when no API key is set", async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeOkResponse("---\nstatus: seedling\n---\n# Idea\n\nbody\n"),
+    );
+
+    await enrichIdea("a raw thought", LOCAL_CONFIG);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8080/v1/chat/completions");
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("test-local-model");
+  });
+
+  it("sends an Authorization header when a local-LLM API key is configured", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse("# Idea\n\nbody\n"));
+
+    await enrichIdea("a raw thought", { ...LOCAL_CONFIG, apiKey: "local-secret" });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer local-secret");
+  });
+
+  it("classifies a 4xx response as a permanent LlmClientError", async () => {
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(400, "bad request"));
+
+    const err = await enrichIdea("doomed", LOCAL_CONFIG).then(() => null, (e: unknown) => e);
+
+    expect(err).toBeInstanceOf(LlmClientError);
+    expect(isPermanentError(err)).toBe(true);
+    expect(isNotConfiguredError(err)).toBe(false);
   });
 });
 
@@ -376,7 +385,7 @@ describe("enrichJournal", () => {
     fetchMock.mockResolvedValueOnce(
       makeOkResponse("---\ndate: 2026-05-16\n---\n# Summary\n"),
     );
-    await enrichJournal({ transcript: "today I met Alice", notes: "" });
+    await enrichJournal({ transcript: "today I met Alice", notes: "" }, CONFIG);
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as RequestBody;
@@ -393,7 +402,7 @@ describe("enrichPerson", () => {
     fetchMock.mockResolvedValueOnce(
       makeOkResponse("---\nname: Jane Doe\n---\n# Jane Doe\n"),
     );
-    await enrichPerson({ ocrResult: "Jane Doe, CEO", context: "met at conference" });
+    await enrichPerson({ ocrResult: "Jane Doe, CEO", context: "met at conference" }, CONFIG);
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as RequestBody;
@@ -411,7 +420,7 @@ describe("promoteIdea", () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse(updatedMd));
 
     const currentMd = "---\nstatus: seedling\n---\n# My Idea\n\nRaw thought.\n";
-    const result = await promoteIdea(currentMd, "developing");
+    const result = await promoteIdea(currentMd, "developing", CONFIG);
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as RequestBody;
@@ -434,22 +443,21 @@ describe("model routing (chat text vs image vision)", () => {
       makeOkResponse("---\nkind: shared-image\n---\n# Photo\n"),
     );
 
-    await enrichSharedImage({
-      base64: "QkFTRTY0",
-      mimeType: "image/jpeg",
-      context: "test ctx",
-    });
+    await enrichSharedImage(
+      { base64: "QkFTRTY0", mimeType: "image/jpeg", context: "test ctx" },
+      CONFIG,
+    );
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as { model: string };
-    // BASE_SETTINGS: omniRouteModel = "gpt-4o-mini", vision = "vision-model-xyz".
+    // CONFIG: model = "gpt-4o-mini", visionModel = "vision-model-xyz".
     expect(body.model).toBe("vision-model-xyz");
     expect(body.model).not.toBe("gpt-4o-mini");
   });
 
   it("enrichIdea requests the chat model, not the vision model", async () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
-    await enrichIdea("a plain thought");
+    await enrichIdea("a plain thought", CONFIG);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as { model: string };
     expect(body.model).toBe("gpt-4o-mini");
@@ -458,37 +466,29 @@ describe("model routing (chat text vs image vision)", () => {
 
   it("enrichJournal requests the chat model, not the vision model", async () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# j\n"));
-    await enrichJournal({ transcript: "today", notes: "" });
+    await enrichJournal({ transcript: "today", notes: "" }, CONFIG);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as { model: string };
     expect(body.model).toBe("gpt-4o-mini");
   });
 
-  it("surfaces a not-configured OmniRouteError when the vision model is blank", async () => {
+  it("surfaces a not-configured LlmClientError when the vision model is blank", async () => {
     // Blank vision model must route through the SAME isNotConfiguredError
     // degraded path as a blank URL — never a crash, never a new error shape,
     // and never a silent fetch to a text-only fallback model.
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValue({
-      ...BASE_SETTINGS,
-      omniRouteVisionModel: "",
-    });
     let caught: unknown;
     try {
-      await enrichSharedImage({
-        base64: "QkFTRTY0",
-        mimeType: "image/jpeg",
-        context: "ctx",
-      });
+      await enrichSharedImage(
+        { base64: "QkFTRTY0", mimeType: "image/jpeg", context: "ctx" },
+        { ...CONFIG, visionModel: "" },
+      );
     } catch (e) {
       caught = e;
-    } finally {
-      vi.mocked(getSettings).mockResolvedValue(BASE_SETTINGS);
     }
-    expect(caught).toBeInstanceOf(OmniRouteError);
+    expect(caught).toBeInstanceOf(LlmClientError);
     expect(isNotConfiguredError(caught)).toBe(true);
     expect(isPermanentError(caught)).toBe(false);
-    expect((caught as OmniRouteError).status).toBe(0);
+    expect((caught as LlmClientError).status).toBe(0);
     // No fetch attempted — the config gap short-circuits before the network.
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -498,61 +498,163 @@ describe("model routing (chat text vs image vision)", () => {
 
 describe("HTTPS enforcement", () => {
   it("rejects http:// URLs (non-localhost)", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValueOnce({
-      omniRouteUrl: "http://evil.example.com",
-      omniRouteApiKey: "test-key",
-      omniRouteModel: "gpt-4o-mini",
-      omniRouteVisionModel: "vision-model-xyz",
-      llmBackend: "omniroute",
-      localLlmUrl: "",
-      localLlmModel: "",
-      localLlmApiKey: "",
-      persistentNotificationEnabled: false,
-      autoTranscribeOnSave: false,
-      richEditorEnabled: false,
-      previewBeforeSave: false,
-      captureFolderPath: "",
-      promptOverrides: {},
-      karakeepUrl: "",
-      karakeepApiKey: "",
-    });
-    await expect(enrichIdea("x")).rejects.toThrow(/https:\/\//);
+    await expect(
+      enrichIdea("x", { ...CONFIG, baseUrl: "http://evil.example.com" }),
+    ).rejects.toThrow(/https:\/\//);
     // Ensure no fetch was attempted
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("allows http://localhost for dev", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValueOnce({
-      omniRouteUrl: "http://localhost:8080",
-      omniRouteApiKey: "",
-      omniRouteModel: "gpt-4o-mini",
-      omniRouteVisionModel: "vision-model-xyz",
-      llmBackend: "omniroute",
-      localLlmUrl: "",
-      localLlmModel: "",
-      localLlmApiKey: "",
-      persistentNotificationEnabled: false,
-      autoTranscribeOnSave: false,
-      richEditorEnabled: false,
-      previewBeforeSave: false,
-      captureFolderPath: "",
-      promptOverrides: {},
-      karakeepUrl: "",
-      karakeepApiKey: "",
-    });
-    fetchMock.mockResolvedValueOnce(
-      makeOkResponse("---\n---\n# x\n"),
-    );
-    await expect(enrichIdea("x")).resolves.toBeDefined();
+    fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
+    await expect(
+      enrichIdea("x", { ...CONFIG, baseUrl: "http://localhost:8080", apiKey: "" }),
+    ).resolves.toBeDefined();
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+// ── per-provider error message text ───────────────────────────────────────────
+// llmClient.ts merges omniroute.ts + localLlm.ts into one code path, but Phase
+// 1 must stay invisible to a reviewer diffing enrichment behaviour — including
+// the exact banner text a user sees. `config.label` threads the two providers'
+// ORIGINAL, byte-identical wording back through the shared code (see
+// docs/superpowers/specs/2026-07-31-llm-provider-list-design.md and the
+// git history of omniroute.ts / localLlm.ts). These assert the FULL string,
+// not a substring, specifically so a future edit can't silently re-neutralize
+// them back to a generic "LLM provider ..." wording.
+describe("per-provider error message text (byte-identical to pre-merge omniroute.ts / localLlm.ts)", () => {
+  it("OmniRoute: network error message", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    const err = await enrichIdea("x", CONFIG).then(() => null, (e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "OmniRoute network error — Network request failed",
+    );
+  });
+
+  it("Local LLM: network error message", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    const err = await enrichIdea("x", LOCAL_CONFIG).then(() => null, (e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "Local LLM network error — Network request failed",
+    );
+  });
+
+  it("OmniRoute: empty/malformed response message", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ model: "x" }), { status: 200 }),
+    );
+    const err = await enrichIdea("x", CONFIG).then(() => null, (e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "OmniRoute returned an empty or malformed response",
+    );
+  });
+
+  it("Local LLM: empty/malformed response message", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ model: "x" }), { status: 200 }),
+    );
+    const err = await enrichIdea("x", LOCAL_CONFIG).then(() => null, (e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "Local LLM returned an empty or malformed response",
+    );
+  });
+
+  it("OmniRoute: timeout message keeps the Tailscale hint", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockReturnValueOnce(new Promise<Response>(() => {}));
+      const caught = enrichIdea("x", CONFIG).then(() => null, (e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(21_000);
+      const err = await caught;
+      expect((err as Error).message).toBe(
+        "OmniRoute unreachable — timed out after 20s. Check your connection (Tailscale?).",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Local LLM: timeout message has NO Tailscale hint", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockReturnValueOnce(new Promise<Response>(() => {}));
+      const caught = enrichIdea("x", LOCAL_CONFIG).then(() => null, (e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(21_000);
+      const err = await caught;
+      expect((err as Error).message).toBe(
+        "Local LLM unreachable — timed out after 20s.",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("OmniRoute: blank vision model is UNBRANDED (\"Vision model not configured\"), matching its original dedicated getVisionModel()", async () => {
+    const err = await enrichSharedImage(
+      { base64: "abc", mimeType: "image/jpeg", context: "" },
+      { ...CONFIG, visionModel: "" },
+    ).then(() => null, (e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "Vision model not configured — set it in Settings",
+    );
+  });
+
+  it("Local LLM: blank vision model reuses the BRANDED model-not-configured message (no separate vision concept)", async () => {
+    const err = await enrichSharedImage(
+      { base64: "abc", mimeType: "image/jpeg", context: "" },
+      { ...LOCAL_CONFIG, visionModel: "" },
+    ).then(() => null, (e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "Local LLM model not configured — set it in Settings",
+    );
+  });
+
+  it("OmniRoute: https guard message now states the loopback/LAN exemption it always honored", async () => {
+    const err = await enrichIdea("x", {
+      ...CONFIG,
+      baseUrl: "http://evil.example.com",
+    }).then(() => null, (e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "OmniRoute URL must use https:// (or be a loopback/LAN address) to protect the API key",
+    );
+  });
+
+  it("Local LLM: https guard message (unchanged from origin)", async () => {
+    const err = await enrichIdea("x", {
+      ...LOCAL_CONFIG,
+      baseUrl: "http://evil.example.com",
+    }).then(() => null, (e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "Local LLM URL must use https:// (or be a loopback/LAN address) to protect the API key",
+    );
   });
 });
 
 // ── enrichSharedLink ──────────────────────────────────────────────────────────
 
 describe("enrichSharedLink", () => {
+  it("rejects a blank config URL immediately, without awaiting the preview fetch", async () => {
+    // The preview fetch NEVER resolves. If enrichSharedLink awaited it before
+    // checking config.baseUrl, this test would hang until vitest's own test
+    // timeout — proving the not-configured check must fire before the
+    // `await previewPromise`, not after (a blank-URL user must not wait on
+    // fetchUrlPreview's 8s internal timeout for a spinner that was always
+    // going nowhere).
+    fetchMock.mockReturnValueOnce(new Promise<Response>(() => {}));
+
+    await expect(
+      enrichSharedLink(
+        { url: "https://example.com/article", text: "", context: "" },
+        { ...CONFIG, baseUrl: "" },
+      ),
+    ).rejects.toThrow(/not configured/i);
+
+    // Only the not-configured check ran — the preview fetch was never
+    // resolved/consumed, and no chat-completion POST was ever reached.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("fetches the URL preview and threads it into the chat prompt", async () => {
     const previewHtml = `
       <html><head>
@@ -567,11 +669,10 @@ describe("enrichSharedLink", () => {
       makeOkResponse("---\n---\n# Saved Article\n\nbody\n"),
     );
 
-    const result = await enrichSharedLink({
-      url: "https://example.com/article",
-      text: "",
-      context: "",
-    });
+    const result = await enrichSharedLink(
+      { url: "https://example.com/article", text: "", context: "" },
+      CONFIG,
+    );
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     // First call: GET the page for preview
@@ -597,11 +698,10 @@ describe("enrichSharedLink", () => {
       makeOkResponse("---\n---\n# Fallback Note\n"),
     );
 
-    const result = await enrichSharedLink({
-      url: "https://offline.example.com/p",
-      text: "",
-      context: "",
-    });
+    const result = await enrichSharedLink(
+      { url: "https://offline.example.com/p", text: "", context: "" },
+      CONFIG,
+    );
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const [, chatInit] = fetchMock.mock.calls[1] as [string, RequestInit];
@@ -622,11 +722,10 @@ describe("enrichSharedLink", () => {
       makeOkResponse("---\n---\n# Text Note\n"),
     );
 
-    await enrichSharedLink({
-      url: "",
-      text: "Some shared snippet of text without a URL.",
-      context: "",
-    });
+    await enrichSharedLink(
+      { url: "", text: "Some shared snippet of text without a URL.", context: "" },
+      CONFIG,
+    );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [chatUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -641,12 +740,10 @@ describe("enrichSharedLink", () => {
     );
 
     const settled = vi.fn();
-    await enrichSharedLink({
-      url: "https://example.com/cb",
-      text: "",
-      context: "",
-      onPreviewSettled: settled,
-    });
+    await enrichSharedLink(
+      { url: "https://example.com/cb", text: "", context: "", onPreviewSettled: settled },
+      CONFIG,
+    );
 
     expect(settled).toHaveBeenCalledTimes(1);
   });
@@ -658,12 +755,10 @@ describe("enrichSharedLink", () => {
     );
 
     const settled = vi.fn();
-    await enrichSharedLink({
-      url: "https://example.com/cb-fail",
-      text: "",
-      context: "",
-      onPreviewSettled: settled,
-    });
+    await enrichSharedLink(
+      { url: "https://example.com/cb-fail", text: "", context: "", onPreviewSettled: settled },
+      CONFIG,
+    );
 
     expect(settled).toHaveBeenCalledTimes(1);
   });
@@ -677,11 +772,10 @@ describe("enrichSharedLink", () => {
       makeOkResponse("---\n---\n# Empty-page Note\n"),
     );
 
-    await enrichSharedLink({
-      url: "https://blank.example.com/",
-      text: "",
-      context: "",
-    });
+    await enrichSharedLink(
+      { url: "https://blank.example.com/", text: "", context: "" },
+      CONFIG,
+    );
 
     const [, chatInit] = fetchMock.mock.calls[1] as [string, RequestInit];
     const body = JSON.parse(chatInit.body as string) as RequestBody;
@@ -748,13 +842,13 @@ describe("enrich entry points honor prompt overrides", () => {
   });
 
   it("enrichIdea uses the override system message when configured", async () => {
-    const { getPromptOverrides } = await import("./settings");
-    vi.mocked(getPromptOverrides).mockResolvedValueOnce({
-      idea: "You are an extremely terse summariser. Respond in one line.",
-    });
     fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
 
-    await enrichIdea("the override should reach the API");
+    await enrichIdea(
+      "the override should reach the API",
+      CONFIG,
+      "You are an extremely terse summariser. Respond in one line.",
+    );
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as RequestBody;
@@ -765,11 +859,9 @@ describe("enrich entry points honor prompt overrides", () => {
   });
 
   it("enrichIdea falls back to default when override is empty", async () => {
-    const { getPromptOverrides } = await import("./settings");
-    vi.mocked(getPromptOverrides).mockResolvedValueOnce({ idea: "" });
     fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
 
-    await enrichIdea("default path");
+    await enrichIdea("default path", CONFIG, "");
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as RequestBody;
@@ -780,14 +872,9 @@ describe("enrich entry points honor prompt overrides", () => {
   });
 
   it("enrichJournal applies the journal override, not the idea override", async () => {
-    const { getPromptOverrides } = await import("./settings");
-    vi.mocked(getPromptOverrides).mockResolvedValueOnce({
-      idea: "wrong",
-      journal: "journal-custom",
-    });
     fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
 
-    await enrichJournal({ transcript: "test", notes: "" });
+    await enrichJournal({ transcript: "test", notes: "" }, CONFIG, "journal-custom");
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as RequestBody;
@@ -798,22 +885,17 @@ describe("enrich entry points honor prompt overrides", () => {
     // sharedImage uses an inline splice (not withSystemOverride) because its
     // user content is OpenAIMessage[] not PromptPair — pin the inline path so
     // it can't drift from the helper-driven entry points silently.
-    const { getPromptOverrides } = await import("./settings");
-    vi.mocked(getPromptOverrides).mockResolvedValueOnce({
-      sharedImage: "shared-image-custom-system",
-    });
     fetchMock.mockResolvedValueOnce(
       makeOkResponse(
         "---\nkind: shared-image\n---\n# x\n\n## What's in this\nstuff\n",
       ),
     );
 
-    const { enrichSharedImage } = await import("./omniroute");
-    await enrichSharedImage({
-      base64: "QkFTRTY0",
-      mimeType: "image/jpeg",
-      context: "test ctx",
-    });
+    await enrichSharedImage(
+      { base64: "QkFTRTY0", mimeType: "image/jpeg", context: "test ctx" },
+      CONFIG,
+      "shared-image-custom-system",
+    );
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as RequestBody;
@@ -824,248 +906,61 @@ describe("enrich entry points honor prompt overrides", () => {
   });
 });
 
-// ── transcribeAudio ───────────────────────────────────────────────────────────
+// ── listModels ────────────────────────────────────────────────────────────────
 
-describe("transcribeAudio (on-device path)", () => {
-  beforeEach(async () => {
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-    vi.mocked(transcribeOnDevice).mockReset();
-  });
-
-  it("returns the on-device transcript + 'on-device' model on the happy path", async () => {
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-    vi.mocked(transcribeOnDevice).mockResolvedValueOnce("hello world");
-
-    const out = await transcribeAudio({
-      base64: "AAAA",
-      mimeType: "audio/mp4",
-      filename: "clip.m4a",
-    });
-
-    expect(out.text).toBe("hello world");
-    expect(out.model).toBe("on-device");
-    // transcribeAudio forwards only base64 + filename; the mimeType is used
-    // for the cap pre-check and not threaded into the on-device wrapper.
-    expect(transcribeOnDevice).toHaveBeenCalledWith({
-      base64: "AAAA",
-      filename: "clip.m4a",
-    });
-  });
-
-  it("propagates the on-device error through to the caller", async () => {
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-    vi.mocked(transcribeOnDevice).mockRejectedValueOnce(
-      new Error("On-device STT error: no-speech — no speech detected"),
+describe("listModels", () => {
+  it("fetches GET /v1/models and returns sorted unique ids", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: "b-model" }, { id: "a-model" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
     );
 
-    await expect(
-      transcribeAudio({
-        base64: "AAAA",
-        mimeType: "audio/mp4",
-        filename: "clip.m4a",
-      }),
-    ).rejects.toThrow(/no-speech/);
-  });
+    const models = await listModels("http://127.0.0.1:8080", "");
 
-  it("does not throw at exactly the 25 MB cap — invokes the on-device wrapper", async () => {
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-    vi.mocked(transcribeOnDevice).mockResolvedValueOnce("ok");
-    // floor(len * 0.75) === MAX_TRANSCRIPTION_BYTES — sits exactly on the cap,
-    // which is allowed (the guard is strictly greater-than).
-    const atCap = "A".repeat(Math.ceil(MAX_TRANSCRIPTION_BYTES / 0.75));
-
-    const out = await transcribeAudio({
-      base64: atCap,
-      mimeType: "audio/mp4",
-      filename: "atcap.m4a",
-    });
-
-    expect(out.text).toBe("ok");
-    expect(transcribeOnDevice).toHaveBeenCalledTimes(1);
-  });
-
-  it("throws OmniRouteError 413 just over the cap, before calling the wrapper", async () => {
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-    // Two chars past the boundary → floor(len * 0.75) > MAX_TRANSCRIPTION_BYTES.
-    const overCap = "A".repeat(Math.ceil(MAX_TRANSCRIPTION_BYTES / 0.75) + 2);
-
-    try {
-      await transcribeAudio({
-        base64: overCap,
-        mimeType: "audio/mp4",
-        filename: "huge.m4a",
-      });
-      expect.fail("expected throw");
-    } catch (e) {
-      expect(e).toBeInstanceOf(OmniRouteError);
-      expect((e as OmniRouteError).status).toBe(413);
-      expect((e as OmniRouteError).message).toContain("transcription caps");
-    }
-    // Pre-flight short-circuits before invoking the wrapper.
-    expect(transcribeOnDevice).not.toHaveBeenCalled();
-  });
-
-  it("MAX_TRANSCRIPTION_BYTES is 25 MB", () => {
-    expect(MAX_TRANSCRIPTION_BYTES).toBe(25 * 1024 * 1024);
+    expect(models).toEqual(["a-model", "b-model"]);
   });
 });
 
-// ── autoTranscribeIfEnabled ───────────────────────────────────────────────────
+// ── healthCheck ───────────────────────────────────────────────────────────────
 
-describe("autoTranscribeIfEnabled", () => {
-  const AUDIO_NOTE = `---\nkind: shared-audio\n---\n# Audio\n\n## File\n[clip.m4a](../Audio/clip.m4a)\n\n## Context\n(none)\n`;
-  // Only the toggle differs from the default — derive it so a Settings
-  // interface change updates one fixture (BASE_SETTINGS), not two.
-  const SETTINGS_TOGGLE_ON = { ...BASE_SETTINGS, autoTranscribeOnSave: true };
-
-  beforeEach(async () => {
-    const { getSettings } = await import("./settings");
-    const { readNote, readPairedBinaryFromNote, updateNote, upsertSection } =
-      await import("./writer");
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-    // Reset + reseed getSettings so a queued mockResolvedValueOnce from a
-    // prior test can't leak in (defense against order-dependence — the
-    // toggle-on tests below queue one-shot overrides). Default: toggle OFF.
-    vi.mocked(getSettings).mockReset();
-    vi.mocked(getSettings).mockResolvedValue(BASE_SETTINGS);
-    vi.mocked(readNote).mockReset();
-    vi.mocked(readPairedBinaryFromNote).mockReset();
-    vi.mocked(updateNote).mockReset();
-    vi.mocked(transcribeOnDevice).mockReset();
-    // mockClear (not mockReset) — keep upsertSection's format implementation,
-    // just drop call history so per-test toHaveBeenCalledWith stays clean.
-    vi.mocked(upsertSection).mockClear();
+describe("healthCheck", () => {
+  it("returns 'ok' when /health responds ok", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 200 }));
+    expect(await healthCheck("http://127.0.0.1:8080")).toBe("ok");
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8080/health");
   });
 
-  it("no-ops (returns null) when autoTranscribeOnSave is false", async () => {
-    // Default global settings mock has autoTranscribeOnSave: false.
-    const { readNote } = await import("./writer");
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
-    expect(result).toBeNull();
-    // Short-circuits before reading the note OR hitting the recognizer.
-    expect(readNote).not.toHaveBeenCalled();
-    expect(transcribeOnDevice).not.toHaveBeenCalled();
+  it("returns 'unreachable' when /health cannot be reached", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    expect(await healthCheck("http://127.0.0.1:8080")).toBe("unreachable");
   });
 
-  it("returns null on the full happy path (read, transcribe, upsert, update)", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
-    const { readNote, readPairedBinaryFromNote, updateNote, upsertSection } =
-      await import("./writer");
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-
-    vi.mocked(readNote).mockResolvedValueOnce(AUDIO_NOTE);
-    vi.mocked(readPairedBinaryFromNote).mockResolvedValueOnce({
-      base64: "AAAA",
-      mime: "audio/mp4",
-    });
-    vi.mocked(transcribeOnDevice).mockResolvedValueOnce("hello world");
-
-    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
-    expect(result).toBeNull();
-
-    // Pin that the filename extracted by the ../Audio/ regex ("clip.m4a")
-    // reaches the on-device wrapper, alongside the binary's base64.
-    expect(transcribeOnDevice).toHaveBeenCalledWith({
-      base64: "AAAA",
-      filename: "clip.m4a",
-    });
-    // Pin what's forwarded to upsertSection: original note body, the
-    // "Transcript" heading, the transcript text. (The "## Transcript"
-    // substring asserted below comes from the MOCKED upsertSection's format
-    // string — real section-insertion behavior is covered in writer.test.ts.)
-    expect(upsertSection).toHaveBeenCalledWith(
-      AUDIO_NOTE,
-      "Transcript",
-      "hello world",
-    );
-    expect(updateNote).toHaveBeenCalledTimes(1);
-    const [filepath, newBody] = vi.mocked(updateNote).mock.calls[0];
-    expect(filepath).toBe("/vault/Ideas/foo.md");
-    expect(newBody).toContain("## Transcript");
-    expect(newBody).toContain("hello world");
+  it("returns 'unreachable' when /health responds non-2xx", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 500 }));
+    expect(await healthCheck("http://127.0.0.1:8080")).toBe("unreachable");
   });
 
-  it("returns 'Note has no Audio/ link' when body doesn't reference Audio/", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
-    const { readNote, readPairedBinaryFromNote } = await import("./writer");
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-
-    vi.mocked(readNote).mockResolvedValueOnce(
-      `---\nkind: idea\n---\n# Plain idea\n\nNo binary link here.\n`,
+  // Device-verified 2026-08-01: on a release build Android permits cleartext to
+  // loopback but REFUSES it to a LAN address. That surfaces as a rejected fetch
+  // indistinguishable from a stopped server, so the user was told "check that
+  // the server is running" while their Relais was running fine.
+  it("returns 'blocked-cleartext' when the platform refuses plaintext", async () => {
+    fetchMock.mockRejectedValueOnce(
+      new TypeError(
+        "Cleartext HTTP traffic to 192.168.1.5 not permitted by network security policy",
+      ),
     );
-
-    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
-    expect(result).toBe("Note has no Audio/ link");
-    expect(readPairedBinaryFromNote).not.toHaveBeenCalled();
-    expect(transcribeOnDevice).not.toHaveBeenCalled();
+    expect(await healthCheck("http://192.168.1.5:8080")).toBe(
+      "blocked-cleartext",
+    );
   });
 
-  it("returns the readNote error message when reading the note throws", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
-    const { readNote } = await import("./writer");
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-
-    vi.mocked(readNote).mockRejectedValueOnce(
-      new Error("ENOENT: no such file"),
-    );
-
-    const result = await autoTranscribeIfEnabled("/vault/Ideas/gone.md");
-    expect(result).toContain("ENOENT");
-    expect(transcribeOnDevice).not.toHaveBeenCalled();
-  });
-
-  it("returns the transcribeAudio error message when the on-device recognizer fails", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
-    const { readNote, readPairedBinaryFromNote, updateNote } = await import(
-      "./writer"
-    );
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-
-    vi.mocked(readNote).mockResolvedValueOnce(AUDIO_NOTE);
-    vi.mocked(readPairedBinaryFromNote).mockResolvedValueOnce({
-      base64: "AAAA",
-      mime: "audio/mp4",
-    });
-    vi.mocked(transcribeOnDevice).mockRejectedValueOnce(
-      new Error("On-device STT error: no-speech — no speech detected"),
-    );
-
-    const result = await autoTranscribeIfEnabled("/vault/Ideas/foo.md");
-    expect(result).toContain("no-speech");
-    // updateNote MUST NOT run on transcribe failure — the original note
-    // stays untouched.
-    expect(updateNote).not.toHaveBeenCalled();
-  });
-
-  it("never throws — returns an error string even when updateNote rejects", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValueOnce(SETTINGS_TOGGLE_ON);
-    const { readNote, readPairedBinaryFromNote, updateNote } = await import(
-      "./writer"
-    );
-    const { transcribeOnDevice } = await import("./audioTranscribeOnDevice");
-
-    vi.mocked(readNote).mockResolvedValueOnce(AUDIO_NOTE);
-    vi.mocked(readPairedBinaryFromNote).mockResolvedValueOnce({
-      base64: "AAAA",
-      mime: "audio/mp4",
-    });
-    vi.mocked(transcribeOnDevice).mockResolvedValueOnce("ok");
-    vi.mocked(updateNote).mockRejectedValueOnce(
-      new Error("SAF tree permission revoked"),
-    );
-
-    // .resolves asserts the helper does NOT throw AND returns the error
-    // string in one idiomatic line — and preserves the failure if it ever
-    // does throw (the old manual try/catch swallowed the stack).
-    await expect(
-      autoTranscribeIfEnabled("/vault/Ideas/foo.md"),
-    ).resolves.toContain("SAF tree permission revoked");
+  it("returns 'unsafe-url' without issuing a request", async () => {
+    expect(await healthCheck("http://example.com:8080")).toBe("unsafe-url");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1077,10 +972,10 @@ describe("ocrCardViaVision", () => {
   it("posts a single multimodal user turn to /v1/chat/completions using the vision model", async () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse("Jane Doe\nCEO\nACME"));
 
-    const result = await ocrCardViaVision({
-      base64: "QkFTRTY0",
-      mimeType: "image/png",
-    });
+    const result = await ocrCardViaVision(
+      { base64: "QkFTRTY0", mimeType: "image/png" },
+      CONFIG,
+    );
 
     expect(result).toEqual({ text: "Jane Doe\nCEO\nACME" });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -1110,13 +1005,13 @@ describe("ocrCardViaVision", () => {
 
   it("trims model output to plain text", async () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse("  Jane Doe, CEO \n"));
-    const result = await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" });
+    const result = await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" }, CONFIG);
     expect(result).toEqual({ text: "Jane Doe, CEO" });
   });
 
   it("falls back to image/jpeg for a non-allowlisted mime", async () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse("ok"));
-    await ocrCardViaVision({ base64: "abc", mimeType: "application/octet-stream" });
+    await ocrCardViaVision({ base64: "abc", mimeType: "application/octet-stream" }, CONFIG);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as {
       messages: Array<{ content: Array<{ image_url?: { url: string } }> }>;
@@ -1129,56 +1024,48 @@ describe("ocrCardViaVision", () => {
   it("throws 'no OCR text' when the model returns empty content", async () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse("   "));
     await expect(
-      ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" }),
+      ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" }, CONFIG),
     ).rejects.toThrow("OmniRoute response contained no OCR text");
   });
 
-  it("surfaces a permanent OmniRouteError on a 4xx response", async () => {
+  it("surfaces a permanent LlmClientError on a 4xx response", async () => {
     fetchMock.mockResolvedValueOnce(makeErrorResponse(401, "Invalid API key"));
     let caught: unknown;
     try {
-      await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" });
+      await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" }, CONFIG);
     } catch (e) {
       caught = e;
     }
-    expect(caught).toBeInstanceOf(OmniRouteError);
+    expect(caught).toBeInstanceOf(LlmClientError);
     expect(isPermanentError(caught)).toBe(true);
   });
 
-  it("surfaces a not-configured OmniRouteError when the vision model is blank", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValue({
-      ...BASE_SETTINGS,
-      omniRouteVisionModel: "",
-    });
+  it("surfaces a not-configured LlmClientError when the vision model is blank", async () => {
     let caught: unknown;
     try {
-      await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" });
+      await ocrCardViaVision(
+        { base64: "abc", mimeType: "image/jpeg" },
+        { ...CONFIG, visionModel: "" },
+      );
     } catch (e) {
       caught = e;
-    } finally {
-      vi.mocked(getSettings).mockResolvedValue(BASE_SETTINGS);
     }
-    expect(caught).toBeInstanceOf(OmniRouteError);
+    expect(caught).toBeInstanceOf(LlmClientError);
     expect(isNotConfiguredError(caught)).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("surfaces a not-configured OmniRouteError when the URL is blank", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValue({
-      ...BASE_SETTINGS,
-      omniRouteUrl: "",
-    });
+  it("surfaces a not-configured LlmClientError when the URL is blank", async () => {
     let caught: unknown;
     try {
-      await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" });
+      await ocrCardViaVision(
+        { base64: "abc", mimeType: "image/jpeg" },
+        { ...CONFIG, baseUrl: "" },
+      );
     } catch (e) {
       caught = e;
-    } finally {
-      vi.mocked(getSettings).mockResolvedValue(BASE_SETTINGS);
     }
-    expect(caught).toBeInstanceOf(OmniRouteError);
+    expect(caught).toBeInstanceOf(LlmClientError);
     expect(isNotConfiguredError(caught)).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -1187,35 +1074,37 @@ describe("ocrCardViaVision", () => {
   // no-key header omission were explicit assertions for the old /v1/ocr client
   // and must hold for the vision path too.
   it("trims trailing slashes from the base URL", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValue({
-      ...BASE_SETTINGS,
-      omniRouteUrl: "https://llm.example.com///",
-    });
     fetchMock.mockResolvedValueOnce(makeOkResponse("ok"));
-    try {
-      await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" });
-    } finally {
-      vi.mocked(getSettings).mockResolvedValue(BASE_SETTINGS);
-    }
+    await ocrCardViaVision(
+      { base64: "abc", mimeType: "image/jpeg" },
+      { ...CONFIG, baseUrl: "https://llm.example.com///" },
+    );
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(url).toBe("https://llm.example.com/v1/chat/completions");
   });
 
   it("omits the Authorization header when no API key is configured", async () => {
-    const { getSettings } = await import("./settings");
-    vi.mocked(getSettings).mockResolvedValue({
-      ...BASE_SETTINGS,
-      omniRouteApiKey: "",
-    });
     fetchMock.mockResolvedValueOnce(makeOkResponse("ok"));
-    try {
-      await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" });
-    } finally {
-      vi.mocked(getSettings).mockResolvedValue(BASE_SETTINGS);
-    }
+    await ocrCardViaVision(
+      { base64: "abc", mimeType: "image/jpeg" },
+      { ...CONFIG, apiKey: "" },
+    );
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
+  });
+
+  it("uses the single configured model (no separate vision model) for the local backend", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse("Jane Doe\nCEO\njane@example.com"));
+
+    const result = await ocrCardViaVision(
+      { base64: "abc123", mimeType: "image/jpeg" },
+      LOCAL_CONFIG,
+    );
+
+    expect(result.text).toBe("Jane Doe\nCEO\njane@example.com");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("test-local-model");
   });
 });

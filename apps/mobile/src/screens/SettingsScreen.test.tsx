@@ -91,7 +91,7 @@ vi.mock("../lib/dispatcher", () => ({
 }));
 
 const healthCheck = vi.fn(async (_url: string) => "ok" as const);
-vi.mock("../lib/localLlm", () => ({
+vi.mock("../lib/llmClient", () => ({
   healthCheck: (url: string) => healthCheck(url),
 }));
 

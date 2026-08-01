@@ -48,7 +48,7 @@ import {
   toggleNotification,
 } from "../lib/settingsPersistence";
 import { listModels } from "../lib/dispatcher";
-import { healthCheck, type HealthResult } from "../lib/localLlm";
+import { healthCheck, type HealthResult } from "../lib/llmClient";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { DiagnosticsSection } from "../components/DiagnosticsSection";
 import { ModelBrowserModal } from "../components/ModelBrowserModal";
