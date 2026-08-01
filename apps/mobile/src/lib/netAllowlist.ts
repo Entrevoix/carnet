@@ -30,6 +30,14 @@ export function isAllowedPlaintextHost(url: string): boolean {
     if (parts[0] === "10") return true;
     // 192.168.0.0/16
     if (parts[0] === "192" && parts[1] === "168") return true;
+    // 172.16.0.0/12 — second octet 16-31 INCLUSIVE. The bounds matter:
+    // 172.15.x.x and 172.32.x.x are public address space, so a looser
+    // `parts[0] === "172"` check would permit sending a plaintext API key to
+    // the internet.
+    if (parts[0] === "172") {
+      const second = Number(parts[1]);
+      if (second >= 16 && second <= 31) return true;
+    }
     return false;
   } catch {
     return false;

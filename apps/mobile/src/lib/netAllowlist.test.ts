@@ -63,3 +63,27 @@ describe("isAllowedPlaintextHost", () => {
     expect(isAllowedPlaintextHost("http://192.168.evil.com")).toBe(false);
   });
 });
+
+// 172.16/12 is as much RFC1918 as 10/8 and 192.168/16, but was omitted — a
+// Relais on 172.20.x.x was refused by our own guard before any request was
+// made. The bounds are load-bearing: 172.15.x and 172.32.x are PUBLIC space,
+// so a sloppy `parts[0] === "172"` check would allow plaintext to the internet.
+describe("172.16/12 (RFC1918)", () => {
+  it("allows the whole 172.16-31 range", () => {
+    expect(isAllowedPlaintextHost("http://172.16.0.1:8080")).toBe(true);
+    expect(isAllowedPlaintextHost("http://172.20.10.5:8080")).toBe(true);
+    expect(isAllowedPlaintextHost("http://172.31.255.254:8080")).toBe(true);
+  });
+
+  it("rejects the addresses just outside it", () => {
+    expect(isAllowedPlaintextHost("http://172.15.0.1:8080")).toBe(false);
+    expect(isAllowedPlaintextHost("http://172.32.0.1:8080")).toBe(false);
+    expect(isAllowedPlaintextHost("http://172.0.0.1:8080")).toBe(false);
+    expect(isAllowedPlaintextHost("http://172.255.0.1:8080")).toBe(false);
+  });
+
+  it("carries through isCredentialSafeUrl", () => {
+    expect(isCredentialSafeUrl("http://172.20.0.1:8080")).toBe(true);
+    expect(isCredentialSafeUrl("http://172.32.0.1:8080")).toBe(false);
+  });
+});
