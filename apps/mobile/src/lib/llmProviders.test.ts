@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   PROVIDER_PRESETS,
@@ -64,10 +64,30 @@ describe("resolveActiveProvider", () => {
     expect(found.preset).toBe("groq");
   });
 
-  it("throws on a totally unknown id (neither in the list nor a preset)", () => {
-    expect(() =>
-      resolveActiveProvider(buildDefaultProviders(), "not-a-real-id"),
-    ).toThrow(/Unknown LLM provider id/);
+  it("falls back to omniroute (with a warning) on a totally unknown id — never throws", () => {
+    // A dangling activeProviderId (e.g. pointing at a since-deleted custom
+    // entry) must NOT throw a generic Error: that wouldn't be an
+    // isNotConfiguredError, so the capture-error path would show an opaque
+    // failure instead of the familiar not-configured banner. Falling back
+    // to omniroute keeps that path sane (omniroute itself raises
+    // not-configured when unconfigured, which IS the right banner).
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const found = resolveActiveProvider(buildDefaultProviders(), "not-a-real-id");
+    expect(found.id).toBe("omniroute");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown provider id "not-a-real-id"'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("falls back to the list's own omniroute entry (not the preset default) when both exist", () => {
+    const providers = buildDefaultProviders().map((p) =>
+      p.id === "omniroute" ? { ...p, baseUrl: "https://edited.example.com" } : p,
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const found = resolveActiveProvider(providers, "not-a-real-id");
+    expect(found.baseUrl).toBe("https://edited.example.com");
+    warnSpy.mockRestore();
   });
 
   it("prefers the list's own entry over the preset default when both exist (edited preset)", () => {
@@ -152,9 +172,9 @@ describe("validateProvider", () => {
 });
 
 describe("addCustomProvider", () => {
-  it("appends a new entry with id custom-1 to a list with no existing custom entries", () => {
+  it("appends a new entry with id custom-<nextCustomSeq> and returns the incremented counter", () => {
     const providers = buildDefaultProviders();
-    const next = addCustomProvider(providers, {
+    const { providers: next, nextCustomSeq } = addCustomProvider(providers, 1, {
       label: "My Server",
       baseUrl: "https://my.server",
       model: "m",
@@ -165,27 +185,56 @@ describe("addCustomProvider", () => {
     expect(added?.id).toBe("custom-1");
     expect(added?.preset).toBeNull();
     expect(added?.label).toBe("My Server");
+    expect(nextCustomSeq).toBe(2);
   });
 
-  it("numbers the next custom id one past the highest existing custom suffix", () => {
-    const providers = [
-      ...buildDefaultProviders(),
-      { id: "custom-1", label: "A", baseUrl: "a", model: "", visionModel: "", preset: null },
-      { id: "custom-3", label: "B", baseUrl: "b", model: "", visionModel: "", preset: null },
-    ];
-    const next = addCustomProvider(providers, {
+  it("uses the caller-supplied counter verbatim, NOT anything derived from the surviving list", () => {
+    // The list here has no custom-* entries at all, but the counter says 7
+    // (as it would after 6 adds and some deletes) — the id must be
+    // custom-7, not custom-1. This is the fix for the id-reuse bug: the
+    // seq is a persisted, monotonic counter, never a scan of what's left.
+    const providers = buildDefaultProviders();
+    const { providers: next, nextCustomSeq } = addCustomProvider(providers, 7, {
       label: "C",
       baseUrl: "c",
       model: "",
       visionModel: "",
     });
-    expect(next.at(-1)?.id).toBe("custom-4");
+    expect(next.at(-1)?.id).toBe("custom-7");
+    expect(nextCustomSeq).toBe(8);
+  });
+
+  it("never reissues a deleted custom entry's id — simulated add/remove/add sequence", () => {
+    // add custom-1 (seq 1 -> 2), remove it, add again: with a persisted
+    // counter the second add must be custom-2, never custom-1 again (which
+    // would let a stale SecureStore key under "custom-1" silently apply to
+    // the new entry — see providerKeys.test.ts's key-reuse guard for the
+    // credential half of this regression).
+    const base = buildDefaultProviders();
+    const first = addCustomProvider(base, 1, {
+      label: "A",
+      baseUrl: "https://a.example",
+      model: "",
+      visionModel: "",
+    });
+    expect(first.providers.at(-1)?.id).toBe("custom-1");
+
+    const afterRemove = removeProvider(first.providers, "custom-1");
+    expect(afterRemove.find((p) => p.id === "custom-1")).toBeUndefined();
+
+    const second = addCustomProvider(afterRemove, first.nextCustomSeq, {
+      label: "B",
+      baseUrl: "https://b.example",
+      model: "",
+      visionModel: "",
+    });
+    expect(second.providers.at(-1)?.id).toBe("custom-2");
   });
 
   it("does not mutate the input array", () => {
     const providers = buildDefaultProviders();
     const snapshot = providers.map((p) => ({ ...p }));
-    addCustomProvider(providers, { label: "X", baseUrl: "x", model: "", visionModel: "" });
+    addCustomProvider(providers, 1, { label: "X", baseUrl: "x", model: "", visionModel: "" });
     expect(providers).toEqual(snapshot);
   });
 });

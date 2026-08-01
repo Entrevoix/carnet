@@ -1,8 +1,28 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
-import { buildDefaultProviders, type LlmProvider } from "./llmProviders";
+import {
+  buildDefaultProviders,
+  isValidProviderList,
+  type LlmProvider,
+} from "./llmProviders";
 
-const SETTINGS_KEY = "carnet:settings:v2";
+/**
+ * v3 — bumped from v2 by the LLM provider list (Phase 2). `main` and this
+ * branch's `writePersisted` each enumerate their OWN fields explicitly and
+ * write the whole blob, so as long as both branches wrote the same
+ * `carnet:settings:v2` key, alternating between a main build and a
+ * provider-list build (this repo ships sideloaded APKs, so a downgrade is
+ * one install away) made each save silently drop the other branch's fields
+ * — up to and including losing the OmniRoute URL permanently. Moving to a
+ * DISTINCT key means the two shapes never alias: this code only ever WRITES
+ * v3; v2 is read-only here, exactly like the v1 fallback below, so an
+ * upgrading install's existing config still migrates in, but a subsequent
+ * downgrade to a v2-writing build finds its own v2 blob untouched.
+ */
+const SETTINGS_KEY = "carnet:settings:v3";
+/** Pre-provider-list key (main, and this branch before this fix) — read
+ * once for migration when no v3 blob exists yet, then never written. */
+const SETTINGS_KEY_V2 = "carnet:settings:v2";
 /** Legacy key — read once for migration, then ignored. */
 const SETTINGS_KEY_V1 = "carnet:settings:v1";
 /** Legacy SecureStore key from v0.1's navetted HMAC token. Purged on first
@@ -56,6 +76,11 @@ export interface Settings {
    * every dispatcher call (not cached), so switching providers mid-session
    * takes effect on the very next capture. */
   activeProviderId: string;
+  /** Monotonically-increasing counter for the NEXT custom provider's id
+   * (`custom-<nextCustomSeq>`). Never decreases, even when a custom entry
+   * is removed — see llmProviders.ts's addCustomProvider docstring for why
+   * reusing a freed id is a credential-leak risk, not just a UX quirk. */
+  nextCustomSeq: number;
   /** OmniRoute API key (Bearer). Held in SecureStore, never persisted to the
    * AsyncStorage settings blob. Kept as a dedicated field (rather than
    * folded into a generic per-provider key lookup here) because it predates
@@ -104,6 +129,7 @@ export interface Settings {
 interface PersistedSettings {
   llmProviders: LlmProvider[];
   activeProviderId: string;
+  nextCustomSeq: number;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
@@ -134,6 +160,7 @@ interface LegacyLlmPersistedSettings {
 const DEFAULT_PERSISTED: PersistedSettings = {
   llmProviders: buildDefaultProviders(),
   activeProviderId: "omniroute",
+  nextCustomSeq: 1,
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
@@ -163,8 +190,19 @@ function migrateLegacyLlmSettings(
   const omniroute = providers.find((p) => p.id === "omniroute");
   if (omniroute) {
     omniroute.baseUrl = legacy.omniRouteUrl ?? "";
-    omniroute.model = legacy.omniRouteModel ?? "";
-    omniroute.visionModel = legacy.omniRouteVisionModel ?? "";
+    // `?? DEFAULT_...` (not `?? ""`) — matches the pre-migration behavior
+    // these fields actually had: DEFAULT_PERSISTED filled an ABSENT model/
+    // vision-model key with these same defaults via the old
+    // `{...DEFAULT_PERSISTED, ...parsed}` merge. A blob from before the B1
+    // vision-model split (PR #65) — URL + chat model present, no vision key
+    // at all — has `omniRouteVisionModel` genuinely `undefined`, not "".
+    // Model has a second rung at dispatch time (buildConfig's
+    // `|| DEFAULT_OMNIROUTE_MODEL`), but visionModel does NOT — a blank
+    // vision model goes straight to assertVisionModelConfigured and throws,
+    // silently breaking image enrichment and card OCR for exactly that
+    // upgrade path.
+    omniroute.model = legacy.omniRouteModel ?? DEFAULT_OMNIROUTE_MODEL;
+    omniroute.visionModel = legacy.omniRouteVisionModel ?? DEFAULT_VISION_MODEL;
   }
   const relais = providers.find((p) => p.id === "relais");
   if (relais) {
@@ -199,41 +237,82 @@ function sanitisePromptOverrides(raw: PromptOverrides | undefined): PromptOverri
   return out;
 }
 
+/**
+ * Parse a v3-or-v2-shaped blob (both are read through this — v2's shape is
+ * a strict subset, since v3 only ADDED fields) into a full
+ * {@link PersistedSettings}, running the legacy-LLM migration when needed.
+ * Returns null on a JSON parse failure OR a validation failure the caller
+ * should treat as "nothing useful here" (fall through to the next source).
+ *
+ * Shape-validates `llmProviders` before trusting it — `parsed.llmProviders`
+ * comes straight off `JSON.parse`, so nothing guarantees it is even an
+ * array (a hand-edited or corrupted blob could hold a string, an object, or
+ * `[]`). Downstream code calls `.find`/`.map` on it with no defensive
+ * checks (by design — the Settings type promises a real array), and
+ * SettingsScreen's mount effect calls `formStateFromSettings` outside any
+ * try/catch, so an invalid shape reaching that far renders "Loading…"
+ * forever with no other way to open Settings. Falling back to
+ * buildDefaultProviders() here means that failure mode is structurally
+ * impossible downstream.
+ */
+function parseModernBlob(raw: string): PersistedSettings | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedSettings> &
+      LegacyLlmPersistedSettings;
+    const validLlmProviders = isValidProviderList(parsed.llmProviders)
+      ? parsed.llmProviders
+      : null;
+    // Migration trigger: a blob carrying ANY pre-provider-list LLM field
+    // (llmBackend, or one of the flat omniRoute*/localLlm* fields — an even
+    // older blob predating llmBackend itself can still have these without
+    // it) and no VALID `llmProviders` yet is pre-provider-list. Idempotent
+    // — once a migrated (or fresh) blob is saved, it carries a valid
+    // `llmProviders` and this branch is never taken again for it.
+    const hasLegacyLlmFields =
+      parsed.llmBackend !== undefined ||
+      parsed.omniRouteUrl !== undefined ||
+      parsed.omniRouteModel !== undefined ||
+      parsed.omniRouteVisionModel !== undefined ||
+      parsed.localLlmUrl !== undefined ||
+      parsed.localLlmModel !== undefined;
+    const llmFields =
+      !validLlmProviders && hasLegacyLlmFields
+        ? migrateLegacyLlmSettings(parsed)
+        : {
+            llmProviders: validLlmProviders ?? buildDefaultProviders(),
+            activeProviderId:
+              parsed.activeProviderId ?? DEFAULT_PERSISTED.activeProviderId,
+          };
+    return {
+      ...DEFAULT_PERSISTED,
+      ...parsed,
+      ...llmFields,
+      nextCustomSeq:
+        typeof parsed.nextCustomSeq === "number"
+          ? parsed.nextCustomSeq
+          : DEFAULT_PERSISTED.nextCustomSeq,
+      promptOverrides: sanitisePromptOverrides(parsed.promptOverrides),
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function readPersisted(): Promise<PersistedSettings> {
   const raw = await AsyncStorage.getItem(SETTINGS_KEY);
   if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as Partial<PersistedSettings> &
-        LegacyLlmPersistedSettings;
-      // Migration trigger: a blob carrying ANY pre-provider-list LLM field
-      // (llmBackend, or one of the flat omniRoute*/localLlm* fields — an
-      // even older blob predating llmBackend itself can still have these
-      // without it) and no `llmProviders` yet is pre-provider-list.
-      // Idempotent — once a migrated (or fresh) blob is saved, it carries
-      // `llmProviders` and this branch is never taken again for it.
-      const hasLegacyLlmFields =
-        parsed.llmBackend !== undefined ||
-        parsed.omniRouteUrl !== undefined ||
-        parsed.omniRouteModel !== undefined ||
-        parsed.omniRouteVisionModel !== undefined ||
-        parsed.localLlmUrl !== undefined ||
-        parsed.localLlmModel !== undefined;
-      const llmFields =
-        !parsed.llmProviders && hasLegacyLlmFields
-          ? migrateLegacyLlmSettings(parsed)
-          : {
-              llmProviders: parsed.llmProviders ?? buildDefaultProviders(),
-              activeProviderId: parsed.activeProviderId ?? DEFAULT_PERSISTED.activeProviderId,
-            };
-      return {
-        ...DEFAULT_PERSISTED,
-        ...parsed,
-        ...llmFields,
-        promptOverrides: sanitisePromptOverrides(parsed.promptOverrides),
-      };
-    } catch {
-      return { ...DEFAULT_PERSISTED, llmProviders: buildDefaultProviders() };
-    }
+    const parsed = parseModernBlob(raw);
+    if (parsed) return parsed;
+    return { ...DEFAULT_PERSISTED, llmProviders: buildDefaultProviders() };
+  }
+
+  // Fall back to the pre-v3 blob (written by `main`, or by this branch
+  // before the v3 bump) — read once for migration, exactly like the v1
+  // fallback below. Never written here; see the SETTINGS_KEY comment.
+  const rawV2 = await AsyncStorage.getItem(SETTINGS_KEY_V2);
+  if (rawV2) {
+    const parsed = parseModernBlob(rawV2);
+    if (parsed) return parsed;
   }
 
   // Try migrating from v1 blob
@@ -244,6 +323,7 @@ async function readPersisted(): Promise<PersistedSettings> {
       return {
         llmProviders: buildDefaultProviders(),
         activeProviderId: DEFAULT_PERSISTED.activeProviderId,
+        nextCustomSeq: DEFAULT_PERSISTED.nextCustomSeq,
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
@@ -264,6 +344,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
   const sanitised: PersistedSettings = {
     llmProviders: settings.llmProviders,
     activeProviderId: settings.activeProviderId,
+    nextCustomSeq: settings.nextCustomSeq,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -305,6 +386,7 @@ export async function getSettings(): Promise<Settings> {
   return {
     llmProviders: persisted.llmProviders,
     activeProviderId: persisted.activeProviderId,
+    nextCustomSeq: persisted.nextCustomSeq,
     omniRouteApiKey,
     localLlmApiKey,
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
@@ -318,10 +400,29 @@ export async function getSettings(): Promise<Settings> {
   };
 }
 
-export async function saveSettings(settings: Settings): Promise<void> {
+/**
+ * Persist ONLY the non-secret blob — never touches SecureStore. This is the
+ * safe primitive for any caller that does a read-modify-write of a Settings
+ * SNAPSHOT it may have captured a while ago (e.g. persistNotificationHint,
+ * which re-saves a `getSettings()` result it read before an async native
+ * permission dialog).
+ *
+ * `saveSettings` (below) is NOT that primitive — it is the full "user tapped
+ * Save" path, and it used to ALSO delete every API key whose field on the
+ * passed-in `Settings` was blank. That is exactly the bug this function
+ * exists to make impossible for a stale-snapshot caller to trigger: if
+ * `persistNotificationHint` reads settings while a key is mid-flight (typed
+ * but not yet saved), its snapshot has `omniRouteApiKey: ""`; without this
+ * split, its later best-effort save would delete the key the real Save had
+ * *already* written in the meantime — the toggle would go through, and a
+ * live credential would silently vanish with no error shown anywhere.
+ * Confirmed via a regression test in settings.test.ts.
+ */
+export async function savePersistedOnly(settings: Settings): Promise<void> {
   await writePersisted({
     llmProviders: settings.llmProviders,
     activeProviderId: settings.activeProviderId,
+    nextCustomSeq: settings.nextCustomSeq,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -330,20 +431,33 @@ export async function saveSettings(settings: Settings): Promise<void> {
     promptOverrides: settings.promptOverrides,
     karakeepUrl: settings.karakeepUrl,
   });
+}
+
+/**
+ * Persist the full Settings object: the non-secret blob, PLUS whichever of
+ * the three dedicated API keys carries a non-blank value. This is the
+ * "user tapped Save" path — it deliberately does NOT delete a key when its
+ * field is blank (there used to be an `else { deleteItemAsync(...) }`
+ * branch per key; it is gone on purpose). Clearing a key already has an
+ * explicit, intentional verb — clearApiKey / setOmniRouteApiKey("") /
+ * setKarakeepApiKey("") / setLocalLlmApiKey("") — called directly from the
+ * screen's "Clear key" buttons. Deleting-by-omission here was a second,
+ * accidental path to the same effect, and the dangerous one: ANY caller
+ * that persists a Settings snapshot with a blank key field — including one
+ * that's blank only because it was read before a concurrent write landed —
+ * would silently wipe a real, already-stored credential. See
+ * savePersistedOnly's docstring for the concrete interleave this caused.
+ */
+export async function saveSettings(settings: Settings): Promise<void> {
+  await savePersistedOnly(settings);
   if (settings.omniRouteApiKey) {
     await SecureStore.setItemAsync(OMNIROUTE_API_KEY, settings.omniRouteApiKey);
-  } else {
-    await SecureStore.deleteItemAsync(OMNIROUTE_API_KEY);
   }
   if (settings.karakeepApiKey) {
     await SecureStore.setItemAsync(KARAKEEP_API_KEY, settings.karakeepApiKey);
-  } else {
-    await SecureStore.deleteItemAsync(KARAKEEP_API_KEY);
   }
   if (settings.localLlmApiKey) {
     await SecureStore.setItemAsync(LOCAL_LLM_API_KEY, settings.localLlmApiKey);
-  } else {
-    await SecureStore.deleteItemAsync(LOCAL_LLM_API_KEY);
   }
 }
 

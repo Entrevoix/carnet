@@ -48,6 +48,7 @@ const baseForm: FormState = {
 const storedSettings: Settings = {
   llmProviders: buildDefaultProviders(),
   activeProviderId: "omniroute",
+  nextCustomSeq: 1,
   omniRouteApiKey: "sk-existing",
   localLlmApiKey: "local-existing",
   persistentNotificationEnabled: true,
@@ -353,15 +354,16 @@ describe("persistNotificationHint", () => {
   // would still pass — see the mutation-catch note on the first test.
   const settingsBeforeToggle: Settings = { ...storedSettings, persistentNotificationEnabled: false };
 
-  it("saves the settings blob with the new notification value merged in", async () => {
-    // Mutation-catch: if the merge were dropped (e.g. `saveSettings(current)`
-    // instead of `saveSettings({...current, persistentNotificationEnabled: next})`),
+  it("saves the settings blob with the new notification value merged in, via savePersistedOnly", async () => {
+    // Mutation-catch: if the merge were dropped (e.g.
+    // `savePersistedOnly(current)` instead of
+    // `savePersistedOnly({...current, persistentNotificationEnabled: next})`),
     // this would assert persistentNotificationEnabled: false (the fixture's
     // own value) against the expected true and fail.
     const getSettings = vi.fn(async () => settingsBeforeToggle);
-    const saveSettings = vi.fn(async () => undefined);
-    await persistNotificationHint(true, { getSettings, saveSettings });
-    expect(saveSettings).toHaveBeenCalledWith({
+    const savePersistedOnly = vi.fn(async () => undefined);
+    await persistNotificationHint(true, { getSettings, savePersistedOnly });
+    expect(savePersistedOnly).toHaveBeenCalledWith({
       ...settingsBeforeToggle,
       persistentNotificationEnabled: true,
     });
@@ -369,13 +371,13 @@ describe("persistNotificationHint", () => {
 
   it("swallows a save failure instead of throwing (best-effort), after still attempting the merged save", async () => {
     const getSettings = vi.fn(async () => settingsBeforeToggle);
-    const saveSettings = vi.fn(async () => {
+    const savePersistedOnly = vi.fn(async () => {
       throw new Error("disk full");
     });
     await expect(
-      persistNotificationHint(true, { getSettings, saveSettings }),
+      persistNotificationHint(true, { getSettings, savePersistedOnly }),
     ).resolves.toBeUndefined();
-    expect(saveSettings).toHaveBeenCalledWith({
+    expect(savePersistedOnly).toHaveBeenCalledWith({
       ...settingsBeforeToggle,
       persistentNotificationEnabled: true,
     });

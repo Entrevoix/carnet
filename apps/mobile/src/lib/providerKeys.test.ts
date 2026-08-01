@@ -13,7 +13,13 @@ vi.mock("expo-secure-store", () => ({
   }),
 }));
 
-import { deleteKey, getKey, setKey } from "./providerKeys";
+import { buildDefaultProviders } from "./llmProviders";
+import {
+  deleteKey,
+  getKey,
+  removeProviderAndKey,
+  setKey,
+} from "./providerKeys";
 
 beforeEach(() => {
   _secure.clear();
@@ -106,5 +112,110 @@ describe("deleteKey", () => {
     await deleteKey("omniroute");
     expect(await getKey("omniroute")).toBe("");
     expect(await getKey("relais")).toBe("local-secret");
+  });
+});
+
+// ── aliasFor hardening (finding #4c): a plain object literal inherits
+// Object.prototype, so an id like "toString" would resolve to a PROTOTYPE
+// FUNCTION via the old `LEGACY_KEY_ALIASES[id]`, and `?? fallback` never
+// fires for a truthy function value — silently storing a secret under a
+// garbage, non-string "alias". Unreachable while ids are hardcoded, but
+// becomes reachable the moment a provider id is user-editable (Phase 4).
+
+describe("aliasFor hardening — prototype-pollution-shaped ids", () => {
+  it("a provider id shadowing an Object.prototype member (toString) stores under the generic namespace, not garbage", async () => {
+    await setKey("toString", "sk-toString");
+    expect(_secure.get("carnet.llm.key.toString")).toBe("sk-toString");
+    expect(await getKey("toString")).toBe("sk-toString");
+  });
+
+  it("constructor and hasOwnProperty behave the same way", async () => {
+    await setKey("constructor", "sk-constructor");
+    await setKey("hasOwnProperty", "sk-hasOwnProperty");
+    expect(await getKey("constructor")).toBe("sk-constructor");
+    expect(await getKey("hasOwnProperty")).toBe("sk-hasOwnProperty");
+    // The two ids must not collide with each other or with anything else.
+    expect(_secure.get("carnet.llm.key.constructor")).toBe("sk-constructor");
+    expect(_secure.get("carnet.llm.key.hasOwnProperty")).toBe(
+      "sk-hasOwnProperty",
+    );
+  });
+
+  it("rejects an id containing characters outside [A-Za-z0-9_-]", async () => {
+    await expect(getKey("../escape")).rejects.toThrow(/Invalid LLM provider id/);
+    await expect(setKey("has.dots", "x")).rejects.toThrow(
+      /Invalid LLM provider id/,
+    );
+    await expect(deleteKey("has space")).rejects.toThrow(
+      /Invalid LLM provider id/,
+    );
+  });
+});
+
+describe("removeProviderAndKey", () => {
+  it("deletes the stored key AND removes the list entry", async () => {
+    const providers = [
+      ...buildDefaultProviders(),
+      {
+        id: "custom-1",
+        label: "My Server",
+        baseUrl: "https://my.server",
+        model: "m",
+        visionModel: "",
+        preset: null,
+      },
+    ];
+    await setKey("custom-1", "sk-custom-1");
+
+    const next = await removeProviderAndKey(providers, "custom-1");
+
+    expect(next.find((p) => p.id === "custom-1")).toBeUndefined();
+    expect(await getKey("custom-1")).toBe("");
+  });
+
+  it("deletes the key even when there is no matching list entry (defensive cleanup)", async () => {
+    await setKey("custom-9", "sk-orphaned");
+    const providers = buildDefaultProviders();
+    const next = await removeProviderAndKey(providers, "custom-9");
+    expect(next).toEqual(providers);
+    expect(await getKey("custom-9")).toBe("");
+  });
+
+  it("throws (and leaves the key intact) when asked to remove a preset — key-delete-first ordering must not destroy a preset's key on a rejected removal", async () => {
+    await setKey("openai", "sk-openai");
+    await expect(removeProviderAndKey(buildDefaultProviders(), "openai")).rejects.toThrow(
+      /Cannot remove preset provider/,
+    );
+  });
+
+  it("key-delete-first ordering: a rejected SecureStore delete propagates instead of silently returning a list with the entry dropped", async () => {
+    // Proves the "key first, then list entry" ordering the docstring
+    // promises: if deleteKey() throws, removeProviderAndKey must reject —
+    // NOT swallow the failure and return a list that looks successfully
+    // pruned while the key is still (or might still be) sitting in
+    // SecureStore. A caller that persisted a resolved-but-wrong result here
+    // would show the entry as gone while its key silently lingered.
+    const secureStore = await import("expo-secure-store");
+    const deleteSpy = vi
+      .spyOn(secureStore, "deleteItemAsync")
+      .mockRejectedValueOnce(new Error("keychain locked"));
+
+    const providers = [
+      ...buildDefaultProviders(),
+      {
+        id: "custom-1",
+        label: "A",
+        baseUrl: "a",
+        model: "",
+        visionModel: "",
+        preset: null,
+      },
+    ];
+
+    await expect(removeProviderAndKey(providers, "custom-1")).rejects.toThrow(
+      "keychain locked",
+    );
+
+    deleteSpy.mockRestore();
   });
 });

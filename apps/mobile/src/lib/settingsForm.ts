@@ -64,11 +64,16 @@ export interface ExistingApiKeys {
  * it separately via setOmniRouteApiKey/setKarakeepApiKey after this save,
  * and passing the existing (or empty) key here matches the prior behavior
  * where saveSettings preserves — or clears — the stored key.
+ *
+ * `nextCustomSeq` is threaded straight through unchanged — this form has no
+ * UI for adding custom providers yet (Phase 4), so nothing here ever
+ * advances the counter; it just must not be dropped on save.
  */
 export function composeSettingsForSave(
   form: FormState,
   existing: ExistingApiKeys,
   currentProviders: readonly LlmProvider[],
+  nextCustomSeq: number,
 ): Settings {
   const omniRouteModel = form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL;
   const omniRouteVisionModel = form.omniRouteVisionModel || DEFAULT_VISION_MODEL;
@@ -89,6 +94,7 @@ export function composeSettingsForSave(
   return {
     llmProviders,
     activeProviderId: form.llmBackend === "local" ? "relais" : "omniroute",
+    nextCustomSeq,
     localLlmApiKey: existing.localLlmApiKey,
     persistentNotificationEnabled: form.persistentNotificationEnabled,
     autoTranscribeOnSave: form.autoTranscribeOnSave,

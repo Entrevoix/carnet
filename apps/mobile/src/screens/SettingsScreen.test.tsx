@@ -41,6 +41,7 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
       p.id === "omniroute" ? { ...p, baseUrl: "https://llm.grepon.cc" } : p,
     ),
     activeProviderId: "omniroute",
+    nextCustomSeq: 1,
     omniRouteApiKey: "",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,

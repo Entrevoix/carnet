@@ -61,7 +61,7 @@ const keys = {
 
 describe("composeSettingsForSave", () => {
   it("threads form fields through verbatim and carries the existing keys", () => {
-    const next = composeSettingsForSave(baseForm, keys, buildDefaultProviders());
+    const next = composeSettingsForSave(baseForm, keys, buildDefaultProviders(), 1);
     expect(next.activeProviderId).toBe("omniroute");
     expect(next.omniRouteApiKey).toBe("sk-existing");
     expect(next.karakeepApiKey).toBe("kk-existing");
@@ -85,6 +85,7 @@ describe("composeSettingsForSave", () => {
       { ...baseForm, omniRouteModel: "" },
       keys,
       buildDefaultProviders(),
+      1,
     );
     expect(findProvider(next.llmProviders, "omniroute").model).toBe(
       DEFAULT_OMNIROUTE_MODEL,
@@ -96,6 +97,7 @@ describe("composeSettingsForSave", () => {
       { ...baseForm, omniRouteVisionModel: "" },
       keys,
       buildDefaultProviders(),
+      1,
     );
     expect(findProvider(next.llmProviders, "omniroute").visionModel).toBe(
       DEFAULT_VISION_MODEL,
@@ -107,6 +109,7 @@ describe("composeSettingsForSave", () => {
       baseForm,
       { omniRouteApiKey: "", karakeepApiKey: "", localLlmApiKey: "" },
       buildDefaultProviders(),
+      1,
     );
     expect(next.omniRouteApiKey).toBe("");
     expect(next.karakeepApiKey).toBe("");
@@ -117,6 +120,7 @@ describe("composeSettingsForSave", () => {
       baseForm,
       { ...keys, localLlmApiKey: "local-secret" },
       buildDefaultProviders(),
+      1,
     );
     expect(next.localLlmApiKey).toBe("local-secret");
   });
@@ -132,6 +136,7 @@ describe("composeSettingsForSave", () => {
       form,
       { omniRouteApiKey: "", karakeepApiKey: "", localLlmApiKey: "local-key" },
       buildDefaultProviders(),
+      1,
     );
 
     expect(result.activeProviderId).toBe("relais");
@@ -153,7 +158,7 @@ describe("composeSettingsForSave", () => {
         preset: null,
       },
     ];
-    const next = composeSettingsForSave(baseForm, keys, providers);
+    const next = composeSettingsForSave(baseForm, keys, providers, 1);
     expect(findProvider(next.llmProviders, "openai")).toBeTruthy();
     expect(findProvider(next.llmProviders, "custom-1")).toEqual({
       id: "custom-1",
@@ -169,7 +174,7 @@ describe("composeSettingsForSave", () => {
     const form = { ...baseForm, omniRouteModel: "" };
     const providers = buildDefaultProviders();
     const providersSnapshot = providers.map((p) => ({ ...p }));
-    composeSettingsForSave(form, keys, providers);
+    composeSettingsForSave(form, keys, providers, 1);
     expect(form.omniRouteModel).toBe("");
     expect(providers).toEqual(providersSnapshot);
   });
@@ -226,6 +231,7 @@ describe("existingApiKeysFromSettings", () => {
   const base: Settings = {
     llmProviders: buildDefaultProviders(),
     activeProviderId: "omniroute",
+    nextCustomSeq: 1,
     omniRouteApiKey: "sk-existing",
     localLlmApiKey: "local-secret",
     persistentNotificationEnabled: false,
@@ -314,6 +320,7 @@ describe("formStateFromSettings", () => {
       return p;
     }),
     activeProviderId: "relais",
+    nextCustomSeq: 1,
     omniRouteApiKey: "sk-existing",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,

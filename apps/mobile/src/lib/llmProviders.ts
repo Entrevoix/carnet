@@ -92,8 +92,13 @@ export function buildDefaultProviders(): LlmProvider[] {
 /**
  * Resolve `activeProviderId` to its {@link LlmProvider} entry. Falls back to
  * the matching preset (defensive — should not happen once migration has
- * run) and throws only if the id is unknown outright, mirroring the old
- * dispatcher's loud failure on an unrecognized backend.
+ * run). A totally unknown id — e.g. a dangling `activeProviderId` left
+ * pointing at a custom entry the user since deleted — falls back to the
+ * `omniroute` preset with a warning rather than throwing: a thrown generic
+ * Error isn't an `isNotConfiguredError`, so the capture-error path would
+ * treat a dangling reference as an opaque failure instead of the familiar
+ * "not configured" banner. Falling back to omniroute (which naturally
+ * raises not-configured itself when unconfigured) keeps that path sane.
  */
 export function resolveActiveProvider(
   providers: readonly LlmProvider[],
@@ -103,7 +108,16 @@ export function resolveActiveProvider(
   if (found) return found;
   const preset = PROVIDER_PRESETS.find((p) => p.id === activeProviderId);
   if (preset) return { ...preset };
-  throw new Error(`Unknown LLM provider id "${activeProviderId}"`);
+  console.warn(
+    `[llmProviders] Unknown provider id "${activeProviderId}" (dangling reference — e.g. a deleted custom entry) — falling back to omniroute.`,
+  );
+  const omniroute = providers.find((p) => p.id === "omniroute");
+  if (omniroute) return omniroute;
+  const omniroutePreset = PROVIDER_PRESETS.find((p) => p.id === "omniroute");
+  // PROVIDER_PRESETS always contains "omniroute" — see the const above —
+  // so this branch is unreachable, but TypeScript can't see that.
+  if (!omniroutePreset) throw new Error("omniroute preset is missing");
+  return { ...omniroutePreset };
 }
 
 /**
@@ -130,39 +144,52 @@ export function validateProvider(provider: LlmProvider): string[] {
   return errors;
 }
 
+/** Result of {@link addCustomProvider}: the new list, plus the counter value
+ * the caller must persist as `Settings.nextCustomSeq` for the NEXT call. */
+export interface AddCustomProviderResult {
+  providers: LlmProvider[];
+  nextCustomSeq: number;
+}
+
 /**
- * Append a new custom provider entry. The id is `custom-<n>`, where `n` is
- * one past the highest existing custom suffix — a counter, not a UUID,
- * because Hermes has no `crypto.randomUUID` (the same constraint that
- * forced `expo-crypto` for #86). Returns a new array; `providers` is
- * untouched.
+ * Append a new custom provider entry. The id is `custom-<nextCustomSeq>`.
+ * `nextCustomSeq` MUST be a persisted, monotonically-increasing counter
+ * (`Settings.nextCustomSeq`) — never derived from the surviving list. It is
+ * a counter, not a UUID, because Hermes has no `crypto.randomUUID` (the same
+ * constraint that forced `expo-crypto` for #86); it is persisted rather than
+ * scanned-and-incremented because scanning the surviving list lets a deleted
+ * id get reissued to a NEW entry while its old API key is still sitting in
+ * SecureStore under that id's alias — a live key silently leaking to
+ * whatever endpoint the reused id now points at. Returns new objects;
+ * `providers` is untouched.
  */
 export function addCustomProvider(
   providers: readonly LlmProvider[],
+  nextCustomSeq: number,
   input: { label: string; baseUrl: string; model: string; visionModel: string },
-): LlmProvider[] {
-  const highest = providers.reduce((max, p) => {
-    const m = /^custom-(\d+)$/.exec(p.id);
-    if (!m) return max;
-    const n = Number.parseInt(m[1], 10);
-    return n > max ? n : max;
-  }, 0);
+): AddCustomProviderResult {
   const next: LlmProvider = {
-    id: `custom-${highest + 1}`,
+    id: `custom-${nextCustomSeq}`,
     label: input.label,
     baseUrl: input.baseUrl,
     model: input.model,
     visionModel: input.visionModel,
     preset: null,
   };
-  return [...providers, next];
+  return { providers: [...providers, next], nextCustomSeq: nextCustomSeq + 1 };
 }
 
 /**
- * Remove a provider entry by id. Presets cannot be removed — a preset id
+ * Remove a provider entry by id from the LIST only — this function is pure
+ * and does not touch SecureStore. Presets cannot be removed — a preset id
  * matched here throws rather than silently no-op'ing, so a future caller
  * (the Phase 4 UI) fails loudly instead of shipping a dead delete button.
  * Returns a new array; `providers` is untouched.
+ *
+ * Callers MUST also delete the entry's stored key (its id is never reissued
+ * — see addCustomProvider — but an orphaned key would otherwise linger in
+ * SecureStore forever). Use providerKeys.removeProviderAndKey, which does
+ * both, in the safe order (key first, then list entry).
  */
 export function removeProvider(
   providers: readonly LlmProvider[],
@@ -174,4 +201,30 @@ export function removeProvider(
     throw new Error(`Cannot remove preset provider "${id}"`);
   }
   return providers.filter((p) => p.id !== id);
+}
+
+/** Runtime shape check for one persisted `LlmProvider` entry — every field
+ * must be present with the right primitive type. Used to validate a parsed
+ * AsyncStorage blob before trusting it (a malformed or truncated blob must
+ * never propagate a `.find`-shaped crash into a screen's mount effect). */
+export function isLlmProvider(x: unknown): x is LlmProvider {
+  if (typeof x !== "object" || x === null) return false;
+  const o = x as Record<string, unknown>;
+  return (
+    typeof o.id === "string" &&
+    typeof o.label === "string" &&
+    typeof o.baseUrl === "string" &&
+    typeof o.model === "string" &&
+    typeof o.visionModel === "string" &&
+    (o.preset === null || typeof o.preset === "string")
+  );
+}
+
+/** Runtime shape check for a persisted `llmProviders` array: must be a
+ * non-empty array of valid entries. Empty is rejected too — a zero-entry
+ * list has no `omniroute`/`relais` fallback target and silently strands any
+ * `activeProviderId`, so it is treated the same as a missing/corrupt list
+ * (caller falls back to {@link buildDefaultProviders}). */
+export function isValidProviderList(x: unknown): x is LlmProvider[] {
+  return Array.isArray(x) && x.length > 0 && x.every(isLlmProvider);
 }

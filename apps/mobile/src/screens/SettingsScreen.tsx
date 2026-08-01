@@ -22,6 +22,7 @@ import {
   hasLocalLlmApiKey,
   hasOmniRouteApiKey,
   saveSettings,
+  savePersistedOnly,
   setKarakeepApiKey,
   setLocalLlmApiKey,
   setOmniRouteApiKey,
@@ -267,7 +268,7 @@ export default function SettingsScreen() {
       return;
     }
     setForm({ ...form, persistentNotificationEnabled: next });
-    await persistNotificationHint(next, { getSettings, saveSettings });
+    await persistNotificationHint(next, { getSettings, savePersistedOnly });
   };
 
   const handleDismissBanner = async () => {

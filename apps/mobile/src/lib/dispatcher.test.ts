@@ -35,6 +35,7 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
       },
     ],
     activeProviderId: "omniroute",
+    nextCustomSeq: 1,
     omniRouteApiKey: "test-key",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,
