@@ -90,7 +90,7 @@ vi.mock("../lib/dispatcher", () => ({
   listModels: (url: string, key: string) => listModels(url, key),
 }));
 
-const healthCheck = vi.fn(async (_url: string) => true);
+const healthCheck = vi.fn(async (_url: string) => "ok" as const);
 vi.mock("../lib/localLlm", () => ({
   healthCheck: (url: string) => healthCheck(url),
 }));
@@ -228,6 +228,29 @@ describe("SettingsScreen", () => {
       ) as HTMLInputElement[];
       expect(visionInput.value).toBe("pick-me-model");
       expect(chatInput.value).toBe("");
+    });
+  });
+
+  // (d) Test-connection result threading. healthCheck used to return a boolean
+  // folded through `ok ? "ok" : "unreachable"`. When it became a discriminated
+  // string, that ternary made EVERY outcome truthy — a blocked or unreachable
+  // server would have rendered "✓ Reachable". typecheck cannot catch that,
+  // because a string is a valid ternary condition. This asserts the failure
+  // states actually reach the UI.
+  describe("Test connection result", () => {
+    it.each([
+      ["unreachable", /check the URL and that the server is running/i],
+      ["blocked-cleartext", /Android blocked this plain http/i],
+      ["unsafe-url", /Not a valid local address/i],
+      ["ok", /Reachable/],
+    ] as const)("renders the %s message", async (result, pattern) => {
+      getSettings.mockResolvedValue(baseSettings({ llmBackend: "local" }));
+      healthCheck.mockResolvedValueOnce(result as never);
+
+      renderScreen();
+
+      fireEvent.click(await screen.findByText("Test connection"));
+      expect(await screen.findByText(pattern)).toBeTruthy();
     });
   });
 });

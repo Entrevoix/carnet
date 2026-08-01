@@ -257,16 +257,35 @@ export async function listModels(baseUrl: string, apiKey: string): Promise<strin
  * assertHttpsOrLocal/isCredentialSafeUrl's throw-on-unsafe-URL path — a
  * connectivity CHECK should report false for an unsafe URL, not throw and
  * crash the button handler. */
-export async function healthCheck(baseUrl: string): Promise<boolean> {
+/** Why a connectivity check failed.
+ *
+ * These are distinguished because a platform cleartext block and a stopped
+ * server are identical from the response's point of view — both are a rejected
+ * fetch — but the user's next action is completely different. Collapsing them
+ * into a boolean told users to "check that the server is running" when Android
+ * was refusing the connection and the server was fine (verified on a release
+ * build, 2026-08-01: cleartext to loopback is permitted, cleartext to a LAN
+ * address is not). */
+export type HealthResult =
+  | "ok"
+  | "unreachable"
+  | "blocked-cleartext"
+  | "unsafe-url";
+
+export async function healthCheck(baseUrl: string): Promise<HealthResult> {
   const trimmed = (baseUrl.trim() || DEFAULT_LOCAL_LLM_URL).replace(/\/+$/, "");
-  if (!isCredentialSafeUrl(trimmed)) return false;
+  if (!isCredentialSafeUrl(trimmed)) return "unsafe-url";
   try {
     return await withTimeout(FETCH_TIMEOUT_MS, localLlmTimeoutError, async (signal) => {
       const response = await fetch(`${trimmed}/health`, { method: "GET", signal });
-      return response.ok;
+      return response.ok ? "ok" : "unreachable";
     });
-  } catch {
-    return false;
+  } catch (e: unknown) {
+    // React Native surfaces the platform block as a plain TypeError; the
+    // message text is the only signal available, so match on it rather than
+    // pretending there is a typed error to catch.
+    const message = e instanceof Error ? e.message : String(e);
+    return /cleartext/i.test(message) ? "blocked-cleartext" : "unreachable";
   }
 }
 

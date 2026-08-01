@@ -48,7 +48,7 @@ import {
   toggleNotification,
 } from "../lib/settingsPersistence";
 import { listModels } from "../lib/dispatcher";
-import { healthCheck } from "../lib/localLlm";
+import { healthCheck, type HealthResult } from "../lib/localLlm";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { DiagnosticsSection } from "../components/DiagnosticsSection";
 import { ModelBrowserModal } from "../components/ModelBrowserModal";
@@ -92,7 +92,7 @@ export default function SettingsScreen() {
   const [pendingLocalLlmKey, setPendingLocalLlmKey] = useState<string>("");
   /** Test Connection state for the Local LLM section. */
   const [testingConnection, setTestingConnection] = useState(false);
-  const [connectionResult, setConnectionResult] = useState<"ok" | "unreachable" | null>(null);
+  const [connectionResult, setConnectionResult] = useState<HealthResult | null>(null);
   const [saved, setSaved] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
   /** Surfaced via Snackbar when the SAF folder picker fails. Previous
@@ -327,8 +327,10 @@ export default function SettingsScreen() {
     if (!form) return;
     setTestingConnection(true);
     setConnectionResult(null);
-    const ok = await healthCheck(form.localLlmUrl);
-    setConnectionResult(ok ? "ok" : "unreachable");
+    // Pass the result straight through. It used to be a boolean folded into a
+    // ternary; now that healthCheck returns a discriminated string, a truthiness
+    // check would report every outcome — including "unreachable" — as success.
+    setConnectionResult(await healthCheck(form.localLlmUrl));
     setTestingConnection(false);
   };
 
