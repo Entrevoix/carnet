@@ -77,6 +77,8 @@ export async function saveSettingsWithKeys(
         existing,
         currentSettings.llmProviders,
         currentSettings.nextCustomSeq,
+        currentSettings.fallbackProviderId,
+        currentSettings.visionProviderId,
       ),
     );
     if (pending.omniRoute.length > 0) {

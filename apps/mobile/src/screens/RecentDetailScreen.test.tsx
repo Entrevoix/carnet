@@ -90,6 +90,9 @@ vi.mock("../lib/pendingSync", () => ({ enqueuePendingExport: vi.fn() }));
 vi.mock("../lib/dispatcher", () => ({
   enrichSharedImage: vi.fn(),
   transcribeAudio: vi.fn(),
+  // Real constant (not a mock target) — RecentDetailScreen imports it to
+  // read the Phase 3 fallback marker back out of a note's frontmatter.
+  FALLBACK_PROVIDER_FIELD: "fallback",
 }));
 vi.mock("../lib/attachments", () => ({ pickAttachment: vi.fn() }));
 

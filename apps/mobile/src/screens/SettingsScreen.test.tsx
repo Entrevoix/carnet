@@ -42,6 +42,8 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     ),
     activeProviderId: "omniroute",
     nextCustomSeq: 1,
+    fallbackProviderId: null,
+    visionProviderId: null,
     omniRouteApiKey: "",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,

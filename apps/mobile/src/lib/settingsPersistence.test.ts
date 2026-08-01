@@ -49,6 +49,8 @@ const storedSettings: Settings = {
   llmProviders: buildDefaultProviders(),
   activeProviderId: "omniroute",
   nextCustomSeq: 1,
+  fallbackProviderId: null,
+  visionProviderId: null,
   omniRouteApiKey: "sk-existing",
   localLlmApiKey: "local-existing",
   persistentNotificationEnabled: true,

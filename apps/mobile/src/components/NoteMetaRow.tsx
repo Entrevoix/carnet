@@ -14,6 +14,12 @@ interface NoteMetaRowProps {
   location: string | null;
   /** True while the note is still queued for AI enrichment. */
   pendingEnrich: boolean;
+  /** The `fallback` frontmatter field's provider id, or null when the note
+   * was enriched by the primary provider (the common case — no chip shown).
+   * Set only when dispatcher.ts's offline fallback chain actually served
+   * this note; re-enrichment (which may clear or move the marker) stays
+   * user-initiated via the existing Re-enrich action. */
+  fallbackProviderId: string | null;
   /** Already-formatted capture timestamp. */
   capturedAt: string;
   onTagPress: (tag: string) => void;
@@ -31,6 +37,7 @@ export function NoteMetaRow({
   tags,
   location,
   pendingEnrich,
+  fallbackProviderId,
   capturedAt,
   onTagPress,
   onLocationPress,
@@ -60,6 +67,13 @@ export function NoteMetaRow({
         </Pressable>
       ) : null}
       {pendingEnrich ? <StampChip label="pending" icon="sync" tone="stamp" /> : null}
+      {fallbackProviderId ? (
+        <StampChip
+          label={`via ${fallbackProviderId}`}
+          icon="swap-horizontal"
+          tone="neutral"
+        />
+      ) : null}
       <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant }}>
         {capturedAt}
       </Text>

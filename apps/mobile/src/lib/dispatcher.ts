@@ -1,6 +1,6 @@
 /**
  * Enrichment backend dispatcher (Stage 2 / branch B7; rewritten for the LLM
- * provider list Phase 2 — see
+ * provider list Phase 2, extended for Phase 3 — see
  * docs/superpowers/specs/2026-07-31-llm-provider-list-design.md).
  *
  * The single seam through which callers reach the provider-divergent
@@ -23,6 +23,18 @@
  * defaulting — a blank baseUrl/model there throws not-configured exactly as
  * llmClient.ts already does for any blank field.
  *
+ * Phase 3 adds the OFFLINE FALLBACK CHAIN (`withFallbackChain` below): every
+ * enrichment/vision call resolves its primary provider, and on an
+ * unreachable-class failure ONLY retries exactly once against
+ * `Settings.fallbackProviderId`. A note written via the fallback path is
+ * marked in its frontmatter (`markFallback`) so `RecentDetailScreen` can
+ * surface which provider actually served it — re-enrichment stays
+ * user-initiated (`lib/noteReprocess.ts`), never automatic. Phase 3 also
+ * adds the vision-routing rung (`resolveVisionProviderId`): a vision call
+ * prefers the active entry's own vision model, then falls back to
+ * `Settings.visionProviderId`'s, before throwing the existing not-configured
+ * error.
+ *
  * transcribeAudio/autoTranscribeIfEnabled live here directly (not in
  * llmClient.ts) because they're backend-agnostic on-device speech
  * recognition that reads settings and touches the vault writer — outside
@@ -34,10 +46,11 @@
  */
 
 import { getSettings, getPromptOverrides, DEFAULT_OMNIROUTE_MODEL, type Settings } from "./settings";
-import { resolveActiveProvider } from "./llmProviders";
+import { resolveActiveProvider, resolveVisionProvider } from "./llmProviders";
 import * as providerKeys from "./providerKeys";
 import * as llmClient from "./llmClient";
 import type { EnrichResult, ProviderConfig } from "./llmClient";
+import { upsertFrontmatterField } from "./frontmatter";
 import {
   readNote,
   readPairedBinaryFromNote,
@@ -61,9 +74,12 @@ export { isPermanentError, isNotConfiguredError, listModels } from "./llmClient"
 export type { EnrichResult } from "./llmClient";
 
 /**
- * Resolve the active provider list entry into the ProviderConfig
- * llmClient.ts expects, replicating each of the two known ids' exact
- * pre-provider-list defaulting so this refactor is behavior-preserving:
+ * Resolve a provider list entry (by id — NOT necessarily the active one;
+ * Phase 3's fallback chain calls this a second time with
+ * `settings.fallbackProviderId`, and vision routing calls it with whichever
+ * id `resolveVisionProviderId` picked) into the ProviderConfig llmClient.ts
+ * expects, replicating each of the two known ids' exact pre-provider-list
+ * defaulting so this refactor is behavior-preserving:
  *   - relais: blank URL gets the loopback default (never not-configured);
  *     blank model stays blank (llmClient throws not-configured) — there's no
  *     sensible hard-coded default for an arbitrary local deployment. One
@@ -75,8 +91,8 @@ export type { EnrichResult } from "./llmClient";
  *     a blank baseUrl/model throws not-configured exactly as llmClient.ts
  *     already does for any blank field.
  */
-async function buildConfig(settings: Settings): Promise<ProviderConfig> {
-  const provider = resolveActiveProvider(settings.llmProviders, settings.activeProviderId);
+async function buildConfig(settings: Settings, providerId: string): Promise<ProviderConfig> {
+  const provider = resolveActiveProvider(settings.llmProviders, providerId);
   const apiKey = await providerKeys.getKey(provider.id);
 
   if (provider.id === "relais") {
@@ -110,9 +126,134 @@ async function buildConfig(settings: Settings): Promise<ProviderConfig> {
   };
 }
 
+/**
+ * True when a failed call should retry once against `fallbackProviderId`
+ * (Phase 3 — offline fallback chain). Built from ONLY the two classifiers
+ * llmClient.ts already exports (`isPermanentError`, `isNotConfiguredError`)
+ * — per the design, no new classifier.
+ *
+ *   - isPermanentError (4xx) -> NO retry. A bad API key or bad model id
+ *     fails identically against the fallback; retrying could SUCCEED against
+ *     a smaller/different fallback model, which would silently mask a
+ *     misconfiguration the user needs to see and fix, not have hidden.
+ *   - isNotConfiguredError -> NO retry. DECISION: a blank baseUrl/model on
+ *     the PRIMARY is a configuration problem, not a reachability one — the
+ *     user hasn't finished setting up their primary provider. Falling back
+ *     silently here would hide that exactly the same way a bad key would:
+ *     the user would see enrichment "working" via the fallback and never
+ *     learn their primary is unset. The design's own framing — "never on a
+ *     permanent 4xx... would mask a bad key" — applies just as much to a
+ *     blank primary as to a bad one. This also keeps the contract literal:
+ *     "on an UNREACHABLE-class failure ONLY" — not-configured never reaches
+ *     the network at all, so it is definitionally not that class.
+ *   - anything else (network error / timeout / 5xx, all surfacing as
+ *     LlmClientError status 0 or >=500) -> retry. This is the
+ *     "unreachable-class" failure the design calls out: the primary could
+ *     not be reached, so trying a different reachable endpoint is the
+ *     correct recovery and says nothing about whether the primary is
+ *     correctly configured.
+ */
+function shouldRetryWithFallback(err: unknown): boolean {
+  if (llmClient.isPermanentError(err)) return false;
+  if (llmClient.isNotConfiguredError(err)) return false;
+  return true;
+}
+
+/** Frontmatter field recording which provider actually served a note,
+ * present ONLY when the fallback path did (Phase 3 provenance marker — see
+ * the design doc's "Marking and re-enrichment"). A single lowercase word
+ * with an enum-shaped value, matching this repo's existing frontmatter
+ * vocabulary (prompts.ts/enrichSanitize.ts: `created`, `status`, `kind`,
+ * `tags`) rather than introducing a camelCase/hyphenated key. The value is
+ * the provider's stable id (e.g. "relais") — matching `kind`/`status`'s
+ * existing enum-value convention — not its display label, which can hold
+ * spaces/punctuation a future custom entry might pick. */
+export const FALLBACK_PROVIDER_FIELD = "fallback";
+
+/** Stamp the fallback marker via upsertFrontmatterField (frontmatter.ts) —
+ * never hand-rolled, so the byte-compatibility guarantee for every OTHER
+ * field is untouched; this only appends one new frontmatter line. Callers
+ * invoke this ONLY on the fallback path — the primary path's markdown is
+ * returned completely untouched, which is what keeps it byte-identical to
+ * pre-Phase-3 output. */
+function markFallback(markdown: string, fallbackProviderId: string): string {
+  return upsertFrontmatterField(markdown, FALLBACK_PROVIDER_FIELD, fallbackProviderId);
+}
+
+/**
+ * Resolution order for every enrichment/vision call (Phase 3 — offline
+ * fallback chain):
+ *   1. `primaryId`'s ProviderConfig.
+ *   2. On an unreachable-class failure ONLY (`shouldRetryWithFallback`),
+ *      retry EXACTLY ONCE against `settings.fallbackProviderId` — but only
+ *      when it is set AND names a DIFFERENT provider than `primaryId`. A
+ *      null fallback, or a fallback equal to the primary, is a no-op: the
+ *      original error propagates exactly as it did before this phase.
+ *   3. If the fallback attempt also fails, that error propagates unchanged
+ *      — the existing offline queue (upstream of dispatcher.ts) is
+ *      untouched by this phase.
+ *
+ * Returns `usedFallback`/`fallbackProviderId` alongside the result so
+ * callers can stamp the written note's marker — see `markFallback`.
+ */
+async function withFallbackChain<T>(
+  settings: Settings,
+  primaryId: string,
+  call: (config: ProviderConfig) => Promise<T>,
+): Promise<{ result: T; usedFallback: boolean; fallbackProviderId: string | null }> {
+  const primaryConfig = await buildConfig(settings, primaryId);
+  try {
+    const result = await call(primaryConfig);
+    return { result, usedFallback: false, fallbackProviderId: null };
+  } catch (err: unknown) {
+    const fallbackId = settings.fallbackProviderId;
+    if (!fallbackId || fallbackId === primaryId || !shouldRetryWithFallback(err)) {
+      throw err;
+    }
+    const fallbackConfig = await buildConfig(settings, fallbackId);
+    const result = await call(fallbackConfig);
+    return { result, usedFallback: true, fallbackProviderId: fallbackId };
+  }
+}
+
+/** Apply the fallback marker to an EnrichResult's markdown, but ONLY when
+ * the fallback path actually served the call. Shared by every enrichment
+ * entry point below so the byte-identical-on-primary guarantee lives in one
+ * place rather than being re-implemented per call site. */
+function withFallbackMarker(
+  outcome: { result: EnrichResult; usedFallback: boolean; fallbackProviderId: string | null },
+): EnrichResult {
+  if (!outcome.usedFallback || !outcome.fallbackProviderId) return outcome.result;
+  return {
+    ...outcome.result,
+    markdown: markFallback(outcome.result.markdown, outcome.fallbackProviderId),
+  };
+}
+
+/**
+ * Resolve which provider id should serve a vision-bearing call (Phase 3
+ * vision-routing rung — see the design doc's "Vision routing"):
+ *   1. the active entry, if it has an effective vision model.
+ *   2. else `settings.visionProviderId`'s entry, if set and it has one.
+ *   3. else the active entry's id anyway — `buildConfig`/llmClient.ts then
+ *      throws the SAME not-configured error a blank vision model always
+ *      threw, so this adds a rung without introducing a new failure mode.
+ */
+function resolveVisionProviderId(settings: Settings): string {
+  const resolved = resolveVisionProvider(
+    settings.llmProviders,
+    settings.activeProviderId,
+    settings.visionProviderId,
+  );
+  return resolved?.id ?? settings.activeProviderId;
+}
+
 export async function enrichIdea(text: string): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichIdea(text, await buildConfig(settings), overrides.idea);
+  const outcome = await withFallbackChain(settings, settings.activeProviderId, (config) =>
+    llmClient.enrichIdea(text, config, overrides.idea),
+  );
+  return withFallbackMarker(outcome);
 }
 
 export async function enrichJournal(input: {
@@ -120,7 +261,10 @@ export async function enrichJournal(input: {
   notes: string;
 }): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichJournal(input, await buildConfig(settings), overrides.journal);
+  const outcome = await withFallbackChain(settings, settings.activeProviderId, (config) =>
+    llmClient.enrichJournal(input, config, overrides.journal),
+  );
+  return withFallbackMarker(outcome);
 }
 
 export async function enrichPerson(input: {
@@ -128,7 +272,10 @@ export async function enrichPerson(input: {
   context: string;
 }): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichPerson(input, await buildConfig(settings), overrides.person);
+  const outcome = await withFallbackChain(settings, settings.activeProviderId, (config) =>
+    llmClient.enrichPerson(input, config, overrides.person),
+  );
+  return withFallbackMarker(outcome);
 }
 
 export async function enrichSharedImage(input: {
@@ -137,7 +284,11 @@ export async function enrichSharedImage(input: {
   context: string;
 }): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichSharedImage(input, await buildConfig(settings), overrides.sharedImage);
+  const primaryId = resolveVisionProviderId(settings);
+  const outcome = await withFallbackChain(settings, primaryId, (config) =>
+    llmClient.enrichSharedImage(input, config, overrides.sharedImage),
+  );
+  return withFallbackMarker(outcome);
 }
 
 export async function enrichSharedLink(input: {
@@ -147,7 +298,10 @@ export async function enrichSharedLink(input: {
   onPreviewSettled?: () => void;
 }): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichSharedLink(input, await buildConfig(settings), overrides.sharedLink);
+  const outcome = await withFallbackChain(settings, settings.activeProviderId, (config) =>
+    llmClient.enrichSharedLink(input, config, overrides.sharedLink),
+  );
+  return withFallbackMarker(outcome);
 }
 
 export async function promoteIdea(
@@ -155,7 +309,10 @@ export async function promoteIdea(
   target: IdeaStatus,
 ): Promise<EnrichResult> {
   const settings = await getSettings();
-  return llmClient.promoteIdea(currentMarkdown, target, await buildConfig(settings));
+  const outcome = await withFallbackChain(settings, settings.activeProviderId, (config) =>
+    llmClient.promoteIdea(currentMarkdown, target, config),
+  );
+  return withFallbackMarker(outcome);
 }
 
 export async function ocrCardViaVision(input: {
@@ -163,7 +320,15 @@ export async function ocrCardViaVision(input: {
   mimeType: string;
 }): Promise<{ text: string }> {
   const settings = await getSettings();
-  return llmClient.ocrCardViaVision(input, await buildConfig(settings));
+  const primaryId = resolveVisionProviderId(settings);
+  const { result } = await withFallbackChain(settings, primaryId, (config) =>
+    llmClient.ocrCardViaVision(input, config),
+  );
+  // No marker here: ocrCardViaVision returns raw OCR text, not a note's
+  // markdown — there is no frontmatter to stamp. Its caller (enrichPerson,
+  // via CaptureScreen's person flow) produces the actual note, and that
+  // call's own fallback chain marks it if IT falls back.
+  return result;
 }
 
 // ── On-device speech recognition (backend-agnostic) ─────────────────────────

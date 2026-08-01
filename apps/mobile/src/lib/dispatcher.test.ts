@@ -36,6 +36,8 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     ],
     activeProviderId: "omniroute",
     nextCustomSeq: 1,
+    fallbackProviderId: null,
+    visionProviderId: null,
     omniRouteApiKey: "test-key",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,
@@ -98,6 +100,7 @@ import {
   transcribeAudio,
   autoTranscribeIfEnabled,
   MAX_TRANSCRIPTION_BYTES,
+  FALLBACK_PROVIDER_FIELD,
 } from "./dispatcher";
 import * as llmClient from "./llmClient";
 import { getSettings, getPromptOverrides } from "./settings";
@@ -661,5 +664,187 @@ describe("autoTranscribeIfEnabled", () => {
     await expect(
       autoTranscribeIfEnabled("/vault/Ideas/foo.md"),
     ).resolves.toContain("SAF tree permission revoked");
+  });
+});
+
+// ── Phase 3: the offline fallback chain (see the design doc's "Offline
+// fallback"). PLAIN_MARKDOWN carries no frontmatter block at all, so
+// sanitizeAndNormalize (enrichSanitize.ts) bails out (no header to
+// normalize) and llmClient.ts falls through to sanitizeMarkdown, which is a
+// no-op on threat-free plain text — that is what makes byte-for-byte
+// equality assertions meaningful here rather than fighting frontmatter
+// canonicalization noise unrelated to this phase.
+describe("offline fallback chain (Phase 3)", () => {
+  const PLAIN_MARKDOWN = "# Idea\n\nSome idea body, no frontmatter at all.\n";
+  const NETWORK_ERROR = new TypeError("Network request failed");
+
+  function withFallback(id: string | null) {
+    return {
+      ...BASE_SETTINGS,
+      fallbackProviderId: id,
+      // BASE_SETTINGS' relais entry has a blank model (it's not used as a
+      // fallback target elsewhere in this file) — give it one here so a
+      // relais fallback attempt reaches the network instead of failing
+      // its OWN not-configured check, which would confound these tests.
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais" ? { ...p, model: "local-fallback-model" } : p,
+      ),
+    };
+  }
+
+  it("retries the fallback once when the primary is unreachable", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce(withFallback("relais"));
+    fetchMock.mockRejectedValueOnce(NETWORK_ERROR);
+    fetchMock.mockResolvedValueOnce(makeOkResponse(PLAIN_MARKDOWN));
+
+    const result = await enrichIdea("primary unreachable");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [firstUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [secondUrl] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(firstUrl).toBe("https://llm.example.com/v1/chat/completions");
+    expect(secondUrl).toBe("http://127.0.0.1:8080/v1/chat/completions");
+    // Marker present, value = fallback provider id, rest of the markdown
+    // byte-identical to what the fallback returned.
+    expect(result.markdown).toBe(
+      `---\n${FALLBACK_PROVIDER_FIELD}: relais\n---\n${PLAIN_MARKDOWN}`,
+    );
+  });
+
+  it("does NOT retry on a permanent 4xx from the primary", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce(withFallback("relais"));
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(401, "bad api key"));
+
+    await expect(enrichIdea("bad primary key")).rejects.toSatisfy(
+      (e: unknown) => isPermanentError(e),
+    );
+    // A retry against the fallback here would mask the bad key by possibly
+    // succeeding against a different (e.g. local, unauthenticated) model.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates when both the primary and the fallback are unreachable", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce(withFallback("relais"));
+    fetchMock.mockRejectedValueOnce(NETWORK_ERROR);
+    fetchMock.mockRejectedValueOnce(NETWORK_ERROR);
+
+    await expect(enrichIdea("both unreachable")).rejects.toThrow(
+      /network error/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("behaves exactly as today when no fallback is configured", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce(withFallback(null));
+    fetchMock.mockRejectedValueOnce(NETWORK_ERROR);
+
+    await expect(enrichIdea("no fallback configured")).rejects.toThrow(
+      /network error/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op when fallbackProviderId names the same provider as the primary", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce(withFallback("omniroute"));
+    fetchMock.mockRejectedValueOnce(NETWORK_ERROR);
+
+    await expect(enrichIdea("fallback equals primary")).rejects.toThrow(
+      /network error/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT retry when the PRIMARY is not-configured (blank URL) — a configuration problem, not a reachability one", async () => {
+    // Critical: the fallback (relais) here is a FULLY VALID, reachable
+    // config (withFallback() gives it a real model + the loopback default
+    // URL) — if shouldRetryWithFallback's not-configured guard were
+    // missing, this retry would actually succeed against it, and the
+    // assertions below (zero fetch calls, a not-configured rejection) would
+    // both flip. A relais entry that was ALSO not-configured would let this
+    // test pass for the wrong reason regardless of the guard.
+    const settings = withFallback("relais");
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...settings,
+      llmProviders: settings.llmProviders.map((p) =>
+        p.id === "omniroute" ? { ...p, baseUrl: "" } : p,
+      ),
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse(PLAIN_MARKDOWN));
+
+    await expect(enrichIdea("blank primary url")).rejects.toSatisfy(
+      (e: unknown) => isNotConfiguredError(e),
+    );
+    // Never even reaches the network — assertUrlConfigured throws
+    // synchronously before any fetch, and no retry against the (otherwise
+    // perfectly reachable) fallback is attempted.
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+  });
+
+  it("leaves the primary-path markdown completely byte-identical (no marker)", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce(withFallback("relais"));
+    fetchMock.mockResolvedValueOnce(makeOkResponse(PLAIN_MARKDOWN));
+
+    const result = await enrichIdea("primary succeeds, no fallback used");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.markdown).toBe(PLAIN_MARKDOWN);
+    expect(result.markdown).not.toContain(FALLBACK_PROVIDER_FIELD);
+  });
+});
+
+// ── Phase 3: vision routing rung (see the design doc's "Vision routing").
+// enrichSharedImage is the representative call site here — ocrCardViaVision
+// shares the same resolveVisionProviderId() helper in dispatcher.ts.
+describe("vision routing (Phase 3)", () => {
+  it("prefers the active entry's own vision model (today's behavior, unchanged)", async () => {
+    // BASE_SETTINGS' omniroute entry already has visionModel set — the
+    // common case, and the one every OTHER test in this file relies on.
+    fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
+
+    await enrichSharedImage({ base64: "abc", mimeType: "image/jpeg", context: "" });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://llm.example.com/v1/chat/completions");
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("vision-model-xyz");
+  });
+
+  it("falls back to visionProviderId's entry when the active entry has no vision model", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      visionProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) => {
+        if (p.id === "omniroute") return { ...p, visionModel: "" };
+        if (p.id === "relais") {
+          return { ...p, baseUrl: "http://192.168.1.9:8080", model: "vision-capable-local" };
+        }
+        return p;
+      }),
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("---\n---\n# x\n"));
+
+    await enrichSharedImage({ base64: "abc", mimeType: "image/jpeg", context: "" });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://192.168.1.9:8080/v1/chat/completions");
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("vision-capable-local");
+  });
+
+  it("throws the existing not-configured error (no new failure mode) when neither the active entry nor visionProviderId has a vision model", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      visionProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "omniroute" ? { ...p, visionModel: "" } : p,
+      ),
+      // relais keeps its BASE_SETTINGS visionModel/model, both "" — no
+      // vision capability there either.
+    });
+
+    await expect(
+      enrichSharedImage({ base64: "abc", mimeType: "image/jpeg", context: "" }),
+    ).rejects.toSatisfy((e: unknown) => isNotConfiguredError(e));
+    expect(fetchMock).toHaveBeenCalledTimes(0);
   });
 });

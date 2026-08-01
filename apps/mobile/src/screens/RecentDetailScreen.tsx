@@ -68,6 +68,7 @@ import {
 } from "../lib/recentDetailView";
 import { findRelatedNotes, insertRelatedLink } from "../lib/relatedNotes";
 import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
+import { FALLBACK_PROVIDER_FIELD } from "../lib/dispatcher";
 import { useCarnetTheme } from "../lib/theme";
 import { useKarakeepExport } from "../lib/useKarakeepExport";
 import { useNoteAudioPlayer } from "../lib/useNoteAudioPlayer";
@@ -515,6 +516,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
             pendingEnrich={
               extractFrontmatterField(body, "status") === "pending-enrich"
             }
+            fallbackProviderId={extractFrontmatterField(body, FALLBACK_PROVIDER_FIELD)}
             capturedAt={formatDate(entry.createdAt)}
             onTagPress={(tag) => navigation.navigate("Search", { tag })}
             onLocationPress={(loc) =>

@@ -407,6 +407,103 @@ describe("LLM provider list migration", () => {
   });
 });
 
+// ── Phase 3: fallbackProviderId/visionProviderId extend the EXISTING v3
+// migration (no new settings key/version) — a blob that predates these two
+// fields simply lacks them, and both must default to null.
+describe("fallbackProviderId/visionProviderId default via the v3 migration", () => {
+  it("default to null when reading a fresh install (no persisted blob at all)", async () => {
+    const s = await getSettings();
+    expect(s.fallbackProviderId).toBeNull();
+    expect(s.visionProviderId).toBeNull();
+  });
+
+  it("default to null when a legacy (pre-provider-list) blob is migrated", async () => {
+    _async.set(
+      SETTINGS_KEY,
+      JSON.stringify({
+        omniRouteUrl: "https://llm.example.com",
+        omniRouteModel: "gpt-4o-mini",
+        llmBackend: "omniroute",
+        persistentNotificationEnabled: false,
+        autoTranscribeOnSave: false,
+        richEditorEnabled: true,
+        previewBeforeSave: false,
+        captureFolderPath: "",
+        promptOverrides: {},
+        karakeepUrl: "",
+        // note: no fallbackProviderId/visionProviderId keys at all
+      }),
+    );
+
+    const s = await getSettings();
+    expect(s.fallbackProviderId).toBeNull();
+    expect(s.visionProviderId).toBeNull();
+  });
+
+  it("default to null when a v3 blob (has llmProviders already) predates these two fields", async () => {
+    // A real Phase-2 install: valid llmProviders/activeProviderId already
+    // written, but no fallbackProviderId/visionProviderId key yet — this is
+    // the actual upgrade shape this phase's migration must handle, distinct
+    // from the pre-provider-list legacy blob above.
+    _async.set(
+      SETTINGS_KEY_V3,
+      JSON.stringify({
+        llmProviders: buildDefaultProviders(),
+        activeProviderId: "omniroute",
+        nextCustomSeq: 1,
+        persistentNotificationEnabled: false,
+        autoTranscribeOnSave: false,
+        richEditorEnabled: true,
+        previewBeforeSave: false,
+        captureFolderPath: "",
+        promptOverrides: {},
+        karakeepUrl: "",
+      }),
+    );
+
+    const s = await getSettings();
+    expect(s.fallbackProviderId).toBeNull();
+    expect(s.visionProviderId).toBeNull();
+  });
+
+  it("round-trips a configured fallback/vision provider through save + load", async () => {
+    const base = await getSettings();
+    await saveSettings({
+      ...base,
+      fallbackProviderId: "relais",
+      visionProviderId: "openai",
+    });
+
+    const reloaded = await getSettings();
+    expect(reloaded.fallbackProviderId).toBe("relais");
+    expect(reloaded.visionProviderId).toBe("openai");
+  });
+
+  it("treats a non-string persisted value as corrupt and falls back to null", async () => {
+    _async.set(
+      SETTINGS_KEY_V3,
+      JSON.stringify({
+        llmProviders: buildDefaultProviders(),
+        activeProviderId: "omniroute",
+        nextCustomSeq: 1,
+        fallbackProviderId: 42,
+        visionProviderId: false,
+        persistentNotificationEnabled: false,
+        autoTranscribeOnSave: false,
+        richEditorEnabled: true,
+        previewBeforeSave: false,
+        captureFolderPath: "",
+        promptOverrides: {},
+        karakeepUrl: "",
+      }),
+    );
+
+    const s = await getSettings();
+    expect(s.fallbackProviderId).toBeNull();
+    expect(s.visionProviderId).toBeNull();
+  });
+});
+
 describe("v2 -> v3 settings-key separation", () => {
   const V2_KEY = "carnet:settings:v2";
   const V3_KEY = "carnet:settings:v3";
