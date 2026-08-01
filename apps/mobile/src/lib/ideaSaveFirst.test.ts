@@ -15,13 +15,26 @@ let _clock = 1000;
 
 vi.mock("./settings", () => ({
   getSettings: vi.fn().mockResolvedValue({
-    omniRouteUrl: "",
+    llmProviders: [
+      {
+        id: "omniroute",
+        label: "OmniRoute",
+        baseUrl: "",
+        model: "",
+        visionModel: "",
+        preset: "omniroute",
+      },
+      {
+        id: "relais",
+        label: "Relais (local)",
+        baseUrl: "http://127.0.0.1:8080",
+        model: "",
+        visionModel: "",
+        preset: "relais",
+      },
+    ],
+    activeProviderId: "omniroute",
     omniRouteApiKey: "",
-    omniRouteModel: "",
-    omniRouteVisionModel: "",
-    llmBackend: "omniroute",
-    localLlmUrl: "",
-    localLlmModel: "",
     localLlmApiKey: "",
     captureFolderPath: "",
     persistentNotificationEnabled: false,
@@ -34,6 +47,16 @@ vi.mock("./settings", () => ({
   }),
   getPromptOverrides: vi.fn().mockResolvedValue({}),
   DEFAULT_OMNIROUTE_MODEL: "openrouter/openai/gpt-4o-mini",
+}));
+
+// dispatcher.ts (imported transitively via ideaSaveFirst.ts) now resolves the
+// active provider's API key via providerKeys.ts, which does real SecureStore
+// IO — mock it so this suite doesn't need the native expo-secure-store
+// binding (which can't load under Node + vitest).
+vi.mock("./providerKeys", () => ({
+  getKey: vi.fn().mockResolvedValue(""),
+  setKey: vi.fn(),
+  deleteKey: vi.fn(),
 }));
 
 vi.mock("expo-file-system/legacy", () => ({

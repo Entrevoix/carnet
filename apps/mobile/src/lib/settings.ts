@@ -1,7 +1,28 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
+import {
+  buildDefaultProviders,
+  isValidProviderList,
+  type LlmProvider,
+} from "./llmProviders";
 
-const SETTINGS_KEY = "carnet:settings:v2";
+/**
+ * v3 — bumped from v2 by the LLM provider list (Phase 2). `main` and this
+ * branch's `writePersisted` each enumerate their OWN fields explicitly and
+ * write the whole blob, so as long as both branches wrote the same
+ * `carnet:settings:v2` key, alternating between a main build and a
+ * provider-list build (this repo ships sideloaded APKs, so a downgrade is
+ * one install away) made each save silently drop the other branch's fields
+ * — up to and including losing the OmniRoute URL permanently. Moving to a
+ * DISTINCT key means the two shapes never alias: this code only ever WRITES
+ * v3; v2 is read-only here, exactly like the v1 fallback below, so an
+ * upgrading install's existing config still migrates in, but a subsequent
+ * downgrade to a v2-writing build finds its own v2 blob untouched.
+ */
+const SETTINGS_KEY = "carnet:settings:v3";
+/** Pre-provider-list key (main, and this branch before this fix) — read
+ * once for migration when no v3 blob exists yet, then never written. */
+const SETTINGS_KEY_V2 = "carnet:settings:v2";
 /** Legacy key — read once for migration, then ignored. */
 const SETTINGS_KEY_V1 = "carnet:settings:v1";
 /** Legacy SecureStore key from v0.1's navetted HMAC token. Purged on first
@@ -24,19 +45,14 @@ export const DEFAULT_OMNIROUTE_MODEL = "openrouter/openai/gpt-4o-mini";
 export const DEFAULT_VISION_MODEL = "openrouter/openai/gpt-4o-mini";
 
 /**
- * Enrichment backend selector (Stage 2 / branch B7, extended for the
- * local-LLM backend). `"omniroute"` is the shipped default; `"local"` routes
- * to a loopback/LAN OpenAI-compatible server (e.g. Relais) for a fully
- * disconnected capture flow; `"on-device"` is reserved for the pluggable
- * native-inference backend (unbuilt — see on-device-backend.prd.md) and has
- * no picker UI entry yet. Persisted as a plain string in the AsyncStorage
- * settings blob — non-secret, so old blobs without the key take the default
- * via the `{...DEFAULT_PERSISTED, ...parsed}` spread in readPersisted.
+ * Legacy enrichment-backend selector — REMOVED from {@link Settings} as of
+ * the LLM provider list (Phase 2, see
+ * docs/superpowers/specs/2026-07-31-llm-provider-list-design.md). Kept here,
+ * type-only, purely to give the one-time migration in this file a name for
+ * the shape it reads off an old persisted blob. Do not use for anything new
+ * — `Settings.activeProviderId` replaces it.
  */
-export type LlmBackend = "omniroute" | "on-device" | "local";
-
-/** Default backend — the shipped OmniRoute client. */
-export const DEFAULT_LLM_BACKEND: LlmBackend = "omniroute";
+type LegacyLlmBackend = "omniroute" | "on-device" | "local";
 
 /**
  * Per-capture-mode system prompt overrides. Empty/missing fields fall back
@@ -52,35 +68,30 @@ export interface PromptOverrides {
 }
 
 export interface Settings {
-  omniRouteUrl: string;
+  /** Every configured LLM endpoint — shipped presets (possibly edited) plus
+   * any user-created custom entries. Never empty: migration and
+   * DEFAULT_PERSISTED both seed it with {@link buildDefaultProviders}. */
+  llmProviders: LlmProvider[];
+  /** Which entry in {@link llmProviders} serves captures. Read fresh on
+   * every dispatcher call (not cached), so switching providers mid-session
+   * takes effect on the very next capture. */
+  activeProviderId: string;
+  /** Monotonically-increasing counter for the NEXT custom provider's id
+   * (`custom-<nextCustomSeq>`). Never decreases, even when a custom entry
+   * is removed — see llmProviders.ts's addCustomProvider docstring for why
+   * reusing a freed id is a credential-leak risk, not just a UX quirk. */
+  nextCustomSeq: number;
+  /** OmniRoute API key (Bearer). Held in SecureStore, never persisted to the
+   * AsyncStorage settings blob. Kept as a dedicated field (rather than
+   * folded into a generic per-provider key lookup here) because it predates
+   * the provider list and existing UI code reads it directly; new provider
+   * ids fetch their key via providerKeys.ts instead. */
   omniRouteApiKey: string;
-  omniRouteModel: string;
-  /** Vision-capable model for image-bearing enrichment (share-target photos).
-   * Held separately from omniRouteModel (the chat/text model) so swapping the
-   * chat model can't misroute image parts to a text-only model. Repurposed
-   * from the vestigial transcription-model field (transcription is on-device
-   * now, so that config was dead). */
-  omniRouteVisionModel: string;
-  /** Base URL for the local-LLM backend (e.g. a loopback Relais server).
-   * Blank means "use the default loopback port" — unlike omniRouteUrl, a
-   * blank value does NOT mean "not configured": the local backend's client
-   * (localLlm.ts) falls back to http://127.0.0.1:8080 rather than throwing,
-   * since the whole point is a zero-setup disconnected flow. */
-  localLlmUrl: string;
-  /** Model name for the local-LLM backend — used for text, vision, AND
-   * audio-adjacent calls (unlike OmniRoute's separate chat/vision split):
-   * a local single-model deployment typically has one model handling
-   * everything the user configured it with. */
-  localLlmModel: string;
-  /** Local-LLM API key (Bearer). Held in SecureStore, never persisted to the
-   * AsyncStorage settings blob — mirrors omniRouteApiKey/karakeepApiKey.
+  /** Local-LLM (Relais) API key (Bearer). Held in SecureStore, never
+   * persisted to the AsyncStorage settings blob — mirrors omniRouteApiKey.
    * Optional in practice: Relais's loopback port is unauthenticated, but the
    * field stays available for a LAN-facing/authenticated deployment. */
   localLlmApiKey: string;
-  /** Which enrichment backend serves captures. Default `"omniroute"`; the
-   * dispatcher (dispatcher.ts) routes on this. Only `"omniroute"` is wired in
-   * Phase 1 — see {@link LlmBackend}. */
-  llmBackend: LlmBackend;
   /** JS-side hint for the Settings UI's initial render — avoids a Switch
    * flicker before the async native read resolves. Source of truth lives
    * in native SharedPreferences (BootReceiver reads it directly). Whenever
@@ -116,12 +127,9 @@ export interface Settings {
 }
 
 interface PersistedSettings {
-  omniRouteUrl: string;
-  omniRouteModel: string;
-  omniRouteVisionModel: string;
-  localLlmUrl: string;
-  localLlmModel: string;
-  llmBackend: LlmBackend;
+  llmProviders: LlmProvider[];
+  activeProviderId: string;
+  nextCustomSeq: number;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
@@ -138,13 +146,21 @@ interface LegacyPersistedSettings {
   captureFolderPath?: string;
 }
 
+/** Shape of a pre-provider-list (Phase 1 and earlier) v2 settings blob —
+ * used for the one-time llmProviders migration in readPersisted(). */
+interface LegacyLlmPersistedSettings {
+  omniRouteUrl?: string;
+  omniRouteModel?: string;
+  omniRouteVisionModel?: string;
+  localLlmUrl?: string;
+  localLlmModel?: string;
+  llmBackend?: LegacyLlmBackend;
+}
+
 const DEFAULT_PERSISTED: PersistedSettings = {
-  omniRouteUrl: "",
-  omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
-  omniRouteVisionModel: DEFAULT_VISION_MODEL,
-  localLlmUrl: "",
-  localLlmModel: "",
-  llmBackend: DEFAULT_LLM_BACKEND,
+  llmProviders: buildDefaultProviders(),
+  activeProviderId: "omniroute",
+  nextCustomSeq: 1,
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
@@ -153,6 +169,61 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   promptOverrides: {},
   karakeepUrl: "",
 };
+
+/**
+ * One-time migration from the pre-provider-list settings shape (a
+ * `llmBackend` field, `omniRoute*`/`localLlm*` flat fields, no
+ * `llmProviders`) to the provider list. Pure function of the parsed blob —
+ * calling it twice on the same input yields structurally identical output,
+ * which is what makes it safe to run on every read of an unmigrated blob
+ * (this module never writes the migrated shape back to AsyncStorage itself;
+ * the next explicit saveSettings() call persists it).
+ *
+ * Deliberately does NOT touch SecureStore — the design spec's proposed step
+ * of re-filing API keys under new aliases is overridden; see providerKeys.ts
+ * for why (a key that never moves cannot be lost).
+ */
+function migrateLegacyLlmSettings(
+  legacy: LegacyLlmPersistedSettings,
+): Pick<PersistedSettings, "llmProviders" | "activeProviderId"> {
+  const providers = buildDefaultProviders();
+  const omniroute = providers.find((p) => p.id === "omniroute");
+  if (omniroute) {
+    omniroute.baseUrl = legacy.omniRouteUrl ?? "";
+    // `?? DEFAULT_...` (not `?? ""`) — matches the pre-migration behavior
+    // these fields actually had: DEFAULT_PERSISTED filled an ABSENT model/
+    // vision-model key with these same defaults via the old
+    // `{...DEFAULT_PERSISTED, ...parsed}` merge. A blob from before the B1
+    // vision-model split (PR #65) — URL + chat model present, no vision key
+    // at all — has `omniRouteVisionModel` genuinely `undefined`, not "".
+    // Model has a second rung at dispatch time (buildConfig's
+    // `|| DEFAULT_OMNIROUTE_MODEL`), but visionModel does NOT — a blank
+    // vision model goes straight to assertVisionModelConfigured and throws,
+    // silently breaking image enrichment and card OCR for exactly that
+    // upgrade path.
+    omniroute.model = legacy.omniRouteModel ?? DEFAULT_OMNIROUTE_MODEL;
+    omniroute.visionModel = legacy.omniRouteVisionModel ?? DEFAULT_VISION_MODEL;
+  }
+  const relais = providers.find((p) => p.id === "relais");
+  if (relais) {
+    // Blank local URL keeps the loopback default (matches today's
+    // behavior — localLlm.ts always fell back to 127.0.0.1:8080 rather
+    // than treating a blank URL as not-configured).
+    const trimmedLocalUrl = (legacy.localLlmUrl ?? "").trim();
+    if (trimmedLocalUrl) relais.baseUrl = trimmedLocalUrl;
+    relais.model = legacy.localLlmModel ?? "";
+  }
+  // "on-device" never had an implementation, so anyone holding that value
+  // was already falling through — it maps to relais, same as "local". A
+  // MISSING llmBackend (a blob older than the field itself) defaults to
+  // "omniroute", matching the old `{...DEFAULT_PERSISTED, ...parsed}`
+  // merge's behavior (DEFAULT_LLM_BACKEND was "omniroute").
+  const activeProviderId =
+    legacy.llmBackend === "local" || legacy.llmBackend === "on-device"
+      ? "relais"
+      : "omniroute";
+  return { llmProviders: providers, activeProviderId };
+}
 
 /** Strip whitespace-only entries so a `{idea: "   "}` save doesn't strand
  * noise in storage that downstream code would treat as a real override. */
@@ -166,19 +237,82 @@ function sanitisePromptOverrides(raw: PromptOverrides | undefined): PromptOverri
   return out;
 }
 
+/**
+ * Parse a v3-or-v2-shaped blob (both are read through this — v2's shape is
+ * a strict subset, since v3 only ADDED fields) into a full
+ * {@link PersistedSettings}, running the legacy-LLM migration when needed.
+ * Returns null on a JSON parse failure OR a validation failure the caller
+ * should treat as "nothing useful here" (fall through to the next source).
+ *
+ * Shape-validates `llmProviders` before trusting it — `parsed.llmProviders`
+ * comes straight off `JSON.parse`, so nothing guarantees it is even an
+ * array (a hand-edited or corrupted blob could hold a string, an object, or
+ * `[]`). Downstream code calls `.find`/`.map` on it with no defensive
+ * checks (by design — the Settings type promises a real array), and
+ * SettingsScreen's mount effect calls `formStateFromSettings` outside any
+ * try/catch, so an invalid shape reaching that far renders "Loading…"
+ * forever with no other way to open Settings. Falling back to
+ * buildDefaultProviders() here means that failure mode is structurally
+ * impossible downstream.
+ */
+function parseModernBlob(raw: string): PersistedSettings | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedSettings> &
+      LegacyLlmPersistedSettings;
+    const validLlmProviders = isValidProviderList(parsed.llmProviders)
+      ? parsed.llmProviders
+      : null;
+    // Migration trigger: a blob carrying ANY pre-provider-list LLM field
+    // (llmBackend, or one of the flat omniRoute*/localLlm* fields — an even
+    // older blob predating llmBackend itself can still have these without
+    // it) and no VALID `llmProviders` yet is pre-provider-list. Idempotent
+    // — once a migrated (or fresh) blob is saved, it carries a valid
+    // `llmProviders` and this branch is never taken again for it.
+    const hasLegacyLlmFields =
+      parsed.llmBackend !== undefined ||
+      parsed.omniRouteUrl !== undefined ||
+      parsed.omniRouteModel !== undefined ||
+      parsed.omniRouteVisionModel !== undefined ||
+      parsed.localLlmUrl !== undefined ||
+      parsed.localLlmModel !== undefined;
+    const llmFields =
+      !validLlmProviders && hasLegacyLlmFields
+        ? migrateLegacyLlmSettings(parsed)
+        : {
+            llmProviders: validLlmProviders ?? buildDefaultProviders(),
+            activeProviderId:
+              parsed.activeProviderId ?? DEFAULT_PERSISTED.activeProviderId,
+          };
+    return {
+      ...DEFAULT_PERSISTED,
+      ...parsed,
+      ...llmFields,
+      nextCustomSeq:
+        typeof parsed.nextCustomSeq === "number"
+          ? parsed.nextCustomSeq
+          : DEFAULT_PERSISTED.nextCustomSeq,
+      promptOverrides: sanitisePromptOverrides(parsed.promptOverrides),
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function readPersisted(): Promise<PersistedSettings> {
   const raw = await AsyncStorage.getItem(SETTINGS_KEY);
   if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
-      return {
-        ...DEFAULT_PERSISTED,
-        ...parsed,
-        promptOverrides: sanitisePromptOverrides(parsed.promptOverrides),
-      };
-    } catch {
-      return { ...DEFAULT_PERSISTED };
-    }
+    const parsed = parseModernBlob(raw);
+    if (parsed) return parsed;
+    return { ...DEFAULT_PERSISTED, llmProviders: buildDefaultProviders() };
+  }
+
+  // Fall back to the pre-v3 blob (written by `main`, or by this branch
+  // before the v3 bump) — read once for migration, exactly like the v1
+  // fallback below. Never written here; see the SETTINGS_KEY comment.
+  const rawV2 = await AsyncStorage.getItem(SETTINGS_KEY_V2);
+  if (rawV2) {
+    const parsed = parseModernBlob(rawV2);
+    if (parsed) return parsed;
   }
 
   // Try migrating from v1 blob
@@ -187,12 +321,9 @@ async function readPersisted(): Promise<PersistedSettings> {
     try {
       const legacy = JSON.parse(rawV1) as LegacyPersistedSettings;
       return {
-        omniRouteUrl: legacy.omniRouteUrl ?? "",
-        omniRouteModel: DEFAULT_OMNIROUTE_MODEL,
-        omniRouteVisionModel: DEFAULT_VISION_MODEL,
-        llmBackend: DEFAULT_LLM_BACKEND,
-        localLlmUrl: "",
-        localLlmModel: "",
+        llmProviders: buildDefaultProviders(),
+        activeProviderId: DEFAULT_PERSISTED.activeProviderId,
+        nextCustomSeq: DEFAULT_PERSISTED.nextCustomSeq,
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
@@ -202,21 +333,18 @@ async function readPersisted(): Promise<PersistedSettings> {
         karakeepUrl: "",
       };
     } catch {
-      return { ...DEFAULT_PERSISTED };
+      return { ...DEFAULT_PERSISTED, llmProviders: buildDefaultProviders() };
     }
   }
 
-  return { ...DEFAULT_PERSISTED };
+  return { ...DEFAULT_PERSISTED, llmProviders: buildDefaultProviders() };
 }
 
 async function writePersisted(settings: PersistedSettings): Promise<void> {
   const sanitised: PersistedSettings = {
-    omniRouteUrl: settings.omniRouteUrl,
-    omniRouteModel: settings.omniRouteModel,
-    omniRouteVisionModel: settings.omniRouteVisionModel,
-    llmBackend: settings.llmBackend,
-    localLlmUrl: settings.localLlmUrl,
-    localLlmModel: settings.localLlmModel,
+    llmProviders: settings.llmProviders,
+    activeProviderId: settings.activeProviderId,
+    nextCustomSeq: settings.nextCustomSeq,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -256,13 +384,10 @@ export async function getSettings(): Promise<Settings> {
     (await SecureStore.getItemAsync(LOCAL_LLM_API_KEY)) ?? "";
 
   return {
-    omniRouteUrl: persisted.omniRouteUrl,
+    llmProviders: persisted.llmProviders,
+    activeProviderId: persisted.activeProviderId,
+    nextCustomSeq: persisted.nextCustomSeq,
     omniRouteApiKey,
-    omniRouteModel: persisted.omniRouteModel,
-    omniRouteVisionModel: persisted.omniRouteVisionModel,
-    llmBackend: persisted.llmBackend,
-    localLlmUrl: persisted.localLlmUrl,
-    localLlmModel: persisted.localLlmModel,
     localLlmApiKey,
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
     autoTranscribeOnSave: persisted.autoTranscribeOnSave,
@@ -275,14 +400,29 @@ export async function getSettings(): Promise<Settings> {
   };
 }
 
-export async function saveSettings(settings: Settings): Promise<void> {
+/**
+ * Persist ONLY the non-secret blob — never touches SecureStore. This is the
+ * safe primitive for any caller that does a read-modify-write of a Settings
+ * SNAPSHOT it may have captured a while ago (e.g. persistNotificationHint,
+ * which re-saves a `getSettings()` result it read before an async native
+ * permission dialog).
+ *
+ * `saveSettings` (below) is NOT that primitive — it is the full "user tapped
+ * Save" path, and it used to ALSO delete every API key whose field on the
+ * passed-in `Settings` was blank. That is exactly the bug this function
+ * exists to make impossible for a stale-snapshot caller to trigger: if
+ * `persistNotificationHint` reads settings while a key is mid-flight (typed
+ * but not yet saved), its snapshot has `omniRouteApiKey: ""`; without this
+ * split, its later best-effort save would delete the key the real Save had
+ * *already* written in the meantime — the toggle would go through, and a
+ * live credential would silently vanish with no error shown anywhere.
+ * Confirmed via a regression test in settings.test.ts.
+ */
+export async function savePersistedOnly(settings: Settings): Promise<void> {
   await writePersisted({
-    omniRouteUrl: settings.omniRouteUrl,
-    omniRouteModel: settings.omniRouteModel,
-    omniRouteVisionModel: settings.omniRouteVisionModel,
-    llmBackend: settings.llmBackend,
-    localLlmUrl: settings.localLlmUrl,
-    localLlmModel: settings.localLlmModel,
+    llmProviders: settings.llmProviders,
+    activeProviderId: settings.activeProviderId,
+    nextCustomSeq: settings.nextCustomSeq,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -291,20 +431,33 @@ export async function saveSettings(settings: Settings): Promise<void> {
     promptOverrides: settings.promptOverrides,
     karakeepUrl: settings.karakeepUrl,
   });
+}
+
+/**
+ * Persist the full Settings object: the non-secret blob, PLUS whichever of
+ * the three dedicated API keys carries a non-blank value. This is the
+ * "user tapped Save" path — it deliberately does NOT delete a key when its
+ * field is blank (there used to be an `else { deleteItemAsync(...) }`
+ * branch per key; it is gone on purpose). Clearing a key already has an
+ * explicit, intentional verb — clearApiKey / setOmniRouteApiKey("") /
+ * setKarakeepApiKey("") / setLocalLlmApiKey("") — called directly from the
+ * screen's "Clear key" buttons. Deleting-by-omission here was a second,
+ * accidental path to the same effect, and the dangerous one: ANY caller
+ * that persists a Settings snapshot with a blank key field — including one
+ * that's blank only because it was read before a concurrent write landed —
+ * would silently wipe a real, already-stored credential. See
+ * savePersistedOnly's docstring for the concrete interleave this caused.
+ */
+export async function saveSettings(settings: Settings): Promise<void> {
+  await savePersistedOnly(settings);
   if (settings.omniRouteApiKey) {
     await SecureStore.setItemAsync(OMNIROUTE_API_KEY, settings.omniRouteApiKey);
-  } else {
-    await SecureStore.deleteItemAsync(OMNIROUTE_API_KEY);
   }
   if (settings.karakeepApiKey) {
     await SecureStore.setItemAsync(KARAKEEP_API_KEY, settings.karakeepApiKey);
-  } else {
-    await SecureStore.deleteItemAsync(KARAKEEP_API_KEY);
   }
   if (settings.localLlmApiKey) {
     await SecureStore.setItemAsync(LOCAL_LLM_API_KEY, settings.localLlmApiKey);
-  } else {
-    await SecureStore.deleteItemAsync(LOCAL_LLM_API_KEY);
   }
 }
 

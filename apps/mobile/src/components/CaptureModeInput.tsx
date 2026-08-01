@@ -5,6 +5,7 @@ import { Button, HelperText, Text, TextInput } from "react-native-paper";
 import { VoiceButton, type VoiceButtonHandle } from "../voice/VoiceButton";
 import { CardScannerModal } from "./CardScannerModal";
 import { getSettings } from "../lib/settings";
+import { resolveActiveProvider } from "../lib/llmProviders";
 import type { CaptureMode } from "../lib/storage";
 import { caretProps, useCarnetTheme } from "../lib/theme";
 
@@ -146,7 +147,8 @@ function PersonInput({
   const open = async () => {
     setHint(null);
     const settings = await getSettings();
-    if (!settings.omniRouteUrl.trim()) {
+    const provider = resolveActiveProvider(settings.llmProviders, settings.activeProviderId);
+    if (!provider.baseUrl.trim()) {
       setHint(
         "OmniRoute not configured. Type the card text below, then tap Send.",
       );

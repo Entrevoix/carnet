@@ -1,24 +1,27 @@
 /**
  * Enrichment backend dispatcher (Stage 2 / branch B7; rewritten for the LLM
- * provider list Phase 1 — see
+ * provider list Phase 2 — see
  * docs/superpowers/specs/2026-07-31-llm-provider-list-design.md).
  *
- * The single seam through which callers reach the backend-divergent
+ * The single seam through which callers reach the provider-divergent
  * enrichment functions, decoupling them from any one concrete provider.
- * `Settings.llmBackend` selects which provider serves a capture — read fresh
- * on EVERY call (not cached), so a user flipping the picker mid-session
- * takes effect on their very next capture.
+ * `Settings.activeProviderId` selects which entry in `Settings.llmProviders`
+ * serves a capture — read fresh on EVERY call (not cached), so a user
+ * switching providers mid-session takes effect on their very next capture.
  *
- * Previously this module imported two whole duplicate client modules
- * (omniroute.ts, localLlm.ts) and swapped between them. Both are now merged
- * into llmClient.ts, ONE OpenAI-compatible client parameterized by a
- * ProviderConfig this module resolves from settings. `buildConfig` is where
- * each backend's distinct defaulting behavior lives now: OmniRoute's blank
- * URL is not-configured but its blank model falls back to a hard-coded
- * default; the local backend's blank URL falls back to the loopback default
- * but its blank model is not-configured. llmClient.ts itself no longer knows
- * about backends at all — it just throws not-configured on whatever field
- * arrives blank.
+ * Phase 1 merged two whole duplicate client modules (omniroute.ts,
+ * localLlm.ts) into llmClient.ts, ONE OpenAI-compatible client parameterized
+ * by a ProviderConfig this module resolves. Phase 2 replaces the flat
+ * `llmBackend`/`omniRoute*`/`localLlm*` settings fields that ProviderConfig
+ * used to be built from with `llmProviders`/`activeProviderId` — the two
+ * known ids (`omniroute`, `relais`) keep their exact pre-existing defaulting
+ * behavior in `buildConfig` below (OmniRoute's blank URL is not-configured
+ * but its blank model falls back to a hard-coded default; Relais's blank URL
+ * falls back to the loopback default but its blank model is
+ * not-configured), so an existing install behaves identically post-upgrade.
+ * Any other provider (a cloud preset or a custom entry) gets no special
+ * defaulting — a blank baseUrl/model there throws not-configured exactly as
+ * llmClient.ts already does for any blank field.
  *
  * transcribeAudio/autoTranscribeIfEnabled live here directly (not in
  * llmClient.ts) because they're backend-agnostic on-device speech
@@ -28,14 +31,11 @@
  * stay static re-exports from llmClient.ts — they classify via the shared
  * HttpError base, so they work for any provider's error without a switch
  * here.
- *
- * "on-device" (native Gemma inference) has no implementation and no
- * Settings UI picker entry — routing to it throws a clear error rather than
- * silently falling back, so a stray/malformed persisted value fails loudly
- * instead of masquerading as one of the two real backends.
  */
 
 import { getSettings, getPromptOverrides, DEFAULT_OMNIROUTE_MODEL, type Settings } from "./settings";
+import { resolveActiveProvider } from "./llmProviders";
+import * as providerKeys from "./providerKeys";
 import * as llmClient from "./llmClient";
 import type { EnrichResult, ProviderConfig } from "./llmClient";
 import {
@@ -47,11 +47,11 @@ import {
 import type { IdeaStatus } from "@carnet/shared";
 
 // listModels is a straight re-export — it used to route through backendFor()
-// like every other call here, so llmBackend === "local" would hit
-// localLlm.ts's listModels (its own blank-URL-defaults-to-loopback default
-// and "Local LLM ..." message branding). Now it always hits the one merged
+// like every other call here, so the local backend would hit localLlm.ts's
+// listModels (its own blank-URL-defaults-to-loopback default and
+// "Local LLM ..." message branding). Now it always hits the one merged
 // llmClient.listModels (OmniRoute-shaped: no blank-URL default, generic
-// "LLM provider ..." messages) regardless of llmBackend — a narrowing,
+// "LLM provider ..." messages) regardless of activeProviderId — a narrowing,
 // deliberately left as-is rather than special-cased. Safe in practice: the
 // only real caller (SettingsScreen's model browser) always passes an
 // explicit URL (form.omniRouteUrl), so the blank-URL-default path was
@@ -61,46 +61,58 @@ export { isPermanentError, isNotConfiguredError, listModels } from "./llmClient"
 export type { EnrichResult } from "./llmClient";
 
 /**
- * Resolve today's settings fields into the ProviderConfig llmClient.ts
- * expects, replicating each backend's exact pre-merge defaulting so this
- * refactor is behavior-preserving:
+ * Resolve the active provider list entry into the ProviderConfig
+ * llmClient.ts expects, replicating each of the two known ids' exact
+ * pre-provider-list defaulting so this refactor is behavior-preserving:
+ *   - relais: blank URL gets the loopback default (never not-configured);
+ *     blank model stays blank (llmClient throws not-configured) — there's no
+ *     sensible hard-coded default for an arbitrary local deployment. One
+ *     model covers text AND vision — no separate vision-model split like
+ *     OmniRoute's chat/vision divide.
  *   - omniroute: blank URL stays blank (llmClient throws not-configured);
  *     blank model gets OmniRoute's hard-coded default (never not-configured).
- *   - local: blank URL gets the loopback default (never not-configured);
- *     blank model stays blank (llmClient throws not-configured) — there's no
- *     sensible hard-coded default for an arbitrary local deployment.
+ *   - any other id (cloud preset or custom entry): no special defaulting —
+ *     a blank baseUrl/model throws not-configured exactly as llmClient.ts
+ *     already does for any blank field.
  */
-function buildConfig(settings: Settings): ProviderConfig {
-  if (settings.llmBackend === "local") {
+async function buildConfig(settings: Settings): Promise<ProviderConfig> {
+  const provider = resolveActiveProvider(settings.llmProviders, settings.activeProviderId);
+  const apiKey = await providerKeys.getKey(provider.id);
+
+  if (provider.id === "relais") {
     return {
-      baseUrl: settings.localLlmUrl.trim() || llmClient.DEFAULT_LOCAL_LLM_URL,
-      apiKey: settings.localLlmApiKey ?? "",
-      model: settings.localLlmModel.trim(),
-      // One model covers text AND vision for the local backend — no separate
-      // vision-model split like OmniRoute's chat/vision divide.
-      visionModel: settings.localLlmModel.trim(),
-      // Threaded into every llmClient.ts error message so Phase 1 stays
+      baseUrl: provider.baseUrl.trim() || llmClient.DEFAULT_LOCAL_LLM_URL,
+      apiKey,
+      model: provider.model.trim(),
+      visionModel: provider.model.trim(),
+      // Threaded into every llmClient.ts error message so this stays
       // byte-identical to localLlm.ts's original "Local LLM ..." wording.
       label: "Local LLM",
     };
   }
-  if (settings.llmBackend === "omniroute") {
+  if (provider.id === "omniroute") {
     return {
-      baseUrl: settings.omniRouteUrl.trim(),
-      apiKey: settings.omniRouteApiKey ?? "",
-      model: settings.omniRouteModel.trim() || DEFAULT_OMNIROUTE_MODEL,
-      visionModel: settings.omniRouteVisionModel.trim(),
-      // Threaded into every llmClient.ts error message so Phase 1 stays
+      baseUrl: provider.baseUrl.trim(),
+      apiKey,
+      model: provider.model.trim() || DEFAULT_OMNIROUTE_MODEL,
+      visionModel: provider.visionModel.trim(),
+      // Threaded into every llmClient.ts error message so this stays
       // byte-identical to omniroute.ts's original "OmniRoute ..." wording.
       label: "OmniRoute",
     };
   }
-  throw new Error(`Backend "${settings.llmBackend}" has no implementation yet`);
+  return {
+    baseUrl: provider.baseUrl.trim(),
+    apiKey,
+    model: provider.model.trim(),
+    visionModel: provider.visionModel.trim(),
+    label: provider.label,
+  };
 }
 
 export async function enrichIdea(text: string): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichIdea(text, buildConfig(settings), overrides.idea);
+  return llmClient.enrichIdea(text, await buildConfig(settings), overrides.idea);
 }
 
 export async function enrichJournal(input: {
@@ -108,7 +120,7 @@ export async function enrichJournal(input: {
   notes: string;
 }): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichJournal(input, buildConfig(settings), overrides.journal);
+  return llmClient.enrichJournal(input, await buildConfig(settings), overrides.journal);
 }
 
 export async function enrichPerson(input: {
@@ -116,7 +128,7 @@ export async function enrichPerson(input: {
   context: string;
 }): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichPerson(input, buildConfig(settings), overrides.person);
+  return llmClient.enrichPerson(input, await buildConfig(settings), overrides.person);
 }
 
 export async function enrichSharedImage(input: {
@@ -125,7 +137,7 @@ export async function enrichSharedImage(input: {
   context: string;
 }): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichSharedImage(input, buildConfig(settings), overrides.sharedImage);
+  return llmClient.enrichSharedImage(input, await buildConfig(settings), overrides.sharedImage);
 }
 
 export async function enrichSharedLink(input: {
@@ -135,7 +147,7 @@ export async function enrichSharedLink(input: {
   onPreviewSettled?: () => void;
 }): Promise<EnrichResult> {
   const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
-  return llmClient.enrichSharedLink(input, buildConfig(settings), overrides.sharedLink);
+  return llmClient.enrichSharedLink(input, await buildConfig(settings), overrides.sharedLink);
 }
 
 export async function promoteIdea(
@@ -143,7 +155,7 @@ export async function promoteIdea(
   target: IdeaStatus,
 ): Promise<EnrichResult> {
   const settings = await getSettings();
-  return llmClient.promoteIdea(currentMarkdown, target, buildConfig(settings));
+  return llmClient.promoteIdea(currentMarkdown, target, await buildConfig(settings));
 }
 
 export async function ocrCardViaVision(input: {
@@ -151,7 +163,7 @@ export async function ocrCardViaVision(input: {
   mimeType: string;
 }): Promise<{ text: string }> {
   const settings = await getSettings();
-  return llmClient.ocrCardViaVision(input, buildConfig(settings));
+  return llmClient.ocrCardViaVision(input, await buildConfig(settings));
 }
 
 // ── On-device speech recognition (backend-agnostic) ─────────────────────────

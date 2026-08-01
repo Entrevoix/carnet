@@ -226,7 +226,7 @@ describe("CaptureScreen (idea)", () => {
     // the default save-first path resolves too fast in tests to observe it.
     vi.mocked(getSettings).mockResolvedValueOnce({
       previewBeforeSave: true,
-      llmBackend: "local",
+      activeProviderId: "relais",
     } as Awaited<ReturnType<typeof getSettings>>);
     let resolveEnrich!: (v: { markdown: string; model: string }) => void;
     vi.mocked(enrichIdea).mockReturnValueOnce(

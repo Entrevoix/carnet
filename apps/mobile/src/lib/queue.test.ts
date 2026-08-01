@@ -59,13 +59,26 @@ vi.mock("expo-secure-store", () => ({
 
 vi.mock("./settings", () => ({
   getSettings: vi.fn().mockResolvedValue({
-    omniRouteUrl: "",
+    llmProviders: [
+      {
+        id: "omniroute",
+        label: "OmniRoute",
+        baseUrl: "",
+        model: "",
+        visionModel: "",
+        preset: "omniroute",
+      },
+      {
+        id: "relais",
+        label: "Relais (local)",
+        baseUrl: "http://127.0.0.1:8080",
+        model: "",
+        visionModel: "",
+        preset: "relais",
+      },
+    ],
+    activeProviderId: "omniroute",
     omniRouteApiKey: "",
-    omniRouteModel: "",
-    omniRouteVisionModel: "",
-    llmBackend: "omniroute",
-    localLlmUrl: "",
-    localLlmModel: "",
     localLlmApiKey: "",
     captureFolderPath: "",
     persistentNotificationEnabled: false,
@@ -79,6 +92,10 @@ vi.mock("./settings", () => ({
   getPromptOverrides: vi.fn().mockResolvedValue({}),
   DEFAULT_OMNIROUTE_MODEL: "openrouter/openai/gpt-4o-mini",
 }));
+
+// providerKeys.ts (dispatcher's per-provider SecureStore lookup) is not
+// mocked directly — it reads through the real expo-secure-store mock above,
+// which is fine since no test here asserts on a specific key value.
 
 // ── Mock llmClient (dispatcher's single merged client) ───────────────────────
 

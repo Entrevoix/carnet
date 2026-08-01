@@ -69,8 +69,16 @@ export async function saveSettingsWithKeys(
     localLlm: false,
   };
   try {
-    const existing = existingApiKeysFromSettings(await io.getSettings());
-    await io.saveSettings(composeSettingsForSave(form, existing));
+    const currentSettings = await io.getSettings();
+    const existing = existingApiKeysFromSettings(currentSettings);
+    await io.saveSettings(
+      composeSettingsForSave(
+        form,
+        existing,
+        currentSettings.llmProviders,
+        currentSettings.nextCustomSeq,
+      ),
+    );
     if (pending.omniRoute.length > 0) {
       await io.setOmniRouteApiKey(pending.omniRoute);
       keysWritten.omniRoute = true;
@@ -160,7 +168,17 @@ export async function toggleNotification(
 
 export interface PersistNotificationHintIO {
   getSettings: () => Promise<Settings>;
-  saveSettings: (s: Settings) => Promise<void>;
+  /**
+   * MUST be settings.ts's `savePersistedOnly`, never `saveSettings`. This
+   * function re-saves a `getSettings()` snapshot that may be stale by the
+   * time the write lands (a POST_NOTIFICATIONS permission dialog sits
+   * between the read and the write) — if that snapshot's key fields were
+   * blank because a real Save raced ahead of it and wrote a key in the
+   * meantime, `saveSettings` would delete that just-written key.
+   * `savePersistedOnly` never touches SecureStore, so a stale snapshot here
+   * can only ever affect the non-secret blob it's actually meant to touch.
+   */
+  savePersistedOnly: (s: Settings) => Promise<void>;
 }
 
 /**
@@ -176,7 +194,7 @@ export async function persistNotificationHint(
 ): Promise<void> {
   try {
     const current = await io.getSettings();
-    await io.saveSettings({ ...current, persistentNotificationEnabled: next });
+    await io.savePersistedOnly({ ...current, persistentNotificationEnabled: next });
   } catch {
     // Best-effort — reconcile-on-mount catches drift from a failed write.
   }
