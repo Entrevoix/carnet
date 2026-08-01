@@ -67,13 +67,18 @@ export interface ExistingApiKeys {
  *
  * `nextCustomSeq` is threaded straight through unchanged — this form has no
  * UI for adding custom providers yet (Phase 4), so nothing here ever
- * advances the counter; it just must not be dropped on save.
+ * advances the counter; it just must not be dropped on save. `fallbackProviderId`
+ * and `visionProviderId` are threaded through the same way — this form
+ * predates the Phase 4 fallback/vision selectors, so nothing here ever
+ * changes them; they just must not be dropped on save.
  */
 export function composeSettingsForSave(
   form: FormState,
   existing: ExistingApiKeys,
   currentProviders: readonly LlmProvider[],
   nextCustomSeq: number,
+  fallbackProviderId: string | null = null,
+  visionProviderId: string | null = null,
 ): Settings {
   const omniRouteModel = form.omniRouteModel || DEFAULT_OMNIROUTE_MODEL;
   const omniRouteVisionModel = form.omniRouteVisionModel || DEFAULT_VISION_MODEL;
@@ -95,6 +100,8 @@ export function composeSettingsForSave(
     llmProviders,
     activeProviderId: form.llmBackend === "local" ? "relais" : "omniroute",
     nextCustomSeq,
+    fallbackProviderId,
+    visionProviderId,
     localLlmApiKey: existing.localLlmApiKey,
     persistentNotificationEnabled: form.persistentNotificationEnabled,
     autoTranscribeOnSave: form.autoTranscribeOnSave,

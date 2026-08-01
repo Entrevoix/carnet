@@ -121,17 +121,41 @@ export function resolveActiveProvider(
 }
 
 /**
- * Resolve the provider that should serve a vision-bearing call. Phase 2 has
- * no `visionProviderId` fallback rung yet (that lands in Phase 3) — this
- * only checks whether the active entry itself has a vision model, returning
- * null otherwise so callers keep today's "not configured" degrade.
+ * The vision-capable model id a provider entry effectively serves. Relais
+ * is a special case: its preset (and any edited copy of it) always carries
+ * `visionModel: ""` — one model covers text AND vision for that entry, so
+ * its EFFECTIVE vision model is its `model` field, not its `visionModel`
+ * field. Every other provider (OmniRoute, a cloud preset, a custom entry)
+ * keeps chat/vision as two independent fields. Mirrors dispatcher.ts's
+ * buildConfig, which applies this exact same relais special-case when
+ * resolving a ProviderConfig — kept here too so resolution (this module) and
+ * config-building (dispatcher.ts) never disagree about whether a given
+ * provider "has vision".
+ */
+export function effectiveVisionModel(provider: LlmProvider): string {
+  if (provider.id === "relais") return provider.model.trim();
+  return provider.visionModel.trim();
+}
+
+/**
+ * Resolve the provider that should serve a vision-bearing call:
+ *   1. the active entry, if it has an effective vision model.
+ *   2. else `visionProviderId`'s entry, if set and it has an effective
+ *      vision model (the Phase 3 rung).
+ *   3. else null, so callers keep today's "not configured" degrade.
  */
 export function resolveVisionProvider(
   providers: readonly LlmProvider[],
   activeProviderId: string,
+  visionProviderId: string | null = null,
 ): LlmProvider | null {
   const active = resolveActiveProvider(providers, activeProviderId);
-  return active.visionModel.trim() ? active : null;
+  if (effectiveVisionModel(active)) return active;
+  if (visionProviderId) {
+    const found = providers.find((p) => p.id === visionProviderId);
+    if (found && effectiveVisionModel(found)) return found;
+  }
+  return null;
 }
 
 /** Validation errors for a provider entry — empty array means valid. Checked

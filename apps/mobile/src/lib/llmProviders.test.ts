@@ -4,6 +4,7 @@ import {
   PROVIDER_PRESETS,
   addCustomProvider,
   buildDefaultProviders,
+  effectiveVisionModel,
   removeProvider,
   resolveActiveProvider,
   resolveVisionProvider,
@@ -108,7 +109,7 @@ describe("resolveVisionProvider", () => {
     expect(vision?.id).toBe("omniroute");
   });
 
-  it("returns null when the active provider has no vision model (no Phase 3 fallback yet)", () => {
+  it("returns null when the active provider has no vision model and no visionProviderId is set", () => {
     const providers = buildDefaultProviders();
     expect(resolveVisionProvider(providers, "omniroute")).toBeNull();
   });
@@ -118,6 +119,61 @@ describe("resolveVisionProvider", () => {
       p.id === "omniroute" ? { ...p, visionModel: "   " } : p,
     );
     expect(resolveVisionProvider(providers, "omniroute")).toBeNull();
+  });
+
+  // ── Phase 3 rung: visionProviderId ──────────────────────────────────────
+  it("falls back to visionProviderId's entry when the active entry has no vision model", () => {
+    const providers = buildDefaultProviders().map((p) =>
+      p.id === "openai" ? { ...p, visionModel: "gpt-4o" } : p,
+    );
+    const vision = resolveVisionProvider(providers, "omniroute", "openai");
+    expect(vision?.id).toBe("openai");
+  });
+
+  it("prefers the active entry's OWN vision model over visionProviderId when both have one", () => {
+    const providers = buildDefaultProviders().map((p) => {
+      if (p.id === "omniroute") return { ...p, visionModel: "omniroute-vision" };
+      if (p.id === "openai") return { ...p, visionModel: "gpt-4o" };
+      return p;
+    });
+    const vision = resolveVisionProvider(providers, "omniroute", "openai");
+    expect(vision?.id).toBe("omniroute");
+  });
+
+  it("returns null when visionProviderId's entry ALSO has no vision model", () => {
+    const providers = buildDefaultProviders();
+    expect(resolveVisionProvider(providers, "omniroute", "openai")).toBeNull();
+  });
+
+  it("returns null when visionProviderId names an id absent from the list", () => {
+    const providers = buildDefaultProviders();
+    expect(
+      resolveVisionProvider(providers, "omniroute", "not-a-real-id"),
+    ).toBeNull();
+  });
+
+  it("returns null when visionProviderId is null (default) and the active entry has no vision model", () => {
+    const providers = buildDefaultProviders();
+    expect(resolveVisionProvider(providers, "omniroute", null)).toBeNull();
+  });
+});
+
+describe("effectiveVisionModel", () => {
+  it("returns relais's `model` field, not its (always-blank) visionModel field", () => {
+    const relais = buildDefaultProviders().find((p) => p.id === "relais")!;
+    expect(relais.visionModel).toBe("");
+    expect(effectiveVisionModel({ ...relais, model: "gemma-4" })).toBe("gemma-4");
+    expect(effectiveVisionModel({ ...relais, model: "" })).toBe("");
+  });
+
+  it("returns the provider's own visionModel field for every other id", () => {
+    const omniroute = buildDefaultProviders().find((p) => p.id === "omniroute")!;
+    expect(
+      effectiveVisionModel({ ...omniroute, model: "chat-model", visionModel: "vision-model" }),
+    ).toBe("vision-model");
+    expect(
+      effectiveVisionModel({ ...omniroute, model: "chat-model", visionModel: "" }),
+    ).toBe("");
   });
 });
 

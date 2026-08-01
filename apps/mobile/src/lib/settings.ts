@@ -81,6 +81,21 @@ export interface Settings {
    * is removed — see llmProviders.ts's addCustomProvider docstring for why
    * reusing a freed id is a credential-leak risk, not just a UX quirk. */
   nextCustomSeq: number;
+  /** Offline-fallback provider (Phase 3 — see
+   * docs/superpowers/specs/2026-07-31-llm-provider-list-design.md, "Offline
+   * fallback"). `null` = no fallback configured, i.e. today's behavior:
+   * an unreachable primary goes straight to the offline queue. When set,
+   * dispatcher.ts retries EXACTLY ONCE against this entry, and ONLY on an
+   * unreachable-class primary failure — never on a permanent 4xx (a bad key
+   * or model id must surface, not be silently masked by a smaller local
+   * model succeeding). */
+  fallbackProviderId: string | null;
+  /** Dedicated vision-routing provider (Phase 3). `null` = no dedicated
+   * vision provider, i.e. today's behavior: a vision call only works when
+   * the ACTIVE entry itself has a vision model. When set, it is consulted
+   * only as a second rung — the active entry's own vision model still wins
+   * when present. See llmProviders.ts's resolveVisionProvider. */
+  visionProviderId: string | null;
   /** OmniRoute API key (Bearer). Held in SecureStore, never persisted to the
    * AsyncStorage settings blob. Kept as a dedicated field (rather than
    * folded into a generic per-provider key lookup here) because it predates
@@ -130,6 +145,8 @@ interface PersistedSettings {
   llmProviders: LlmProvider[];
   activeProviderId: string;
   nextCustomSeq: number;
+  fallbackProviderId: string | null;
+  visionProviderId: string | null;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
@@ -161,6 +178,8 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   llmProviders: buildDefaultProviders(),
   activeProviderId: "omniroute",
   nextCustomSeq: 1,
+  fallbackProviderId: null,
+  visionProviderId: null,
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
@@ -291,6 +310,21 @@ function parseModernBlob(raw: string): PersistedSettings | null {
         typeof parsed.nextCustomSeq === "number"
           ? parsed.nextCustomSeq
           : DEFAULT_PERSISTED.nextCustomSeq,
+      // Extends the v3 migration (no new settings key/version — a blob that
+      // predates these two fields simply lacks them, so they default to
+      // `null` here exactly like every other pre-v3 field defaults via the
+      // `{...DEFAULT_PERSISTED, ...parsed}` merge above). Explicit
+      // type-checked here (not left to the merge) because unlike a boolean/
+      // string field, `null` is a meaningful third state distinct from a
+      // missing key, and a corrupted/hand-edited blob could hold a
+      // non-string, non-null value that would otherwise propagate straight
+      // into a `.find(p => p.id === fallbackProviderId)` call downstream.
+      fallbackProviderId:
+        typeof parsed.fallbackProviderId === "string"
+          ? parsed.fallbackProviderId
+          : null,
+      visionProviderId:
+        typeof parsed.visionProviderId === "string" ? parsed.visionProviderId : null,
       promptOverrides: sanitisePromptOverrides(parsed.promptOverrides),
     };
   } catch {
@@ -324,6 +358,8 @@ async function readPersisted(): Promise<PersistedSettings> {
         llmProviders: buildDefaultProviders(),
         activeProviderId: DEFAULT_PERSISTED.activeProviderId,
         nextCustomSeq: DEFAULT_PERSISTED.nextCustomSeq,
+        fallbackProviderId: null,
+        visionProviderId: null,
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
@@ -345,6 +381,8 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     llmProviders: settings.llmProviders,
     activeProviderId: settings.activeProviderId,
     nextCustomSeq: settings.nextCustomSeq,
+    fallbackProviderId: settings.fallbackProviderId,
+    visionProviderId: settings.visionProviderId,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -387,6 +425,8 @@ export async function getSettings(): Promise<Settings> {
     llmProviders: persisted.llmProviders,
     activeProviderId: persisted.activeProviderId,
     nextCustomSeq: persisted.nextCustomSeq,
+    fallbackProviderId: persisted.fallbackProviderId,
+    visionProviderId: persisted.visionProviderId,
     omniRouteApiKey,
     localLlmApiKey,
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
@@ -423,6 +463,8 @@ export async function savePersistedOnly(settings: Settings): Promise<void> {
     llmProviders: settings.llmProviders,
     activeProviderId: settings.activeProviderId,
     nextCustomSeq: settings.nextCustomSeq,
+    fallbackProviderId: settings.fallbackProviderId,
+    visionProviderId: settings.visionProviderId,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
