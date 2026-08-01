@@ -300,4 +300,40 @@ describe("RecentDetailScreen", () => {
     await waitFor(() => expect(removeFromHistory).toHaveBeenCalledWith("r1"));
     await waitFor(() => expect(navigation.goBack).toHaveBeenCalled());
   });
+
+  // #114. handleDelete catches everything and always reaches goBack(), but
+  // handleRemoveFromHistory had no try/catch: a rejection skipped goBack() AND
+  // left the shared deletingRef latched true, so BOTH destructive actions were
+  // dead for the rest of the screen's life with no feedback.
+  it("a failing Remove from list does not permanently latch the screen (#114)", async () => {
+    vi.mocked(readNote).mockRejectedValueOnce(new Error("gone"));
+    vi.mocked(removeFromHistory).mockRejectedValueOnce(new Error("disk full"));
+    const { navigation } = renderScreen();
+    expect(await screen.findByText("Note not found")).toBeTruthy();
+
+    // First attempt fails.
+    fireEvent.click(screen.getByText("Remove from list"));
+    await waitFor(() => expect(removeFromHistory).toHaveBeenCalledTimes(1));
+
+    // The guard must have been released: a retry actually re-invokes it.
+    // Without the finally-reset this second click is swallowed by the latch.
+    fireEvent.click(screen.getByText("Remove from list"));
+    await waitFor(() => expect(removeFromHistory).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(navigation.goBack).toHaveBeenCalled());
+  });
+
+  it("still guards against a double-tap while a removal is in flight (#114)", async () => {
+    vi.mocked(readNote).mockRejectedValueOnce(new Error("gone"));
+    let release!: () => void;
+    vi.mocked(removeFromHistory).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { release = () => resolve(); }),
+    );
+    renderScreen();
+    expect(await screen.findByText("Note not found")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Remove from list"));
+    fireEvent.click(screen.getByText("Remove from list"));
+    await waitFor(() => expect(removeFromHistory).toHaveBeenCalledTimes(1));
+    release();
+  });
 });

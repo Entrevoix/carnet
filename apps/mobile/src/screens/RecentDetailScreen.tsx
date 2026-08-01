@@ -241,6 +241,12 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[RecentDetail] removeFromHistory failed:", msg);
+    } finally {
+      // Same release as handleRemoveFromHistory (#114). This path only avoided
+      // the latch by accident — every await above is already caught, so it
+      // always reached goBack(). Releasing explicitly means that stays true if
+      // a future edit adds an uncaught await.
+      deletingRef.current = false;
     }
     navigation.goBack();
   }, [entry.filepath, entry.id, navigation]);
@@ -248,7 +254,22 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const handleRemoveFromHistory = useCallback(async () => {
     if (deletingRef.current) return;
     deletingRef.current = true;
-    await removeFromHistory(entry.id);
+    try {
+      // Mirrors handleDelete's best-effort shape: warn and still navigate away,
+      // rather than leaving the user on a screen whose note is already gone.
+      await removeFromHistory(entry.id);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[RecentDetail] removeFromHistory failed:", msg);
+    } finally {
+      // Releasing the guard is the point (#114). This handler previously had
+      // no try/catch at all, so a rejection skipped goBack() AND left the ref
+      // latched — and because the ref is SHARED with handleDelete, both
+      // destructive actions stayed dead for the rest of the screen's life,
+      // with no feedback. The guard exists to stop a double-tap while a
+      // removal is in flight, not to be a one-shot fuse.
+      deletingRef.current = false;
+    }
     navigation.goBack();
   }, [entry.id, navigation]);
 
