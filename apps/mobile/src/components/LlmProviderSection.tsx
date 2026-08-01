@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import {
   Button,
@@ -10,7 +10,7 @@ import {
   TextInput,
 } from "react-native-paper";
 
-import { getSettings, savePersistedOnly, type Settings } from "../lib/settings";
+import { getSettings } from "../lib/settings";
 import {
   addCustomProvider,
   resolveActiveProvider,
@@ -33,6 +33,7 @@ import {
   type EditBuffer,
 } from "../lib/llmProviderForm";
 import { apiKeyFieldLabel, apiKeyFieldPlaceholder, errorMessage } from "../lib/settingsForm";
+import { useProviderWriteChain } from "../lib/useProviderWriteChain";
 import { ModelBrowserModal } from "./ModelBrowserModal";
 import { ProviderPickerModal } from "./ProviderPickerModal";
 import { caretProps, spacing, type CarnetTheme } from "../lib/theme";
@@ -81,6 +82,13 @@ type PickerMode = "active" | "fallback" | "vision";
  * providerKeys.ts transparently aliases to the SAME SecureStore entries
  * `lib/settings.ts`'s legacy setOmniRouteApiKey/setLocalLlmApiKey used, so
  * there is no dual-write or migration to worry about here.
+ *
+ * All writes to `llmProviders`/the identity ids funnel through
+ * `useProviderWriteChain`'s `persistIdentity` (../lib/useProviderWriteChain.ts),
+ * which serializes them on a single-flight promise chain instead of each
+ * handler doing its own independent read-modify-write — see that module's
+ * header for the lost-update bug this prevents. `writing` (also from that
+ * hook) disables Save and the picker rows while a write is in flight.
  */
 export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) {
   const [providers, setProviders] = useState<LlmProvider[] | null>(null);
@@ -114,6 +122,16 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   const [modelFilter, setModelFilter] = useState("");
   const [browseTarget, setBrowseTarget] = useState<"chat" | "vision">("chat");
 
+  const { persistIdentity, writing } = useProviderWriteChain();
+  /** Invalidates an in-flight health check when the edited entry changes
+   * (switching active, or after a delete reassigns it) — see testConnection
+   * and loadEntryForEditing. */
+  const connectionRequestRef = useRef(0);
+  /** Guards every setState that follows an `await` in this component's
+   * handlers against firing after unmount (navigating away from Settings
+   * mid-write). */
+  const mountedRef = useRef(true);
+
   // useMemo MUST run on every render in the same order — above the
   // `if (providers === null) return null` below (mirrors SettingsScreen's
   // own top-level useMemo for the same reason).
@@ -123,8 +141,10 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   );
 
   useEffect(() => {
+    mountedRef.current = true;
     void (async () => {
       const s = await getSettings();
+      if (!mountedRef.current) return;
       setProviders(s.llmProviders);
       setActiveProviderId(s.activeProviderId);
       setFallbackProviderId(s.fallbackProviderId);
@@ -133,8 +153,12 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       const active = resolveActiveProvider(s.llmProviders, s.activeProviderId);
       setEditBuffer(editBufferFromProvider(active));
       const key = await providerKeys.getKey(active.id);
+      if (!mountedRef.current) return;
       setKeyConfigured(key.length > 0);
     })();
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   if (providers === null) return null;
@@ -152,34 +176,13 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     ? providerList.find((p) => p.id === visionProviderId) ?? null
     : null;
 
-  /** Read-modify-write of ONLY the LLM identity fields, against a FRESH
-   * settings snapshot — mirrors persistNotificationHint's pattern
-   * (settingsPersistence.ts) via savePersistedOnly, so a concurrent edit to
-   * an unrelated field (e.g. the user typing in the capture-folder box)
-   * can't be clobbered by this section's writes, and vice versa. Never
-   * touches SecureStore — key writes go through providerKeys.ts on their
-   * own, separately. */
-  async function persistIdentity(
-    patch: Partial<
-      Pick<
-        Settings,
-        | "llmProviders"
-        | "activeProviderId"
-        | "nextCustomSeq"
-        | "fallbackProviderId"
-        | "visionProviderId"
-      >
-    >,
-  ): Promise<void> {
-    const current = await getSettings();
-    await savePersistedOnly({ ...current, ...patch });
-  }
-
   async function loadEntryForEditing(provider: LlmProvider): Promise<void> {
+    connectionRequestRef.current += 1; // invalidate any in-flight health check
     setEditBuffer(editBufferFromProvider(provider));
     setPendingKey("");
     setConnectionResult(null);
     const key = await providerKeys.getKey(provider.id);
+    if (!mountedRef.current) return;
     setKeyConfigured(key.length > 0);
   }
 
@@ -187,6 +190,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     setPickerMode(null);
     try {
       await persistIdentity({ activeProviderId: id });
+      if (!mountedRef.current) return;
       setActiveProviderId(id);
       await loadEntryForEditing(resolveActiveProvider(providerList, id));
     } catch (e: unknown) {
@@ -198,6 +202,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     setPickerMode(null);
     try {
       await persistIdentity({ fallbackProviderId: id });
+      if (!mountedRef.current) return;
       setFallbackProviderId(id);
     } catch (e: unknown) {
       onError(errorMessage(e, "Failed to set fallback provider"));
@@ -208,6 +213,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     setPickerMode(null);
     try {
       await persistIdentity({ visionProviderId: id });
+      if (!mountedRef.current) return;
       setVisionProviderId(id);
     } catch (e: unknown) {
       onError(errorMessage(e, "Failed to set vision provider"));
@@ -215,14 +221,45 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   }
 
   async function saveEntry(): Promise<void> {
+    // Gates the SAME check addCustom already applied on the add path —
+    // this path (editing any existing entry, including a preset) used to
+    // call nothing, so e.g. a `javascript:alert(1)` base URL would persist
+    // untouched and only fail much later, at enrichment time, with an
+    // unrelated error.
+    const errors = validateProvider({
+      id: active.id,
+      label: editBuffer.label,
+      baseUrl: editBuffer.baseUrl,
+      model: editBuffer.model,
+      visionModel: editBuffer.visionModel,
+      preset: active.preset,
+    });
+    if (errors.length > 0) {
+      onError(errors.join("; "));
+      return;
+    }
+    // `active`/`editBuffer`/`pendingKey` are THIS render's values — a plain
+    // JS closure, not a ref, so they stay fixed for the life of this async
+    // call regardless of what the user does in the UI while it's in
+    // flight. Named locally only so the intent ("this is the entry Save was
+    // tapped for") is explicit at each use below.
+    const targetId = active.id;
+    const buffer = editBuffer;
+    const keyToWrite = pendingKey;
     try {
-      const nextProviders = applyEditBuffer(providerList, active.id, editBuffer);
+      const nextProviders = applyEditBuffer(providerList, targetId, buffer);
       await persistIdentity({ llmProviders: nextProviders });
+      if (!mountedRef.current) return;
       setProviders(nextProviders);
-      if (pendingKey.length > 0) {
-        await providerKeys.setKey(active.id, pendingKey);
+      if (keyToWrite.length > 0) {
+        await providerKeys.setKey(targetId, keyToWrite);
+        if (!mountedRef.current) return;
         setKeyConfigured(true);
-        setPendingKey("");
+        // Only clear the pending-key field if it still holds the value we
+        // just wrote — the user may have already switched to a different
+        // entry (which itself clears pendingKey via loadEntryForEditing) or
+        // started typing a new key while this write was in flight.
+        setPendingKey((current) => (current === keyToWrite ? "" : current));
       }
     } catch (e: unknown) {
       onError(errorMessage(e, "Failed to save provider"));
@@ -230,8 +267,13 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   }
 
   async function clearActiveKey(): Promise<void> {
+    // `active.id` is this render's closed-over value — see saveEntry's
+    // comment above for why that's exactly the entry Clear key was tapped
+    // for, regardless of what the user does in the UI while this awaits.
+    const targetId = active.id;
     try {
-      await providerKeys.deleteKey(active.id);
+      await providerKeys.deleteKey(targetId);
+      if (!mountedRef.current) return;
       setKeyConfigured(false);
       setPendingKey("");
     } catch (e: unknown) {
@@ -263,6 +305,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         llmProviders: result.providers,
         nextCustomSeq: result.nextCustomSeq,
       });
+      if (!mountedRef.current) return;
       setProviders(result.providers);
       setNextCustomSeq(result.nextCustomSeq);
       setAddOpen(false);
@@ -274,15 +317,42 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   }
 
   async function performDelete(id: string): Promise<void> {
+    let nextProviders: LlmProvider[];
     try {
       // Non-negotiable: removeProviderAndKey, never removeProvider — the
       // latter leaves the SecureStore key behind under an id that can be
       // reissued to a different endpoint (see providerKeys.ts's docstring).
-      const nextProviders = await providerKeys.removeProviderAndKey(providerList, id);
-      const identity = reassignIdentityAfterDelete(
-        { activeProviderId, fallbackProviderId, visionProviderId },
-        id,
+      // providerKeys.ts checks preset-illegality BEFORE deleting anything,
+      // so a rejection here means NOTHING changed yet.
+      nextProviders = await providerKeys.removeProviderAndKey(providerList, id);
+    } catch (e: unknown) {
+      onError(errorMessage(e, "Failed to delete provider"));
+      setDeleteTarget(null);
+      return;
+    }
+    if (!mountedRef.current) return;
+
+    // From this point on the key is IRREVERSIBLY gone from SecureStore even
+    // if the settings write below fails — the confirm dialog promised both
+    // are removed, and the key half of that already happened, so the UI
+    // must reflect the entry as gone too rather than show a "configured"
+    // provider whose credential silently no longer works.
+    const identity = reassignIdentityAfterDelete(
+      { activeProviderId, fallbackProviderId, visionProviderId },
+      id,
+    );
+    setProviders(nextProviders);
+    setFallbackProviderId(identity.fallbackProviderId);
+    setVisionProviderId(identity.visionProviderId);
+    setActiveProviderId(identity.activeProviderId);
+    if (identity.activeProviderId !== activeProviderId) {
+      await loadEntryForEditing(
+        resolveActiveProvider(nextProviders, identity.activeProviderId),
       );
+      if (!mountedRef.current) return;
+    }
+
+    try {
       // One write for the list AND all three identity ids together — a
       // dangling id must never be observable, even transiently.
       await persistIdentity({
@@ -291,27 +361,33 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         fallbackProviderId: identity.fallbackProviderId,
         visionProviderId: identity.visionProviderId,
       });
-      setProviders(nextProviders);
-      setFallbackProviderId(identity.fallbackProviderId);
-      setVisionProviderId(identity.visionProviderId);
-      setActiveProviderId(identity.activeProviderId);
-      if (identity.activeProviderId !== activeProviderId) {
-        await loadEntryForEditing(
-          resolveActiveProvider(nextProviders, identity.activeProviderId),
-        );
-      }
     } catch (e: unknown) {
-      onError(errorMessage(e, "Failed to delete provider"));
+      onError(
+        errorMessage(
+          e,
+          "Deleted the provider and its key, but saving the change failed — it may reappear until you restart the app",
+        ),
+      );
     } finally {
       setDeleteTarget(null);
     }
   }
 
   async function testConnection(): Promise<void> {
+    const requestId = ++connectionRequestRef.current;
     setTestingConnection(true);
     setConnectionResult(null);
-    setConnectionResult(await healthCheck(editBuffer.baseUrl));
+    const result = await healthCheck(editBuffer.baseUrl);
+    if (!mountedRef.current) return;
     setTestingConnection(false);
+    // Stale-result guard: if the edited entry changed (switch, or a delete
+    // reassigning the active entry) while this check was in flight,
+    // connectionRequestRef no longer matches — discard the result rather
+    // than render a health check for one provider under a different one's
+    // header.
+    if (connectionRequestRef.current === requestId) {
+      setConnectionResult(result);
+    }
   }
 
   async function openBrowse(target: "chat" | "vision"): Promise<void> {
@@ -324,12 +400,14 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       const stored = await providerKeys.getKey(active.id);
       const key = resolveBrowseApiKey(pendingKey, stored);
       const list = await listModels(editBuffer.baseUrl, key);
+      if (!mountedRef.current) return;
       setModels(list);
     } catch (e: unknown) {
+      if (!mountedRef.current) return;
       setBrowseError(e instanceof Error ? e.message : String(e));
       setModels(null);
     } finally {
-      setBrowseLoading(false);
+      if (mountedRef.current) setBrowseLoading(false);
     }
   }
 
@@ -340,6 +418,12 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
 
   const isRelais = active.id === "relais";
   const isCustom = active.preset === null;
+  // Only relais has a meaningful "blank means loopback" default
+  // (llmClient.ts's DEFAULT_LOCAL_LLM_URL) — for every other provider a
+  // blank base URL silently probing 127.0.0.1:8080 and reporting "✓
+  // Reachable" would be actively misleading (reproduced against OmniRoute
+  // with no URL configured yet), so Test connection is disabled instead.
+  const canTestConnection = editBuffer.baseUrl.trim().length > 0 || isRelais;
 
   const pickerTitle =
     pickerMode === "fallback"
@@ -381,9 +465,11 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       <List.Item
         title={active.label}
         description="Active provider — tap to change"
+        accessibilityLabel="Choose active LLM provider"
         left={(p) => <List.Icon {...p} icon="server-network" />}
         right={(p) => <List.Icon {...p} icon="chevron-down" />}
         onPress={() => setPickerMode("active")}
+        disabled={writing}
         style={styles.row}
       />
 
@@ -408,6 +494,11 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         onChangeText={(v) => setEditBuffer({ ...editBuffer, baseUrl: v })}
         placeholder={isRelais ? "http://127.0.0.1:8080" : "https://..."}
       />
+      {/* This copy previously claimed LAN addresses could use plain http://.
+          They cannot: Android permits cleartext to loopback but refuses it to
+          any other address on a release build (device-verified 2026-08-01), so
+          users following that advice hit a bare "Unreachable" with a server
+          that was running perfectly. Do not reintroduce that claim. */}
       <HelperText type="info" visible>
         Only 127.0.0.1 may use plain http:// — a provider on another machine
         must serve https://, because Android blocks plaintext to anything but
@@ -492,7 +583,12 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         </>
       )}
 
-      <Button mode="contained-tonal" onPress={() => void saveEntry()} style={styles.saveEntry}>
+      <Button
+        mode="contained-tonal"
+        onPress={() => void saveEntry()}
+        disabled={writing}
+        style={styles.saveEntry}
+      >
         Save provider
       </Button>
 
@@ -502,7 +598,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         compact
         onPress={() => void testConnection()}
         loading={testingConnection}
-        disabled={testingConnection}
+        disabled={testingConnection || !canTestConnection}
         style={styles.inlineBtn}
       >
         Test connection
@@ -561,9 +657,11 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       </HelperText>
       <List.Item
         title={fallbackProvider ? fallbackProvider.label : "None"}
+        accessibilityLabel="Choose offline fallback provider"
         left={(p) => <List.Icon {...p} icon="cloud-off-outline" />}
         right={(p) => <List.Icon {...p} icon="chevron-down" />}
         onPress={() => setPickerMode("fallback")}
+        disabled={writing}
         style={styles.row}
       />
 
@@ -576,9 +674,11 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       </HelperText>
       <List.Item
         title={visionProvider ? visionProvider.label : "None"}
+        accessibilityLabel="Choose vision provider"
         left={(p) => <List.Icon {...p} icon="image-outline" />}
         right={(p) => <List.Icon {...p} icon="chevron-down" />}
         onPress={() => setPickerMode("vision")}
+        disabled={writing}
         style={styles.row}
       />
 

@@ -138,21 +138,27 @@ describe("reassignIdentityAfterDelete", () => {
     expect(result.visionProviderId).toBeNull();
   });
 
-  it("leaves fallback/vision untouched when they point elsewhere", () => {
+  it("leaves fallback/vision untouched when the deleted entry is neither active nor fallback nor vision", () => {
     const result = reassignIdentityAfterDelete(
-      { activeProviderId: "custom-1", fallbackProviderId: "relais", visionProviderId: "openai" },
+      { activeProviderId: "omniroute", fallbackProviderId: "relais", visionProviderId: "openai" },
       "custom-1",
     );
+    expect(result.activeProviderId).toBe("omniroute");
     expect(result.fallbackProviderId).toBe("relais");
     expect(result.visionProviderId).toBe("openai");
   });
 
-  it("reassigns a deleted ACTIVE provider to the fallback when one is configured", () => {
+  it("reassigns a deleted ACTIVE provider to the fallback when one is configured, AND vacates the fallback slot", () => {
+    // Mutation-catch: if fallbackProviderId were threaded straight through
+    // unchanged (instead of forced to null) after being promoted, the
+    // fallback chain would retry the exact same endpoint it just failed
+    // over from — a "configured" fallback that can never fire.
     const result = reassignIdentityAfterDelete(
       { activeProviderId: "custom-1", fallbackProviderId: "relais", visionProviderId: null },
       "custom-1",
     );
     expect(result.activeProviderId).toBe("relais");
+    expect(result.fallbackProviderId).toBeNull();
   });
 
   it("reassigns a deleted ACTIVE provider to omniroute when no fallback is configured", () => {

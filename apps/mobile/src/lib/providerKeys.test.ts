@@ -181,11 +181,19 @@ describe("removeProviderAndKey", () => {
     expect(await getKey("custom-9")).toBe("");
   });
 
-  it("throws (and leaves the key intact) when asked to remove a preset — key-delete-first ordering must not destroy a preset's key on a rejected removal", async () => {
+  it("throws AND leaves the key intact when asked to remove a preset — the legality check runs BEFORE the destructive key delete", async () => {
+    // Mutation/regression catch: this used to only assert the throw, not
+    // the key. A prior implementation deleted the key FIRST and only
+    // discovered the removal was illegal when the (now-unreachable)
+    // removeProvider call threw — so this exact scenario destroyed a live
+    // `carnet_omniroute_api_key` while reporting failure. Without the
+    // second assertion, that regression could come back and this test
+    // would still pass.
     await setKey("openai", "sk-openai");
     await expect(removeProviderAndKey(buildDefaultProviders(), "openai")).rejects.toThrow(
       /Cannot remove preset provider/,
     );
+    expect(await getKey("openai")).toBe("sk-openai");
   });
 
   it("key-delete-first ordering: a rejected SecureStore delete propagates instead of silently returning a list with the entry dropped", async () => {

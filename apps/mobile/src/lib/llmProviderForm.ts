@@ -97,6 +97,15 @@ export interface ProviderIdentity {
  * deliberately (not left to that fallback path) so the transition is a
  * clean, silent reassignment rather than a console.warn'd dangling-reference
  * recovery.
+ *
+ * Promoting the fallback into the active slot ALSO vacates the fallback
+ * slot (sets it to `null`), even though the fallback entry itself still
+ * exists in the list. This was a real bug, not just a style choice: leaving
+ * `fallbackProviderId` pointing at the entry that is now ALSO
+ * `activeProviderId` means the offline-fallback chain (dispatcher.ts) would
+ * retry the exact same endpoint that just failed, and the Settings UI would
+ * show a "configured" fallback that can structurally never fire (it can
+ * never differ from the active entry it's supposed to back up).
  */
 export function reassignIdentityAfterDelete(
   identity: ProviderIdentity,
@@ -111,5 +120,9 @@ export function reassignIdentityAfterDelete(
     return { activeProviderId: identity.activeProviderId, fallbackProviderId, visionProviderId };
   }
   const activeProviderId = fallbackProviderId ?? "omniroute";
-  return { activeProviderId, fallbackProviderId, visionProviderId };
+  // The fallback slot is vacated unconditionally here — whether it just got
+  // promoted into `activeProviderId` or was already null, the result after
+  // deleting the active entry is never a fallback that equals the new
+  // active entry.
+  return { activeProviderId, fallbackProviderId: null, visionProviderId };
 }

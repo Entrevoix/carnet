@@ -58,7 +58,14 @@ export function ProviderPickerModal({
         onDismiss={onDismiss}
         contentContainerStyle={[
           styles.modal,
-          { backgroundColor: theme.colors.surface },
+          {
+            backgroundColor: theme.colors.surface,
+            // DESIGN.md: sheets/dialogs use radius.sheet (20), not a magic
+            // number — theme.carnet.radius is a runtime token, so it can
+            // only be applied here (inline), not inside the static
+            // StyleSheet.create below.
+            borderRadius: theme.carnet.radius.sheet,
+          },
         ]}
       >
         <View style={styles.header}>
@@ -134,7 +141,6 @@ export function ProviderPickerModal({
 const styles = StyleSheet.create({
   modal: {
     margin: spacing.lg,
-    borderRadius: 12,
     maxHeight: "85%",
     overflow: "hidden",
   },

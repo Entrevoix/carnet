@@ -83,13 +83,25 @@ export async function deleteKey(id: string): Promise<void> {
 
 /**
  * Remove a custom provider entry AND its stored key together, in the safe
- * order: the key is deleted FIRST, the list entry SECOND. If the app is
- * killed between the two steps, the result is an orphaned (harmless, unused)
- * list entry — never an orphaned credential that a future re-add could
- * reissue the id onto (see addCustomProvider's persisted-counter comment for
- * why id reuse itself is already ruled out; this ordering is the second,
- * independent guard: even a bug that DID reissue an id could never inherit a
- * key that's already gone).
+ * order: the LEGALITY check runs first (a preset can never be removed —
+ * llmProviders.ts's removeProvider throws for one), THEN the key is deleted,
+ * THEN the list entry. Checking legality before the destructive step is
+ * deliberate and was itself a bug fix: the previous ordering deleted the key
+ * FIRST and only discovered the removal was illegal when removeProvider
+ * threw afterward — so calling this on a preset destroyed a live credential
+ * (e.g. `carnet_omniroute_api_key`) while reporting failure, which is worse
+ * than doing nothing. Two independent UI guards (no delete affordance on a
+ * preset row, no "Delete this provider" button while a preset is active)
+ * made this unreachable from the shipped Settings screen, but the function
+ * itself must be safe to call directly regardless.
+ *
+ * Once past the legality check, the key is deleted BEFORE the list entry —
+ * if the app is killed between those two steps, the result is an orphaned
+ * (harmless, unused) list entry — never an orphaned credential that a future
+ * re-add could reissue the id onto (see addCustomProvider's
+ * persisted-counter comment for why id reuse itself is already ruled out;
+ * this ordering is the second, independent guard: even a bug that DID
+ * reissue an id could never inherit a key that's already gone).
  *
  * This is the only place `providerKeys.ts` calls into `llmProviders.ts` —
  * the IO/orchestration layer composing the pure list-removal helper.
@@ -98,6 +110,10 @@ export async function removeProviderAndKey(
   providers: readonly LlmProvider[],
   id: string,
 ): Promise<LlmProvider[]> {
+  const target = providers.find((p) => p.id === id);
+  if (target && target.preset !== null) {
+    throw new Error(`Cannot remove preset provider "${id}"`);
+  }
   await deleteKey(id);
   return removeProvider(providers, id);
 }
