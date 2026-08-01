@@ -404,3 +404,77 @@ describe("useKarakeepExport — guards and dismissal", () => {
     expect(result.current.karakeepQueued).toBe(false);
   });
 });
+
+// #115. The confirm gate and the export both read `body` from the render-time
+// closure, so anything that mutates the note while the Alert sits open
+// (Transcribe, Re-enrich, linkRelated, or a completed edit) meant tapping
+// "Update" exported the STALE text — silently overwriting the Karakeep
+// bookmark with content the user had already replaced.
+describe("re-export confirm reads the current body, not the press-time one (#115)", () => {
+  it("exports the body as it is when Update is tapped", async () => {
+    
+    vi.mocked(exportNoteToKarakeep).mockResolvedValue({
+      kind: "exported",
+      nextBody: "STAMPED",
+      didUpdate: true,
+      skippedUnsupported: [],
+    });
+    const onBodyChange = vi.fn();
+    const { result, rerender } = renderHook(
+      (props: { body: string }) =>
+        useKarakeepExport({
+          body: props.body,
+          filepath: "file:///v/Ideas/t.md",
+          entryTitle: "T",
+          onBodyChange,
+        }),
+      { initialProps: { body: EXPORTED_NOTE } },
+    );
+
+    // User taps Send; the confirm dialog opens because the note is stamped.
+    act(() => result.current.handleSendToKarakeep());
+    expect(Alert.alert).toHaveBeenCalledTimes(1);
+
+    // While the dialog is open the note changes underneath (e.g. Re-enrich).
+    const UPDATED = EXPORTED_NOTE.replace("Body.", "Re-enriched body.");
+    rerender({ body: UPDATED });
+
+    // Only now does the user tap "Update".
+    await act(async () => {
+      vi.mocked(Alert.alert).mock.calls[0][2]?.[1].onPress?.();
+      await Promise.resolve();
+    });
+
+    const arg = vi.mocked(exportNoteToKarakeep).mock.calls[0][0];
+    expect(arg.body).toBe(UPDATED);
+    expect(arg.body).not.toBe(EXPORTED_NOTE);
+  });
+
+  it("gates on the current body too — a stamp added while open still confirms", async () => {
+    
+    vi.mocked(exportNoteToKarakeep).mockResolvedValue({
+      kind: "exported",
+      nextBody: "STAMPED",
+      didUpdate: true,
+      skippedUnsupported: [],
+    });
+    const onBodyChange = vi.fn();
+    const { result, rerender } = renderHook(
+      (props: { body: string }) =>
+        useKarakeepExport({
+          body: props.body,
+          filepath: "file:///v/Ideas/t.md",
+          entryTitle: "T",
+          onBodyChange,
+        }),
+      { initialProps: { body: FRESH_NOTE } },
+    );
+
+    // Note becomes stamped (a concurrent export finished) before the tap.
+    rerender({ body: EXPORTED_NOTE });
+    act(() => result.current.handleSendToKarakeep());
+
+    // Must confirm rather than blind-exporting a note that IS already in Karakeep.
+    expect(Alert.alert).toHaveBeenCalledTimes(1);
+  });
+});

@@ -68,6 +68,17 @@ export function useKarakeepExport({
     };
   }, []);
 
+  // #115: the confirm dialog defers the export behind an "Update" button, so
+  // by the time it fires, `body` from that render may be stale — Transcribe,
+  // Re-enrich, linkRelated or a finished edit can all replace the note while
+  // the Alert sits open. Exporting the closure's copy silently overwrote the
+  // Karakeep bookmark with text the user had already replaced. Read through a
+  // ref so the export always sends what is on screen at the moment it runs.
+  const bodyRef = useRef(body);
+  useEffect(() => {
+    bodyRef.current = body;
+  }, [body]);
+
   const runKarakeepExport = useCallback(async () => {
     if (exportingKarakeepRef.current) return;
     exportingKarakeepRef.current = true;
@@ -79,7 +90,7 @@ export function useKarakeepExport({
     // orchestration + the in-place note write; this hook only translates the
     // outcome into UI state.
     const plan = planKarakeepUiUpdate(
-      await exportNoteToKarakeep({ body, filepath, entryTitle }),
+      await exportNoteToKarakeep({ body: bodyRef.current, filepath, entryTitle }),
     );
     if (plan.kind === "queue") {
       // The enqueue runs OUTSIDE the mounted guard: a Back-during-export must
@@ -107,7 +118,7 @@ export function useKarakeepExport({
     }
     exportingKarakeepRef.current = false;
     if (mountedRef.current) setExportingKarakeep(false);
-  }, [body, filepath, entryTitle, onBodyChange]);
+  }, [filepath, entryTitle, onBodyChange]);
 
   // If the note was already exported (frontmatter carries a karakeepId),
   // confirm before re-sending; otherwise export directly.
