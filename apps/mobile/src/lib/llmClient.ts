@@ -598,7 +598,7 @@ const OCR_CARD_PROMPT =
  * (no system message) with a fixed transcription prompt and `temperature: 0`
  * for deterministic, faithful output.
  *
- * Unlike {@link executeChat}, this returns the RAW model content (trimmed) with
+ * Unlike {@link executeChat}, this returns the RAW model content unchanged with
  * NO markdown sanitization or frontmatter normalization: the output is not a
  * vault note, it is contact text handed to `enrichPerson`, whose enriched
  * result is the thing that gets sanitized before write. Throws a
@@ -669,8 +669,8 @@ export async function ocrCardViaVision(
 
       const json = (await response.json()) as OpenAIResponse;
       const content = json.choices?.[0]?.message?.content;
-      const text = typeof content === "string" ? content.trim() : "";
-      if (!text) {
+      const text = typeof content === "string" ? content : "";
+      if (!text.trim()) {
         throw new LlmClientError(
           `${config.label} response contained no OCR text`,
           response.status,

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://carnet.local/schemas/processing_job.schema.json",
+  "type": "object", "required": ["schema_version", "type", "id", "capture_id", "pipeline", "idempotency_key", "source_revision", "state", "started_at", "stages", "outputs"],
+  "properties": {
+    "schema_version": { "const": 1 }, "type": { "const": "processing_job" }, "id": { "type": "string", "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$" }, "capture_id": { "type": "string", "pattern": "^cap_" }, "pipeline": { "type": "string" }, "idempotency_key": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "source_revision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "state": { "enum": ["queued", "processing", "review_required", "completed", "failed"] }, "started_at": { "type": "string", "format": "date-time" }, "completed_at": { "type": "string", "format": "date-time" },
+    "stages": { "type": "array", "items": { "type": "object", "required": ["name", "state"], "properties": { "name": { "type": "string" }, "state": { "enum": ["queued", "processing", "review_required", "completed", "failed"] }, "error": { "type": "string" } }, "additionalProperties": false } },
+    "outputs": { "type": "object", "additionalProperties": { "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] } },
+    "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }, "provenance": { "type": "array", "items": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/provenance" } }, "revision": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/revision" }
+  }, "additionalProperties": false
+}

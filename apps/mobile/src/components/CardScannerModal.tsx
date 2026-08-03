@@ -12,10 +12,20 @@ import {
 import { CameraView, useCameraPermissions } from "expo-camera";
 
 import { ocrCardViaVision } from "../lib/dispatcher";
+import {
+  saveBusinessCardCapture,
+  saveRawOcrResult,
+  type BusinessCardCapture,
+} from "../lib/mdcrmCapturePackage";
+
+export interface CardScanResult {
+  text: string;
+  capture: BusinessCardCapture;
+}
 
 interface Props {
   visible: boolean;
-  onResult: (text: string) => void;
+  onResult: (result: CardScanResult) => void;
   onClose: () => void;
 }
 
@@ -37,12 +47,22 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
       if (!photo?.base64) {
         throw new Error("no image captured");
       }
-      const { text } = await ocrCardViaVision({
-        base64: photo.base64,
+      // Persist the original before any network call. If OCR is unavailable,
+      // the capture package remains available for manual entry or later server
+      // processing rather than disappearing with this modal.
+      const saved = await saveBusinessCardCapture({
+        imageBase64: photo.base64,
         mimeType: "image/jpeg",
       });
-      onResult(text);
-      onClose();
+      try {
+        const { text } = await ocrCardViaVision({ base64: photo.base64, mimeType: "image/jpeg" });
+        await saveRawOcrResult(saved, text);
+        onResult({ text, capture: saved });
+        onClose();
+      } catch (ocrError: unknown) {
+        onResult({ text: "", capture: saved });
+        setError(`Card image saved locally. OCR unavailable: ${ocrError instanceof Error ? ocrError.message : String(ocrError)}`);
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

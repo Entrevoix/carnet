@@ -183,6 +183,7 @@ vi.mock("expo-file-system/legacy", () => {
 import {
   writeIdea,
   writeBinary,
+  writeTextFile,
   appendJournal,
   writePerson,
   readNote,
@@ -430,6 +431,21 @@ describe("writeBinary (SAF)", () => {
     const { finalName: fileName } = await writeBinary("Files", "dup.jpg", "BBB", "image/jpeg");
     expect(photoName).toBe("dup.jpg");
     expect(fileName).toBe("dup.jpg");
+  });
+});
+
+describe("writeTextFile (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("writes raw OCR sidecars with a portable collision-safe filename", async () => {
+    const first = await writeTextFile("processing/results", "cap_x.ocr.txt", "RAW OCR\n");
+    const second = await writeTextFile("processing/results", "cap_x.ocr.txt", "second");
+    expect(first.finalName).toBe("cap_x.ocr.txt");
+    expect(second.finalName).toBe("cap_x.ocr-2.txt");
+    await expect(readNote(first.filepath)).resolves.toBe("RAW OCR\n");
   });
 });
 

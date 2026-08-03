@@ -1003,10 +1003,10 @@ describe("ocrCardViaVision", () => {
     expect(headers.Authorization).toBe("Bearer test-key");
   });
 
-  it("trims model output to plain text", async () => {
+  it("preserves model output verbatim for raw OCR provenance", async () => {
     fetchMock.mockResolvedValueOnce(makeOkResponse("  Jane Doe, CEO \n"));
     const result = await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" }, CONFIG);
-    expect(result).toEqual({ text: "Jane Doe, CEO" });
+    expect(result).toEqual({ text: "  Jane Doe, CEO \n" });
   });
 
   it("falls back to image/jpeg for a non-allowlisted mime", async () => {

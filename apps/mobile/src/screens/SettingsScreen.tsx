@@ -39,6 +39,7 @@ import {
 } from "../lib/settingsPersistence";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { DiagnosticsSection } from "../components/DiagnosticsSection";
+import { SettingsTransferSection } from "../components/SettingsTransferSection";
 import { LlmProviderSection } from "../components/LlmProviderSection";
 import { caretProps, spacing, useCarnetTheme } from "../lib/theme";
 import {
@@ -160,6 +161,13 @@ export default function SettingsScreen() {
     } else {
       setPickerError(result.error);
     }
+  };
+
+  /** Reload the visible form after a confirmed settings-file import. Keys stay
+   * outside this form and are intentionally preserved by the import path. */
+  const reloadImportedSettings = async () => {
+    const settings = await getSettings();
+    setForm(formStateFromSettings(settings, settings.persistentNotificationEnabled));
   };
 
   /**
@@ -436,6 +444,11 @@ export default function SettingsScreen() {
       <PromptOverridesSection
         overrides={form.promptOverrides}
         onChange={(next) => update({ promptOverrides: next })}
+      />
+
+      <SettingsTransferSection
+        onImported={reloadImportedSettings}
+        onError={setPickerError}
       />
 
       <DiagnosticsSection />

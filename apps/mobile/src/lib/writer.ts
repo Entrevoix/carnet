@@ -635,6 +635,28 @@ export async function writePerson(
 }
 
 /**
+ * Write a UTF-8 sidecar below the vault root. This is intentionally separate
+ * from note writers: callers use it for durable source material such as raw
+ * OCR, not user-facing Obsidian notes. Like every new-file writer, a name
+ * collision produces a numbered sibling instead of overwriting existing data.
+ */
+export async function writeTextFile(
+  subdir: string,
+  filename: string,
+  content: string,
+): Promise<{ filepath: string; finalName: string }> {
+  const root = await resolveRoot();
+  const dirUri = await root.fs.findOrCreateSubdir(root.uri, subdir);
+  const dot = filename.lastIndexOf(".");
+  const stem = dot >= 0 ? filename.slice(0, dot) : filename;
+  const ext = dot >= 0 ? filename.slice(dot) : "";
+  const finalName = await findCollisionFreeName(dirUri, stem, ext, root.fs);
+  const filepath = await root.fs.createFile(dirUri, finalName, "text/plain");
+  await root.fs.writeString(filepath, content);
+  return { filepath, finalName: root.fs.isSaf ? safLastSegment(filepath) || finalName : finalName };
+}
+
+/**
  * Save a binary file (e.g. an image shared into carnet) under `subdir`
  * with the given filename. base64-encoded content. Handles collision by
  * appending -2, -3, … like the markdown writers do. Returns the URI of

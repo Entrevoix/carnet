@@ -11,6 +11,9 @@
   "scripts": {
     "build:shared": "npm -w @carnet/shared run build",
     "mobile": "npm -w @carnet/mobile start",
+    "mdcrm:build": "npm -w @carnet/mdcrm run build",
+    "mdcrm:test": "npm -w @carnet/mdcrm test",
+    "mdcrm": "npm -w @carnet/mdcrm start --",
     "postinstall": "patch-package"
   },
   "devDependencies": {

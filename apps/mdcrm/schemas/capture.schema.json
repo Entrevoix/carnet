@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carnet.local/schemas/capture.schema.json",
+  "type": "object",
+  "required": ["schema_version", "type", "id", "created_at", "updated_at", "captured_by", "capture_method", "capture_kind", "processing_status", "review_status", "attachments"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "type": { "const": "capture" },
+    "id": { "type": "string", "pattern": "^cap_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "created_at": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/dateTime" },
+    "updated_at": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/dateTime" },
+    "captured_by": { "type": "string", "minLength": 1 },
+    "capture_method": { "type": "string", "minLength": 1 },
+    "capture_kind": { "type": "string", "minLength": 1 },
+    "processing_status": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/processingState" },
+    "review_status": { "enum": ["unreviewed", "review_required", "approved", "rejected"] },
+    "event_context": {
+      "type": "object",
+      "properties": {
+        "event_id": { "type": ["string", "null"] }, "event_name": { "type": ["string", "null"] },
+        "event_date": { "type": ["string", "null"], "format": "date" }, "location": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "attachments": { "type": "array", "items": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/attachment" } },
+    "ocr": {
+      "type": "object", "required": ["engine", "raw_text_path"],
+      "properties": {
+        "engine": { "type": "string" }, "engine_version": { "type": "string" },
+        "completed_at": { "type": "string", "format": "date-time" },
+        "language_hints": { "type": "array", "items": { "type": "string" } },
+        "raw_text_path": { "type": "string", "minLength": 1 }, "corrected_text_path": { "type": "string" }
+      }, "additionalProperties": false
+    },
+    "extracted": { "type": "object", "properties": {
+      "name": { "type": "string" }, "title": { "type": "string" }, "company": { "type": "string" },
+      "email": { "type": "string" }, "phone_display": { "type": "string" }, "phone_normalized": { "type": "string" }, "website": { "type": "string" }
+    }, "additionalProperties": false },
+    "confidence": { "type": "object", "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 } },
+    "sync": { "type": "object", "required": ["state", "attempts"], "properties": {
+      "state": { "enum": ["local_only", "pending", "uploading", "synced", "conflict", "failed"] },
+      "attempts": { "type": "integer", "minimum": 0 }, "last_attempt_at": { "type": ["string", "null"] }, "remote_revision": { "type": ["string", "null"] }
+    }, "additionalProperties": false },
+    "provenance": { "type": "array", "items": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/provenance" } },
+    "revision": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/revision" }
+  },
+  "additionalProperties": false
+}

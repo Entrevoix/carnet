@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://carnet.local/schemas/interaction.schema.json",
+  "type": "object", "required": ["schema_version", "type", "id", "occurred_at", "interaction_type", "contact_ids", "organization_ids", "source_capture_ids", "created_by"],
+  "properties": {
+    "schema_version": { "const": 1 }, "type": { "const": "interaction" }, "id": { "type": "string", "pattern": "^int_[0-9A-HJKMNP-TV-Z]{26}$" }, "occurred_at": { "type": "string", "format": "date-time" }, "interaction_type": { "type": "string" },
+    "contact_ids": { "type": "array", "items": { "type": "string", "pattern": "^con_" } }, "organization_ids": { "type": "array", "items": { "type": "string", "pattern": "^org_" } }, "event_id": { "type": "string", "pattern": "^evt_" }, "source_capture_ids": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^cap_" } },
+    "follow_up": { "type": "object", "required": ["required", "status"], "properties": { "required": { "type": "boolean" }, "suggested_date": { "type": "string", "format": "date" }, "status": { "enum": ["open", "completed", "dismissed"] } }, "additionalProperties": false },
+    "created_by": { "type": "string" }, "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }, "provenance": { "type": "array", "items": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/provenance" } }, "revision": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/revision" }
+  }, "additionalProperties": false
+}

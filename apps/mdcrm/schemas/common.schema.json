@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carnet.local/schemas/common.schema.json",
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "factStatus": { "enum": ["observed", "normalized", "inferred", "suggested", "user_confirmed", "rejected", "superseded"] },
+    "processingState": { "enum": ["captured", "normalized", "synced", "queued", "processing", "review_required", "completed", "failed"] },
+    "provenance": {
+      "type": "object",
+      "required": ["source_type", "extraction_method", "processor", "processor_version", "created_at"],
+      "properties": {
+        "source_type": { "enum": ["capture", "inference", "user", "processor"] },
+        "source_id": { "type": "string" }, "source_ids": { "type": "array", "items": { "type": "string" } },
+        "extraction_method": { "type": "string" }, "processor": { "type": "string" }, "processor_version": { "type": "string" },
+        "model": { "type": "string" }, "prompt_version": { "type": "string" }, "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "created_at": { "$ref": "#/$defs/dateTime" }
+      }, "additionalProperties": false
+    },
+    "revision": {
+      "type": "object",
+      "required": ["number", "content_sha256"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "content_sha256": { "$ref": "#/$defs/sha256" },
+        "previous_content_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "attachment": {
+      "type": "object",
+      "required": ["id", "role", "path", "media_type", "sha256"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^att_[0-9A-HJKMNP-TV-Z]{26}$" },
+        "role": { "enum": ["original", "derived", "thumbnail", "supporting"] },
+        "path": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

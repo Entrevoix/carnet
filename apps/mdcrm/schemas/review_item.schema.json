@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://carnet.local/schemas/review_item.schema.json",
+  "type": "object", "required": ["schema_version", "type", "id", "review_type", "state", "priority", "source_capture_id"],
+  "properties": {
+    "schema_version": { "const": 1 }, "type": { "const": "review_item" }, "id": { "type": "string", "pattern": "^rev_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "review_type": { "enum": ["possible_duplicate", "field_conflict", "low_ocr_confidence", "unknown_document_type", "event_match", "company_match", "contact_match", "task_suggestion", "follow_up_suggestion", "revision_conflict"] },
+    "state": { "enum": ["open", "approved", "rejected"] }, "priority": { "enum": ["low", "normal", "high"] }, "source_capture_id": { "type": "string", "pattern": "^cap_" },
+    "candidate_contact_ids": { "type": "array", "items": { "type": "string", "pattern": "^con_" }, "uniqueItems": true }, "recommended_contact_id": { "type": "string", "pattern": "^con_" }, "confidence": { "type": "number", "minimum": 0, "maximum": 1 }, "evidence": { "type": "array", "items": { "type": "string" } },
+    "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }, "provenance": { "type": "array", "items": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/provenance" } }, "revision": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/revision" }
+  }, "additionalProperties": false
+}

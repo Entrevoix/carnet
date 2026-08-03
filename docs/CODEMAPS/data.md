@@ -1,9 +1,10 @@
 # Data Model — vault & local stores
 <!-- Generated: 2026-07-16 | Files scanned: ~140 (81 src + tests) | Token estimate: ~720 -->
 
-**No SQL database.** Data = Markdown files + binaries in the Syncthing-synced vault,
-plus AsyncStorage/SecureStore keys on the device. (`expo-sqlite` is ABI-broken on
-SDK 54 — hard constraint, see CLAUDE.md.)
+**No canonical SQL database.** Data = Markdown files + binaries in the Syncthing-synced
+vault, plus AsyncStorage/SecureStore keys on the device. (`expo-sqlite` is ABI-broken on
+SDK 54 — hard constraint, see CLAUDE.md.) The optional `mdcrm` processor also treats
+Markdown as canonical; `indexes/full-text.json` is derived and rebuildable.
 
 ## Vault layout  (`{captureFolderPath}` on device ↔ `~/Obsidian/Carnet` on workstation)
 ```
@@ -45,3 +46,11 @@ LLM output passes `lib/enrichSanitize.ts` (B3) before any write.
 ## Caveat
 App reinstall/`pm clear` wipes ALL local stores (settings, index, SecureStore) but not
 the vault folder itself — vault files are re-indexed on next launch.
+
+## Schema-v1 interchange records
+
+`apps/mdcrm/schemas/` defines capture, contact, organization, event, interaction, task,
+review-item, processing-job, and proposed-change frontmatter. Runtime records use immutable
+prefixed ULIDs and live under `captures/`, `contacts/`, `organizations/`, `events/`,
+`interactions/`, `tasks/`, `review/`, and `processing/`. These are an additive interchange
+format; current mobile `People/`, `Ideas/`, and `Journal/` output is unchanged.
