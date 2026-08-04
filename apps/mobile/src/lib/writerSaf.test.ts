@@ -216,6 +216,7 @@ import {
   listSyncConflictFiles,
   safLastSegment,
 } from "./writer";
+import { vaultFsFor } from "./vaultFs";
 import * as FileSystem from "expo-file-system/legacy";
 
 const saf = FileSystem.StorageAccessFramework;
@@ -479,6 +480,21 @@ describe("nested subdirs (SAF)", () => {
   beforeEach(() => {
     clearSaf();
     vi.clearAllMocks();
+  });
+
+  it("resolves an existing nested subdir through findSubdir", async () => {
+    // findSubdir is the READ-side twin of findOrCreateSubdir and carried the
+    // same single-segment assumption: it compared the whole "a/b" against each
+    // child's last segment, which can never match. Callers saw "missing" and
+    // reported a broken link instead of resolving the file.
+    await writeBinary("attachments/originals", "att_a.jpg", "YWJj", "image/jpeg");
+
+    const uri = await vaultFsFor(true).findSubdir(SAF_ROOT, "attachments/originals");
+    expect(uri).not.toBeNull();
+  });
+
+  it("returns null from findSubdir when an intermediate segment is missing", async () => {
+    expect(await vaultFsFor(true).findSubdir(SAF_ROOT, "attachments/originals")).toBeNull();
   });
 
   it("writes a .md capture record without SAF appending a second extension", async () => {

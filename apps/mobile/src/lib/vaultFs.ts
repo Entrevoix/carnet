@@ -215,8 +215,19 @@ const safFs: VaultFs = {
   },
 
   async findSubdir(parentUri, name) {
-    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
-    return children.find((u) => safLastSegment(u) === name) ?? null;
+    // Read-side twin of findOrCreateSubdir: SAF lists one level at a time, so a
+    // nested "a/b" has to be walked. Comparing the whole path against a child's
+    // last segment never matches, which surfaced to callers as a broken link
+    // rather than a resolved file.
+    let current = parentUri;
+    for (const segment of name.split("/")) {
+      if (!segment) continue; // tolerate a leading/trailing/doubled slash
+      const children = await StorageAccessFramework.readDirectoryAsync(current);
+      const match = children.find((u) => safLastSegment(u) === segment);
+      if (!match) return null;
+      current = match;
+    }
+    return current;
   },
 
   async findOrCreateSubdir(parentUri, name) {
