@@ -33,6 +33,7 @@ const {
   safUri,
   safParent,
   safChildRelPath,
+  assertSafDisplayName,
   clearSaf,
 } = vi.hoisted(() => {
     const SAF_AUTHORITY = "com.android.externalstorage.documents";
@@ -93,6 +94,24 @@ const {
       return parentRelPath ? `${parentRelPath}/${name}` : name;
     }
 
+    /**
+     * Real SAF takes a DISPLAY NAME, never a path: makeDirectoryAsync and
+     * createFileAsync each create exactly ONE child node and never walk "/"
+     * segments. This mock stores into a FLAT map, so without this guard a name
+     * like "processing/results" becomes one legal key and reads back fine —
+     * which is precisely how a production bug (nested capture dirs silently
+     * failing on content:// vaults) stayed invisible behind a green suite.
+     * Keep this strict; loosening it re-blinds the SAF branch.
+     */
+    function assertSafDisplayName(name: string, api: string): void {
+      if (name.includes("/")) {
+        throw new Error(
+          `[saf-mock] ${api} received a path, not a display name: "${name}". ` +
+            "Real SAF creates one node per call — walk the segments instead.",
+        );
+      }
+    }
+
     function clearSaf(): void {
       _saf.clear();
     }
@@ -105,6 +124,7 @@ const {
       safUri,
       safParent,
       safChildRelPath,
+      assertSafDisplayName,
       clearSaf,
     };
   });
@@ -144,12 +164,14 @@ vi.mock("expo-file-system/legacy", () => {
         return out;
       }),
       makeDirectoryAsync: vi.fn(async (parentUri: string, name: string): Promise<string> => {
+        assertSafDisplayName(name, "makeDirectoryAsync");
         const relPath = safChildRelPath(safRelPath(parentUri), name);
         if (!_saf.has(relPath)) _saf.set(relPath, { kind: "dir" });
         return safUri(relPath);
       }),
       createFileAsync: vi.fn(
         async (parentUri: string, displayName: string, mimeType: string): Promise<string> => {
+          assertSafDisplayName(displayName, "createFileAsync");
           const canonicalExt = SAF_CANONICAL_EXT[mimeType];
           const finalName =
             canonicalExt && !displayName.toLowerCase().endsWith(canonicalExt)
@@ -446,6 +468,48 @@ describe("writeTextFile (SAF)", () => {
     expect(first.finalName).toBe("cap_x.ocr.txt");
     expect(second.finalName).toBe("cap_x.ocr-2.txt");
     await expect(readNote(first.filepath)).resolves.toBe("RAW OCR\n");
+  });
+});
+
+// Regression: mdcrm capture packages are the first caller to pass a NESTED
+// subdir. SAF's makeDirectoryAsync creates one node per call (no
+// `intermediates: true`), so the whole path used to be handed over as a single
+// display name and the capture silently never landed on a content:// vault.
+describe("nested subdirs (SAF)", () => {
+  beforeEach(() => {
+    clearSaf();
+    vi.clearAllMocks();
+  });
+
+  it("creates every segment of a nested subdir as its own directory node", async () => {
+    const { filepath } = await writeTextFile("processing/results", "cap_y.ocr.txt", "RAW\n");
+
+    // The intermediate must be a real node, not half of one slash-named folder.
+    expect(_saf.get("processing")).toEqual({ kind: "dir" });
+    expect(_saf.get("processing/results")).toEqual({ kind: "dir" });
+    await expect(readNote(filepath)).resolves.toBe("RAW\n");
+  });
+
+  it("creates the nested attachment path a capture package writes its original into", async () => {
+    await writeBinary("attachments/originals", "att_z.jpg", "YWJj", "image/jpeg");
+
+    expect(_saf.get("attachments")).toEqual({ kind: "dir" });
+    expect(_saf.get("attachments/originals")).toEqual({ kind: "dir" });
+  });
+
+  it("reuses existing segments instead of duplicating them across calls", async () => {
+    await writeTextFile("processing/results", "one.txt", "1");
+    await writeTextFile("processing/results", "two.txt", "2");
+
+    const dirs = [..._saf.entries()].filter(([, entry]) => entry.kind === "dir").map(([rel]) => rel);
+    expect(dirs.sort()).toEqual(["processing", "processing/results"]);
+  });
+
+  it("tolerates a redundant leading or doubled slash without creating empty nodes", async () => {
+    await writeTextFile("/processing//results", "three.txt", "3");
+
+    const dirs = [..._saf.entries()].filter(([, entry]) => entry.kind === "dir").map(([rel]) => rel);
+    expect(dirs.sort()).toEqual(["processing", "processing/results"]);
   });
 });
 
