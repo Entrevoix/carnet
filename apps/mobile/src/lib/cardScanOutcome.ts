@@ -10,7 +10,7 @@
  * HttpError, plus a 4xx status), never from matching the message text. See
  * `captureErrorDecision.ts` for the same three-way split on the capture path.
  */
-import { isNotConfiguredError, isPermanentError } from "./dispatcher";
+import { isNotConfiguredError, isPermanentError, probeVisionReadiness } from "./dispatcher";
 
 export type CardScanOcrOutcome =
   | { kind: "ok" }
@@ -30,6 +30,33 @@ export function classifyCardScanOcrError(error: unknown): CardScanOcrFailure {
   if (isNotConfiguredError(error)) return { kind: "notConfigured", message };
   if (isPermanentError(error)) return { kind: "permanent", message };
   return { kind: "transient", message };
+}
+
+/**
+ * Classify whether a card scan COULD succeed, before the user frames a shot.
+ * Reuses the same classifier as the post-capture path, so the two can never
+ * disagree about what "not configured" means.
+ */
+export async function probeCardScanReadiness(): Promise<CardScanOcrOutcome> {
+  try {
+    await probeVisionReadiness();
+    return { kind: "ok" };
+  } catch (error: unknown) {
+    return classifyCardScanOcrError(error);
+  }
+}
+
+/**
+ * Copy for the banner shown when the scanner OPENS. Only `notConfigured` is
+ * knowable up front — `permanent` and `transient` describe a call that already
+ * failed, and warning about them before any call would be noise.
+ *
+ * Deliberately does NOT reuse {@link cardScanHint}: that copy says the image
+ * "was saved", which is not yet true here.
+ */
+export function cardScanPreflightHint(outcome: CardScanOcrOutcome): string | null {
+  if (outcome.kind !== "notConfigured") return null;
+  return `${outcome.message}. You can still capture — the card image is saved for later.`;
 }
 
 /** User-facing hint for an outcome, or null when OCR succeeded. */

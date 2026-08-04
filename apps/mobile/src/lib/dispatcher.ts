@@ -315,6 +315,26 @@ export async function promoteIdea(
   return withFallbackMarker(outcome);
 }
 
+/**
+ * Config-only readiness check for the card scanner. Resolves the SAME vision
+ * provider `ocrCardViaVision` would use and runs the same pre-flight asserts,
+ * WITHOUT any network call — so opening the scanner costs one settings read,
+ * never a request or a token.
+ *
+ * Deliberately not wrapped in `withFallbackChain`: `shouldRetryWithFallback`
+ * returns false for a not-configured error, so an unconfigured primary never
+ * falls back at runtime either. Probing the fallback here would under-warn on
+ * exactly the setups that need the warning.
+ *
+ * Throws whatever the real call would throw at this stage; callers classify it
+ * with the existing predicates rather than reading the message.
+ */
+export async function probeVisionReadiness(): Promise<void> {
+  const settings = await getSettings();
+  const config = await buildConfig(settings, resolveVisionProviderId(settings));
+  llmClient.assertVisionReady(config);
+}
+
 export async function ocrCardViaVision(input: {
   base64: string;
   mimeType: string;

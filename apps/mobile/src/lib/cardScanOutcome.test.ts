@@ -6,17 +6,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // against real LlmClientError shapes in llmClient.test.ts:211-222 and 476-490.
 const isPermanentErrorMock = vi.fn().mockReturnValue(false);
 const isNotConfiguredErrorMock = vi.fn().mockReturnValue(false);
+const probeVisionReadinessMock = vi.fn(async () => undefined);
 
 vi.mock("./dispatcher", () => ({
   isPermanentError: (...args: unknown[]) => isPermanentErrorMock(...args),
   isNotConfiguredError: (...args: unknown[]) => isNotConfiguredErrorMock(...args),
+  probeVisionReadiness: () => probeVisionReadinessMock(),
 }));
 
-import { cardScanHint, classifyCardScanOcrError } from "./cardScanOutcome";
+import {
+  cardScanHint,
+  cardScanPreflightHint,
+  classifyCardScanOcrError,
+  probeCardScanReadiness,
+} from "./cardScanOutcome";
 
 beforeEach(() => {
   isPermanentErrorMock.mockReturnValue(false);
   isNotConfiguredErrorMock.mockReturnValue(false);
+  probeVisionReadinessMock.mockReset().mockResolvedValue(undefined);
 });
 
 describe("classifyCardScanOcrError", () => {
@@ -54,6 +62,53 @@ describe("classifyCardScanOcrError", () => {
 
   it("treats a non-Error throw as transient without crashing", () => {
     expect(classifyCardScanOcrError("boom")).toEqual({ kind: "transient", message: "boom" });
+  });
+});
+
+describe("probeCardScanReadiness", () => {
+  it("reports ok when the vision config passes its pre-flight asserts", async () => {
+    await expect(probeCardScanReadiness()).resolves.toEqual({ kind: "ok" });
+  });
+
+  it("classifies an unconfigured provider without making a network call", async () => {
+    isNotConfiguredErrorMock.mockReturnValue(true);
+    probeVisionReadinessMock.mockRejectedValue(
+      new Error("Vision model not configured — set it in Settings"),
+    );
+
+    await expect(probeCardScanReadiness()).resolves.toEqual({
+      kind: "notConfigured",
+      message: "Vision model not configured — set it in Settings",
+    });
+  });
+
+  it("never rejects, so opening the scanner cannot fail on a probe error", async () => {
+    probeVisionReadinessMock.mockRejectedValue(new Error("boom"));
+    await expect(probeCardScanReadiness()).resolves.toEqual({ kind: "transient", message: "boom" });
+  });
+});
+
+describe("cardScanPreflightHint", () => {
+  it("warns about an unconfigured provider and says capture still works", () => {
+    const hint = cardScanPreflightHint({
+      kind: "notConfigured",
+      message: "OmniRoute URL not configured — set it in Settings",
+    });
+    expect(hint).toContain("set it in Settings");
+    expect(hint).toMatch(/still capture/i);
+  });
+
+  it("does not claim the image was saved — nothing has been captured yet", () => {
+    const hint = cardScanPreflightHint({ kind: "notConfigured", message: "no url" });
+    expect(hint).not.toMatch(/was saved/i);
+  });
+
+  it("stays silent for outcomes that are not knowable before a call", () => {
+    // permanent/transient describe a call that already failed; warning about
+    // them on open would be noise the user cannot act on.
+    expect(cardScanPreflightHint({ kind: "ok" })).toBeNull();
+    expect(cardScanPreflightHint({ kind: "permanent", message: "bad key" })).toBeNull();
+    expect(cardScanPreflightHint({ kind: "transient", message: "timeout" })).toBeNull();
   });
 });
 
