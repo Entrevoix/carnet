@@ -84,7 +84,24 @@ describe("probeCardScanReadiness", () => {
 
   it("never rejects, so opening the scanner cannot fail on a probe error", async () => {
     probeVisionReadinessMock.mockRejectedValue(new Error("boom"));
-    await expect(probeCardScanReadiness()).resolves.toEqual({ kind: "transient", message: "boom" });
+    await expect(probeCardScanReadiness()).resolves.toEqual({ kind: "notConfigured", message: "boom" });
+  });
+
+  it("treats an insecure-URL failure as configuration, not a retryable outage", async () => {
+    // assertHttpsOrLocal throws status 0 with NO notConfigured flag, so the
+    // shared classifier calls it "transient". The probe makes no network call,
+    // so "transient" is impossible here by construction — and telling the user
+    // to scan again is wrong advice, since only Settings can fix a plain-http
+    // remote URL. This is the exact wrong-retry-advice class the feature exists
+    // to remove, so it must not reappear inside the preflight path.
+    probeVisionReadinessMock.mockRejectedValue(
+      new Error("OmniRoute URL must use https:// (or be a loopback/LAN address) to protect the API key"),
+    );
+
+    const outcome = await probeCardScanReadiness();
+
+    expect(outcome.kind).toBe("notConfigured");
+    expect(cardScanPreflightHint(outcome)).toMatch(/https/i);
   });
 });
 

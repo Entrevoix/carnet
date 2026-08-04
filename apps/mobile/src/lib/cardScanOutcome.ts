@@ -42,7 +42,18 @@ export async function probeCardScanReadiness(): Promise<CardScanOcrOutcome> {
     await probeVisionReadiness();
     return { kind: "ok" };
   } catch (error: unknown) {
-    return classifyCardScanOcrError(error);
+    // Every probe failure is a CONFIGURATION failure, whatever the shared
+    // classifier says. The probe makes no network call, so "transient" is
+    // impossible here by construction — and the classifier does return it:
+    // assertHttpsOrLocal rejects a plain-http remote URL with status 0 and no
+    // `notConfigured` flag, which is neither not-configured nor 4xx-permanent.
+    //
+    // Fixing that at the throw is tempting but wrong: assertHttpsOrLocal has
+    // three call sites, and flagging it notConfigured would make
+    // shouldRetryWithFallback return false everywhere, silently disabling the
+    // fallback chain for any misconfigured primary. Narrowing the verdict HERE
+    // keeps that behavior untouched.
+    return { kind: "notConfigured", message: classifyCardScanOcrError(error).message };
   }
 }
 
