@@ -481,6 +481,26 @@ describe("nested subdirs (SAF)", () => {
     vi.clearAllMocks();
   });
 
+  it("writes a .md capture record without SAF appending a second extension", async () => {
+    // SAF's createFileAsync appends the canonical extension for the MIME type
+    // it is handed. writeTextFile used to hardcode text/plain, so the capture
+    // record landed as `cap_x.md.txt` — which mdcrm's walkMarkdown (*.md only)
+    // never discovers, silently defeating the whole capture pipeline.
+    const { finalName, filepath } = await writeTextFile(
+      "captures",
+      "cap_x.md",
+      "---\ntype: capture\n---\n\n# Capture\n",
+    );
+
+    expect(finalName).toBe("cap_x.md");
+    await expect(readNote(filepath)).resolves.toContain("type: capture");
+  });
+
+  it("still writes a .txt sidecar as plain text without doubling its extension", async () => {
+    const { finalName } = await writeTextFile("processing/results", "cap_x.ocr.txt", "RAW\n");
+    expect(finalName).toBe("cap_x.ocr.txt");
+  });
+
   it("creates every segment of a nested subdir as its own directory node", async () => {
     const { filepath } = await writeTextFile("processing/results", "cap_y.ocr.txt", "RAW\n");
 

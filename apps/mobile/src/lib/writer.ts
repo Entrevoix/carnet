@@ -651,7 +651,11 @@ export async function writeTextFile(
   const stem = dot >= 0 ? filename.slice(0, dot) : filename;
   const ext = dot >= 0 ? filename.slice(dot) : "";
   const finalName = await findCollisionFreeName(dirUri, stem, ext, root.fs);
-  const filepath = await root.fs.createFile(dirUri, finalName, "text/plain");
+  // Derive the MIME from the name rather than hardcoding text/plain: SAF's
+  // createFileAsync appends the canonical extension for whatever MIME it is
+  // given, so a `.md` record written as text/plain landed as `cap_x.md.txt`,
+  // which mdcrm's `*.md`-only discovery never picks up.
+  const filepath = await root.fs.createFile(dirUri, finalName, mimeFromFilename(finalName));
   await root.fs.writeString(filepath, content);
   return { filepath, finalName: root.fs.isSaf ? safLastSegment(filepath) || finalName : finalName };
 }
