@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -27,6 +27,13 @@ function capture(overrides: Partial<CaptureRecord> = {}): CaptureRecord {
     review_status: "unreviewed", attachments: [], event_context: { event_name: "Defense Expo 2026", event_date: "2026-08-03", location: "London" },
     extracted: { name: "Jane Smith", title: "Director of Partnerships", company: "Acme Industries", email: "jane@acme.example", phone_display: "+1 (202) 555-0142", phone_normalized: "+12025550142" },
     ...overrides };
+}
+
+/** Document ids currently listed by the on-disk full-text index. */
+async function rebuiltIndexDocuments(repository: FileSystemRepository): Promise<string[]> {
+  const raw = await readFile(join(repository.root, "indexes", "full-text-v1.json"), "utf8").catch(() => null);
+  if (raw === null) return [];
+  return Object.keys((JSON.parse(raw) as { documents: Record<string, unknown> }).documents);
 }
 
 async function storeCapture(repository: FileSystemRepository, value: CaptureRecord): Promise<MarkdownRecord<CaptureRecord>> {
@@ -160,6 +167,97 @@ describe("capture processing integration", () => {
     const source = await storeCapture(repository, capture({ attachments: [{ id: createId("attachment"), role: "original", path: "../attachments/originals/missing.jpg", media_type: "image/jpeg", sha256: "0".repeat(64) }] }));
     await expect(processCapture(repository, config, source.frontmatter.id)).rejects.toThrow("attachment is missing");
     expect((await repository.readById(source.frontmatter.id))?.contentSha256).toBe(source.contentSha256);
+  });
+
+  it("routes to review instead of guessing when two contacts share the capture's exact email", async () => {
+    const { repository, config } = await harness();
+    const shared = "jane@acme.example";
+    const oldCapture = createId("capture");
+    for (const display of ["Jane Smith", "J. A. Smith"]) {
+      const existing: ContactRecord = {
+        schema_version: 1, type: "contact", id: createId("contact"),
+        name: { display, normalized: display.toLowerCase() },
+        emails: [{ value: shared, normalized: shared, status: "observed", source_capture_id: oldCapture }],
+        phones: [], record_status: "active", verification_status: "unverified", source_capture_ids: [oldCapture],
+      };
+      await repository.writeRecord({ frontmatter: existing, body: `# ${display}\n` }, { filenameHint: existing.id });
+    }
+    const source = await storeCapture(repository, capture({ extracted: { name: "Jane Smith", email: shared } }));
+
+    const result = await processCapture(repository, config, source.frontmatter.id);
+
+    // An exact identifier shared by two records is ambiguous, not a match.
+    // Auto-linking here silently attaches the interaction to whichever contact
+    // sorts first by id.
+    expect(result.state).toBe("review_required");
+    expect(await repository.listRecords("review_item")).toHaveLength(1);
+    expect(await repository.listRecords("contact")).toHaveLength(2);
+    expect(await repository.listRecords("interaction")).toHaveLength(0);
+  });
+
+  it("still auto-matches when exactly one contact holds the exact email", async () => {
+    const { repository, config } = await harness();
+    const shared = "solo@acme.example";
+    const oldCapture = createId("capture");
+    const existing: ContactRecord = {
+      schema_version: 1, type: "contact", id: createId("contact"),
+      name: { display: "Solo Person", normalized: "solo person" },
+      emails: [{ value: shared, normalized: shared, status: "observed", source_capture_id: oldCapture }],
+      phones: [], record_status: "active", verification_status: "unverified", source_capture_ids: [oldCapture],
+    };
+    await repository.writeRecord({ frontmatter: existing, body: "# Solo Person\n" }, { filenameHint: existing.id });
+    const source = await storeCapture(repository, capture({ extracted: { name: "Solo Person", email: shared } }));
+
+    const result = await processCapture(repository, config, source.frontmatter.id);
+
+    expect(result.state).toBe("completed");
+    expect(result.outputs.contact_id).toBe(existing.id);
+    expect(await repository.listRecords("contact")).toHaveLength(1);
+  });
+
+  it("does not leave the search index pointing at records a conflict rollback deleted", async () => {
+    const { repository, config } = await harness();
+    const source = await storeCapture(repository, capture());
+    const originalReadById = repository.readById.bind(repository);
+    let sourceReads = 0;
+    repository.readById = async (id: string) => {
+      if (id === source.frontmatter.id && ++sourceReads === 7) {
+        const current = await originalReadById(id);
+        if (current) {
+          await repository.writeRecord(
+            { frontmatter: current.frontmatter, body: "# User edited during processing\n" },
+            { overwrite: true, expectedContentSha256: current.contentSha256!, filenameHint: source.frontmatter.id },
+          );
+        }
+      }
+      return originalReadById(id);
+    };
+
+    await expect(processCapture(repository, config, source.frontmatter.id)).rejects.toBeInstanceOf(RevisionConflictError);
+
+    // The index is built before the final revision check, so a rollback that
+    // deletes the derived records must not leave them searchable.
+    const index = await rebuiltIndexDocuments(repository);
+    for (const id of index) {
+      expect(await repository.readById(id)).not.toBeNull();
+    }
+  });
+
+  it("rejects the loser when two writers commit against the same expected revision", async () => {
+    const { repository } = await harness();
+    const source = await storeCapture(repository, capture());
+    const expected = source.contentSha256!;
+
+    const results = await Promise.allSettled([
+      repository.writeRecord({ frontmatter: source.frontmatter, body: "# Writer A\n" },
+        { overwrite: true, expectedContentSha256: expected, filenameHint: source.frontmatter.id }),
+      repository.writeRecord({ frontmatter: source.frontmatter, body: "# Writer B\n" },
+        { overwrite: true, expectedContentSha256: expected, filenameHint: source.frontmatter.id }),
+    ]);
+
+    // Both read the same pre-image; only one may commit against it.
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
   });
 
   it("never mutates a parsed job record in place while advancing it", async () => {

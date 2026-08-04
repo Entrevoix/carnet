@@ -23,14 +23,28 @@ export async function acquireLease(
   };
   try {
     await atomicWriteFile(path, JSON.stringify(lease), { overwrite: false });
-  } catch (error: unknown) {
-    const existing = await readLease(path);
-    if (!existing || Date.parse(existing.expires_at) > Date.now()) {
+  } catch {
+    const observed = await readLease(path);
+    if (!observed || Date.parse(observed.expires_at) > Date.now()) {
       throw new Error(`Processing lease already held for ${resourceId}`);
     }
-    // Expired leases are recoverable. Replacement is atomic; the token check
-    // on release prevents an old worker from deleting the new owner's lease.
-    await atomicWriteFile(path, JSON.stringify(lease), { overwrite: true });
+    // Expired leases are recoverable, but recovery must still be contended.
+    // A blind `overwrite: true` let two workers that observed the SAME expired
+    // lock both "acquire" it and process the capture concurrently, producing
+    // conflicting derived writes; the token check on release only stops the
+    // loser from deleting the winner's lock, not the duplicate work.
+    // Removing the lock and then racing through the same exclusive create
+    // everyone else uses makes the filesystem pick exactly one winner.
+    //
+    // Residual: a worker descheduled between the read above and this unlink
+    // can still drop a lease acquired in the interim. Closing that needs a
+    // conditional-remove primitive the filesystem does not offer.
+    await unlink(path).catch(() => undefined);
+    try {
+      await atomicWriteFile(path, JSON.stringify(lease), { overwrite: false });
+    } catch {
+      throw new Error(`Processing lease already held for ${resourceId}`);
+    }
   }
   return {
     token,

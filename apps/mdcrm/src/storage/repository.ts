@@ -19,6 +19,28 @@ const KB_DIRECTORIES = [
   "processing/results", "processing/errors", "processing/locks", "processing/jobs", "indexes", "schemas",
 ];
 
+/**
+ * Serialize work touching the same destination path, so a check-then-write
+ * pair cannot interleave with another writer's.
+ *
+ * This closes the IN-PROCESS race only. Two separate processes still depend on
+ * the processing lease, and across hosts Syncthing conflict files remain the
+ * backstop — neither is something a single Node process can enforce.
+ */
+const writeQueues = new Map<string, Promise<unknown>>();
+
+function serializeByPath<T>(path: string, task: () => Promise<T>): Promise<T> {
+  const previous = writeQueues.get(path) ?? Promise.resolve();
+  // Run regardless of whether the previous write resolved or rejected.
+  const run = previous.then(task, task);
+  const settled = run.catch(() => undefined);
+  writeQueues.set(path, settled);
+  void settled.then(() => {
+    if (writeQueues.get(path) === settled) writeQueues.delete(path);
+  });
+  return run;
+}
+
 export class FileSystemRepository {
   readonly root: string;
   constructor(root: string, readonly schemas = new SchemaRegistry()) { this.root = resolve(root); }
@@ -82,21 +104,28 @@ export class FileSystemRepository {
     this.schemas.validate(withRevision.frontmatter);
     const filename = `${sanitizeFilename(options.filenameHint ?? firstHeading(record.body) ?? record.frontmatter.id)}.md`;
     const destination = join(this.root, TYPE_DIRECTORIES[record.frontmatter.type], filename);
-    if (options.expectedContentSha256) {
-      const current = await readFile(destination, "utf8").catch(() => null);
-      if (current === null || sha256(current) !== options.expectedContentSha256) {
-        throw new RevisionConflictError(destination);
-      }
-    }
     const content = renderMarkdownRecord(withRevision);
-    await atomicWriteFile(destination, content, {
-      ...(options.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
-      validate: (candidate) => {
-        const parsed = parseMarkdownRecord(candidate, destination);
-        this.schemas.validate(parsed.frontmatter, destination);
-      },
+    // The revision check and the commit have to be ONE indivisible step. They
+    // used to be separate awaits, so two writers holding the same expected
+    // hash both read the old content before either renamed, both passed, and
+    // the later write silently clobbered the earlier one — the optimistic
+    // guard advertised by expectedContentSha256 did nothing under contention.
+    return serializeByPath(destination, async () => {
+      if (options.expectedContentSha256) {
+        const current = await readFile(destination, "utf8").catch(() => null);
+        if (current === null || sha256(current) !== options.expectedContentSha256) {
+          throw new RevisionConflictError(destination);
+        }
+      }
+      await atomicWriteFile(destination, content, {
+        ...(options.overwrite !== undefined ? { overwrite: options.overwrite } : {}),
+        validate: (candidate) => {
+          const parsed = parseMarkdownRecord(candidate, destination);
+          this.schemas.validate(parsed.frontmatter, destination);
+        },
+      });
+      return destination;
     });
-    return destination;
   }
 
   async verifyAttachments(capture: MarkdownRecord): Promise<void> {

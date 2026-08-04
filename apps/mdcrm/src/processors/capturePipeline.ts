@@ -3,7 +3,7 @@ import { idempotencyKey } from "../jobs/idempotency.js";
 import { requireContentHash } from "../markdown/parser.js";
 import { rebuildFullTextIndex } from "../indexing/fullText.js";
 import { NOOP_LOGGER, type Logger } from "../logging/logger.js";
-import { rankContactCandidates } from "../matching/contactMatcher.js";
+import { rankContactCandidates, type MatchReason } from "../matching/contactMatcher.js";
 import { createId } from "../models/ids.js";
 import type {
   CaptureRecord, ContactRecord, EventRecord, InteractionRecord, MarkdownRecord,
@@ -70,8 +70,15 @@ async function processUnderLease(
     .map((record) => record.frontmatter);
   const candidates = rankContactCandidates(source.frontmatter, contacts);
   const top = candidates[0];
-  const exactEmail = top?.reasons.includes("exact_email") ?? false;
-  const exactPhone = top?.reasons.includes("exact_phone") ?? false;
+  // An exact identifier only *identifies* someone when exactly one contact
+  // holds it. Two records sharing an email is an ordinary import artifact, and
+  // auto-linking there would bind the interaction to whichever id happens to
+  // sort first. Ambiguity is what the review queue is for.
+  const uniquelyHolds = (reason: MatchReason): boolean =>
+    (top?.reasons.includes(reason) ?? false)
+    && candidates.filter((candidate) => candidate.reasons.includes(reason)).length === 1;
+  const exactEmail = uniquelyHolds("exact_email");
+  const exactPhone = uniquelyHolds("exact_phone");
   const automaticMatch = Boolean(top && (exactPhone || (exactEmail && config.processing.autoCreateContactOnExactEmail)) && top.score >= config.matching.automaticMatchThreshold);
   const needsReview = Boolean(top && !automaticMatch && top.score >= config.matching.reviewThreshold);
 
@@ -140,6 +147,11 @@ async function processUnderLease(
   } catch (error: unknown) {
     if (error instanceof RevisionConflictError) {
       await Promise.all(createdOutputs.slice().reverse().map((output) => repository.deletePathIfUnchanged(output.path, output.contentSha256)));
+      // The index was rebuilt before the final revision check, so it still
+      // lists the records this rollback just removed. Leaving it stale makes
+      // `search` return ids whose Markdown is gone until someone rebuilds by
+      // hand. Best-effort: a failure here must not mask the original conflict.
+      if (config.indexing.fullText) await rebuildFullTextIndex(repository).catch(() => undefined);
     }
     job = {
       ...job,
