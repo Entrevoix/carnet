@@ -14,7 +14,18 @@ export const DEFAULT_MATCH_WEIGHTS: MatchWeights = {
   sameEvent: 10, conflictingEmail: -60, conflictingPhone: -50, conflictingCompanyWeakName: -20,
 };
 
-export interface MatchCandidate { contact: ContactRecord; score: number; evidence: string[] }
+/**
+ * Machine-readable match signals. Callers branch on these; `evidence` is
+ * display text and rewording it must never change a downstream decision.
+ */
+export type MatchReason =
+  | "exact_email" | "conflicting_email"
+  | "exact_phone" | "conflicting_phone"
+  | "exact_name" | "fuzzy_name"
+  | "exact_organization" | "conflicting_organization_weak_name"
+  | "same_email_domain" | "similar_title" | "same_event";
+
+export interface MatchCandidate { contact: ContactRecord; score: number; evidence: string[]; reasons: MatchReason[] }
 
 export function scoreContact(
   capture: CaptureRecord,
@@ -31,29 +42,34 @@ export function scoreContact(
   const contactPhones = contact.phones.map((item) => item.normalized);
   let score = 0;
   const evidence: string[] = [];
+  const reasons: MatchReason[] = [];
 
-  if (email && contactEmails.includes(email)) add(weights.exactEmail, "exact normalized email");
-  else if (email && contactEmails.length > 0) add(weights.conflictingEmail, "conflicting email");
-  if (phone && contactPhones.includes(phone)) add(weights.exactPhone, "exact normalized phone");
-  else if (phone && contactPhones.length > 0) add(weights.conflictingPhone, "conflicting phone");
+  if (email && contactEmails.includes(email)) add(weights.exactEmail, "exact normalized email", "exact_email");
+  else if (email && contactEmails.length > 0) add(weights.conflictingEmail, "conflicting email", "conflicting_email");
+  if (phone && contactPhones.includes(phone)) add(weights.exactPhone, "exact normalized phone", "exact_phone");
+  else if (phone && contactPhones.length > 0) add(weights.conflictingPhone, "conflicting phone", "conflicting_phone");
 
-  if (name && name === contact.name.normalized) add(weights.exactName, "exact normalized name");
-  else if (name && similarity(name, contact.name.normalized) >= 0.85) add(weights.fuzzyName, "strong fuzzy name");
+  if (name && name === contact.name.normalized) add(weights.exactName, "exact normalized name", "exact_name");
+  else if (name && similarity(name, contact.name.normalized) >= 0.85) add(weights.fuzzyName, "strong fuzzy name", "fuzzy_name");
 
   const contactOrganization = normalizeOrganization(contact.organization?.name ?? "");
-  if (organization && organization === contactOrganization) add(weights.exactOrganization, "exact normalized organization");
+  if (organization && organization === contactOrganization) add(weights.exactOrganization, "exact normalized organization", "exact_organization");
   else if (organization && contactOrganization && (!name || similarity(name, contact.name.normalized) < 0.85)) {
-    add(weights.conflictingCompanyWeakName, "conflicting organization with weak name");
+    add(weights.conflictingCompanyWeakName, "conflicting organization with weak name", "conflicting_organization_weak_name");
   }
 
   const domain = email.split("@")[1];
-  if (domain && contactEmails.some((candidate) => candidate.endsWith(`@${domain}`))) add(weights.sameEmailDomain, "same email domain");
-  if (extracted.title && contact.title && similarity(normalizeName(extracted.title), normalizeName(contact.title)) >= 0.8) add(weights.similarTitle, "similar title");
-  if (options.eventContactIds?.includes(contact.id)) add(weights.sameEvent, "same event");
+  if (domain && contactEmails.some((candidate) => candidate.endsWith(`@${domain}`))) add(weights.sameEmailDomain, "same email domain", "same_email_domain");
+  if (extracted.title && contact.title && similarity(normalizeName(extracted.title), normalizeName(contact.title)) >= 0.8) add(weights.similarTitle, "similar title", "similar_title");
+  if (options.eventContactIds?.includes(contact.id)) add(weights.sameEvent, "same event", "same_event");
 
-  return { contact, score, evidence };
+  return { contact, score, evidence, reasons };
 
-  function add(points: number, reason: string): void { score += points; evidence.push(`${points >= 0 ? "+" : ""}${points} ${reason}`); }
+  function add(points: number, reason: string, code: MatchReason): void {
+    score += points;
+    evidence.push(`${points >= 0 ? "+" : ""}${points} ${reason}`);
+    reasons.push(code);
+  }
 }
 
 export function rankContactCandidates(capture: CaptureRecord, contacts: readonly ContactRecord[]): MatchCandidate[] {

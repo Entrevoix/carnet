@@ -108,6 +108,13 @@ literal must be updated in the same PR — expect it in the diff, it isn't
 tampering.
 
 ## Hard constraints (non-negotiable — from `docs/session-handoffs/`)
+- **App id is `com.ventouxlabs.carnet`** (renamed from `com.ventoux.carnet` on 2026-08-03).
+  `apps/mobile/app.json` is the single source of truth — the config plugins and
+  `scripts/verify-*-prebuild.sh` all derive the package from `expo.android.package`, so
+  **never hardcode it** anywhere else. Android treats a changed package id as a *different
+  app*: an existing install cannot upgrade in place, and uninstalling to cross over clears
+  AsyncStorage, the offline queue, and every `expo-secure-store` key. Archived plans and
+  dated session handoffs still say `com.ventoux.carnet` — that is correct history, not drift.
 - **No SQLite.** `expo-sqlite@55` is ABI-broken on Expo SDK 54. All persistence goes through
   AsyncStorage (`lib/queue.ts`, `lib/storage.ts`).
 - **No `.env` files anywhere.** All runtime config (OmniRoute URL/key, Karakeep URL/key) is

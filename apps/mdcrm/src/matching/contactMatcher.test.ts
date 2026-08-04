@@ -16,5 +16,14 @@ describe("contact matching", () => {
     const result = scoreContact({ ...capture, extracted: { ...capture.extracted, email: "other@example.net", phone_normalized: "+442079460958" } }, contact);
     expect(result.evidence).toContain("-60 conflicting email");
     expect(result.evidence).toContain("-50 conflicting phone");
+    expect(result.reasons).toEqual(expect.arrayContaining(["conflicting_email", "conflicting_phone"]));
+  });
+
+  it("reports machine-readable reason codes alongside the human-readable evidence", () => {
+    // Callers must branch on these codes. `evidence` is display text, and
+    // rewording it must never change a downstream auto-match decision.
+    const result = scoreContact(capture, contact);
+    expect(result.reasons).toEqual(expect.arrayContaining(["exact_email", "exact_phone"]));
+    expect(result.reasons).not.toContain("conflicting_email");
   });
 });

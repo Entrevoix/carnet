@@ -9,6 +9,11 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
+    // The package shipped with four imports that were dead on arrival
+    // (AnyRecord, sanitizeFilename, readFile, open). `strict` does not catch
+    // those, so the typecheck gate now does.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "skipLibCheck": true

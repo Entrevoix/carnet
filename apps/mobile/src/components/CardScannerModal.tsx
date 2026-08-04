@@ -13,6 +13,11 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 
 import { ocrCardViaVision } from "../lib/dispatcher";
 import {
+  cardScanHint,
+  classifyCardScanOcrError,
+  type CardScanOcrOutcome,
+} from "../lib/cardScanOutcome";
+import {
   saveBusinessCardCapture,
   saveRawOcrResult,
   type BusinessCardCapture,
@@ -21,6 +26,8 @@ import {
 export interface CardScanResult {
   text: string;
   capture: BusinessCardCapture;
+  /** Why `text` is empty, so the caller can advise the right next action. */
+  ocr: CardScanOcrOutcome;
 }
 
 interface Props {
@@ -57,11 +64,14 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
       try {
         const { text } = await ocrCardViaVision({ base64: photo.base64, mimeType: "image/jpeg" });
         await saveRawOcrResult(saved, text);
-        onResult({ text, capture: saved });
+        onResult({ text, capture: saved, ocr: { kind: "ok" } });
         onClose();
       } catch (ocrError: unknown) {
-        onResult({ text: "", capture: saved });
-        setError(`Card image saved locally. OCR unavailable: ${ocrError instanceof Error ? ocrError.message : String(ocrError)}`);
+        // Classify rather than flattening to one string: an unconfigured
+        // provider must not be told to "scan again", which can never succeed.
+        const outcome = classifyCardScanOcrError(ocrError);
+        onResult({ text: "", capture: saved, ocr: outcome });
+        setError(cardScanHint(outcome));
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));

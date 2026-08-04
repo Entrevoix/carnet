@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -160,6 +160,23 @@ describe("capture processing integration", () => {
     const source = await storeCapture(repository, capture({ attachments: [{ id: createId("attachment"), role: "original", path: "../attachments/originals/missing.jpg", media_type: "image/jpeg", sha256: "0".repeat(64) }] }));
     await expect(processCapture(repository, config, source.frontmatter.id)).rejects.toThrow("attachment is missing");
     expect((await repository.readById(source.frontmatter.id))?.contentSha256).toBe(source.contentSha256);
+  });
+
+  it("never mutates a parsed job record in place while advancing it", async () => {
+    const { repository, config } = await harness();
+    const source = await storeCapture(repository, capture());
+    // Freezing every parsed processing_job turns an in-place field assignment
+    // into a TypeError under ES-module strict mode, which is the defect this
+    // guards: `job` used to alias the stored record the caller still holds.
+    const originalReadPath = repository.readPath.bind(repository);
+    repository.readPath = async (path: string) => {
+      const record = await originalReadPath(path);
+      if (record.frontmatter.type === "processing_job") Object.freeze(record.frontmatter);
+      return record;
+    };
+
+    const result = await processCapture(repository, config, source.frontmatter.id);
+    expect(result.state).toBe("completed");
   });
 
   it("rejects a stale optimistic write rather than overwriting a user edit", async () => {

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { firstHeading } from "../markdown/parser.js";
 import type { MarkdownRecord } from "../models/records.js";
 import { atomicWriteFile } from "../storage/atomic.js";
 import type { FileSystemRepository } from "../storage/repository.js";
@@ -24,7 +25,7 @@ export async function rebuildFullTextIndex(repository: FileSystemRepository): Pr
   const index: FullTextIndex = { version: 1, generated_at: new Date().toISOString(), documents: {}, terms: {} };
   for (const record of records) {
     const id = record.frontmatter.id;
-    index.documents[id] = { type: record.frontmatter.type, path: record.sourcePath ?? "", title: title(record) };
+    index.documents[id] = { type: record.frontmatter.type, path: record.sourcePath ?? "", title: firstHeading(record.body) ?? id };
     for (const term of tokenize(`${JSON.stringify(record.frontmatter)}\n${record.body}`)) {
       const ids = index.terms[term] ?? (index.terms[term] = []);
       if (!ids.includes(id)) ids.push(id);
@@ -45,8 +46,4 @@ export async function searchFullText(repository: FileSystemRepository, query: st
 
 export function tokenize(value: string): string[] {
   return [...new Set(value.normalize("NFKD").toLocaleLowerCase("en").replace(/[\u0300-\u036f]/g, "").match(/[\p{L}\p{N}]{2,}/gu) ?? [])];
-}
-
-function title(record: MarkdownRecord): string {
-  return record.body.split("\n").find((line) => line.startsWith("# "))?.slice(2).trim() || record.frontmatter.id;
 }

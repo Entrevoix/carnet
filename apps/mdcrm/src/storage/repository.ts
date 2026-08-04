@@ -1,8 +1,8 @@
 import { access, mkdir, readFile, readdir, unlink } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
-import type { AnyRecord, MarkdownRecord, RecordType } from "../models/records.js";
-import { logicalRecordHash, parseMarkdownRecord, renderMarkdownRecord, sha256 } from "../markdown/parser.js";
+import type { MarkdownRecord, RecordType } from "../models/records.js";
+import { firstHeading, logicalRecordHash, parseMarkdownRecord, renderMarkdownRecord, sha256 } from "../markdown/parser.js";
 import { SchemaRegistry, bundledSchemaDirectory } from "../schemas/registry.js";
 import { atomicWriteFile } from "./atomic.js";
 
@@ -37,7 +37,7 @@ export class FileSystemRepository {
   }
 
   async readById(id: string): Promise<MarkdownRecord | null> {
-    for (const path of await this.listMarkdownFiles()) {
+    for (const path of await this.listRecordPaths()) {
       // Discovery must tolerate a half-synced or malformed sibling. Callers
       // that explicitly open a path still receive its parsing error; an id
       // lookup simply keeps searching for a valid record with this id.
@@ -80,7 +80,7 @@ export class FileSystemRepository {
       ...(priorHash ? { previous_content_sha256: priorHash } : {}),
     };
     this.schemas.validate(withRevision.frontmatter);
-    const filename = `${sanitizeFilename(options.filenameHint ?? titleFromBody(record.body) ?? record.frontmatter.id)}.md`;
+    const filename = `${sanitizeFilename(options.filenameHint ?? firstHeading(record.body) ?? record.frontmatter.id)}.md`;
     const destination = join(this.root, TYPE_DIRECTORIES[record.frontmatter.type], filename);
     if (options.expectedContentSha256) {
       const current = await readFile(destination, "utf8").catch(() => null);
@@ -127,16 +127,11 @@ export class FileSystemRepository {
     return this.assertInside(resolve(base, path));
   }
 
-  private async listMarkdownFiles(): Promise<string[]> {
-    const files: string[] = [];
-    for (const directory of [...new Set(Object.values(TYPE_DIRECTORIES))]) files.push(...await walkMarkdown(join(this.root, directory)));
-    return files;
-  }
-
   private resolveInside(path: string): string { return this.assertInside(resolve(this.root, path)); }
   private assertInside(path: string): string {
-    const rel = relative(this.root, path);
-    if (rel.startsWith("..") || resolve(path) === resolve(this.root, "..")) throw new Error(`Path escapes knowledge base: ${path}`);
+    // `relative` yields a leading ".." for anything outside the root, including
+    // the root's own parent, so that single test covers every escape.
+    if (relative(this.root, path).startsWith("..")) throw new Error(`Path escapes knowledge base: ${path}`);
     return path;
   }
 }
@@ -149,11 +144,6 @@ export function sanitizeFilename(value: string): string {
   const normalized = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
   const slug = normalized.toLowerCase().replace(/[^a-z0-9_]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100);
   return slug || "record";
-}
-
-function titleFromBody(body: string): string | null {
-  const line = body.split("\n").find((candidate) => candidate.startsWith("# "));
-  return line?.slice(2).trim() || null;
 }
 
 async function walkMarkdown(directory: string): Promise<string[]> {

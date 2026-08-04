@@ -4,6 +4,7 @@ import { Button, HelperText, Text, TextInput } from "react-native-paper";
 
 import { VoiceButton, type VoiceButtonHandle } from "../voice/VoiceButton";
 import { CardScannerModal } from "./CardScannerModal";
+import { cardScanHint } from "../lib/cardScanOutcome";
 import type { CaptureMode } from "../lib/storage";
 import { caretProps, useCarnetTheme } from "../lib/theme";
 
@@ -196,9 +197,12 @@ function PersonInput({
       />
       <CardScannerModal
         visible={scannerVisible}
-        onResult={({ text }) => {
+        onResult={({ text, ocr }) => {
           if (text) onOcrChange(ocrText ? `${ocrText}\n${text}`.trim() : text);
-          else setHint("Card image saved. Type details manually or scan again to retry OCR.");
+          // Restores the specific PR #29 diagnostic: a blank provider URL or
+          // vision model now says so (and says the image survived), instead of
+          // the generic "scan again to retry" that could never work.
+          setHint(cardScanHint(ocr));
         }}
         onClose={() => setScannerVisible(false)}
       />

@@ -1,5 +1,6 @@
 import type { MdcrmConfig } from "../config/config.js";
 import { idempotencyKey } from "../jobs/idempotency.js";
+import { requireContentHash } from "../markdown/parser.js";
 import { rebuildFullTextIndex } from "../indexing/fullText.js";
 import { NOOP_LOGGER, type Logger } from "../logging/logger.js";
 import { rankContactCandidates } from "../matching/contactMatcher.js";
@@ -11,7 +12,7 @@ import type {
 import { normalizeEmail, normalizeName, normalizeOrganization, normalizePhone, normalizeUrl } from "../normalization/values.js";
 import { possibleDuplicateReview } from "../review/createReview.js";
 import { acquireLease } from "../storage/lease.js";
-import { FileSystemRepository, RevisionConflictError, sanitizeFilename } from "../storage/repository.js";
+import { FileSystemRepository, RevisionConflictError } from "../storage/repository.js";
 
 const PROCESSOR = "capture-pipeline";
 const PROCESSOR_VERSION = "1.0.0";
@@ -37,7 +38,7 @@ export async function processCapture(
   repository.schemas.validate(source.frontmatter, source.sourcePath);
   await repository.verifyAttachments(source);
   const captureSource = source as MarkdownRecord<CaptureRecord>;
-  const sourceRevision = requiredHash(captureSource);
+  const sourceRevision = requireContentHash(captureSource);
   const key = idempotencyKey(PROCESSOR, PROCESSOR_VERSION, captureId, sourceRevision);
   const prior = (await repository.listRecords("processing_job"))
     .find((record) => record.frontmatter.type === "processing_job" && record.frontmatter.idempotency_key === key);
@@ -69,13 +70,13 @@ async function processUnderLease(
     .map((record) => record.frontmatter);
   const candidates = rankContactCandidates(source.frontmatter, contacts);
   const top = candidates[0];
-  const exactEmail = top?.evidence.some((entry) => entry.includes("exact normalized email")) ?? false;
-  const exactPhone = top?.evidence.some((entry) => entry.includes("exact normalized phone")) ?? false;
+  const exactEmail = top?.reasons.includes("exact_email") ?? false;
+  const exactPhone = top?.reasons.includes("exact_phone") ?? false;
   const automaticMatch = Boolean(top && (exactPhone || (exactEmail && config.processing.autoCreateContactOnExactEmail)) && top.score >= config.matching.automaticMatchThreshold);
   const needsReview = Boolean(top && !automaticMatch && top.score >= config.matching.reviewThreshold);
 
   const planned = priorJob?.frontmatter.outputs ?? planOutputIds(source.frontmatter, automaticMatch ? top?.contact.id : undefined, needsReview);
-  let job = priorJob?.frontmatter ?? buildJob(source.frontmatter.id, requiredHash(source), key, planned, now);
+  let job = priorJob?.frontmatter ?? buildJob(source.frontmatter.id, requireContentHash(source), key, planned, now);
   let jobRecord = priorJob;
   if (!jobRecord) {
     const path = await repository.writeRecord({ frontmatter: job, body: jobBody(job) }, { filenameHint: job.id });
@@ -93,8 +94,7 @@ async function processUnderLease(
         const review = possibleDuplicateReview(source.frontmatter.id, candidates.slice(0, 5), now, reviewId);
         createdOutputs.push(await trackCreatedOutput(repository, await repository.writeRecord({ frontmatter: review, body: reviewBody(review) }, { filenameHint: `${review.id}-possible-duplicate` })));
       }
-      job.state = "review_required";
-      job.stages = completedStages("review_required");
+      job = { ...job, state: "review_required", stages: completedStages("review_required") };
     } else {
       const contactId = automaticMatch ? top?.contact.id : stringOutput(planned.contact_id);
       if (!contactId) throw new Error("Pipeline did not plan a contact id");
@@ -123,30 +123,32 @@ async function processUnderLease(
           createdOutputs.push(await trackCreatedOutput(repository, await repository.writeRecord({ frontmatter: interaction, body: interactionBody(interaction, source.frontmatter) }, { filenameHint: `${interaction.id}-${source.frontmatter.extracted?.name ?? "capture"}` })));
         }
       }
-      job.state = "completed";
-      job.stages = completedStages("completed");
+      job = { ...job, state: "completed", stages: completedStages("completed") };
     }
     if (config.indexing.fullText) await rebuildFullTextIndex(repository);
     // The final compare prevents a job from advertising stale derived outputs
     // when the user edited the source while a longer stage (such as indexing)
     // was running. A later run receives a new idempotency key for that edit.
     await assertSourceUnchanged(repository, source);
-    job.completed_at = new Date().toISOString();
+    job = { ...job, completed_at: new Date().toISOString() };
     const currentJob = await repository.readById(job.id);
     await repository.writeRecord(
       { frontmatter: job, body: jobBody(job) },
-      { overwrite: true, expectedContentSha256: requiredHash(currentJob), filenameHint: job.id },
+      { overwrite: true, expectedContentSha256: requireContentHash(currentJob), filenameHint: job.id },
     );
     return { jobId: job.id, state: job.state, outputs: job.outputs, reused: false };
   } catch (error: unknown) {
     if (error instanceof RevisionConflictError) {
       await Promise.all(createdOutputs.slice().reverse().map((output) => repository.deletePathIfUnchanged(output.path, output.contentSha256)));
     }
-    job.state = "failed";
-    job.completed_at = new Date().toISOString();
-    job.stages = [{ name: "process", state: "failed", error: error instanceof Error ? error.message : "unknown error" }];
+    job = {
+      ...job,
+      state: "failed",
+      completed_at: new Date().toISOString(),
+      stages: [{ name: "process", state: "failed", error: error instanceof Error ? error.message : "unknown error" }],
+    };
     const currentJob = await repository.readById(job.id);
-    await repository.writeRecord({ frontmatter: job, body: jobBody(job) }, { overwrite: true, expectedContentSha256: requiredHash(currentJob), filenameHint: job.id }).catch(() => undefined);
+    await repository.writeRecord({ frontmatter: job, body: jobBody(job) }, { overwrite: true, expectedContentSha256: requireContentHash(currentJob), filenameHint: job.id }).catch(() => undefined);
     throw error;
   }
 }
@@ -236,9 +238,8 @@ async function assertSourceUnchanged(repository: FileSystemRepository, source: M
 }
 async function trackCreatedOutput(repository: FileSystemRepository, path: string): Promise<{ path: string; contentSha256: string }> {
   const record = await repository.readPath(path);
-  return { path, contentSha256: requiredHash(record) };
+  return { path, contentSha256: requireContentHash(record) };
 }
-function requiredHash(record: MarkdownRecord | null): string { if (!record?.contentSha256) throw new Error("Record hash missing"); return record.contentSha256; }
 function stringOutput(value: string | string[] | undefined): string { if (typeof value !== "string") throw new Error("Processing job output id is missing"); return value; }
 function contactBody(contact: ContactRecord): string { return `# ${contact.name.display}\n\n${contact.organization ? `Works at [[${contact.organization.id ?? ""}|${contact.organization.name}]].\n` : ""}`; }
 function interactionBody(interaction: InteractionRecord, capture: CaptureRecord): string { return `# ${capture.extracted?.name ?? "Contact"} — interaction\n\nContact: [[${interaction.contact_ids[0]}]]\n\nSource capture: [[${capture.id}]]\n${interaction.event_id ? `\nEvent: [[${interaction.event_id}]]\n` : ""}`; }

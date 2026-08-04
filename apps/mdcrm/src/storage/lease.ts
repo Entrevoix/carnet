@@ -1,4 +1,4 @@
-import { open, readFile, unlink } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 

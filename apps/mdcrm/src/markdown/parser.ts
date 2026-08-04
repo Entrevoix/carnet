@@ -45,6 +45,20 @@ export function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+/**
+ * Assert a record carries the on-disk content hash that optimistic writes and
+ * revision-conflict checks compare against. A record built in memory has none.
+ */
+export function requireContentHash(record: Pick<MarkdownRecord, "contentSha256"> | null): string {
+  if (!record?.contentSha256) throw new Error("Record hash missing");
+  return record.contentSha256;
+}
+
+/** First ATX H1 in a body, or null. Backs both record filenames and index titles. */
+export function firstHeading(body: string): string | null {
+  return body.split("\n").find((line) => line.startsWith("# "))?.slice(2).trim() || null;
+}
+
 /** Hash logical content without the revision block to avoid a self-referential hash. */
 export function logicalRecordHash(record: Pick<MarkdownRecord, "frontmatter" | "body">): string {
   const frontmatter = structuredClone(record.frontmatter) as AnyRecord;

@@ -2,8 +2,10 @@
 import { basename, extname } from "node:path";
 
 import { loadConfig } from "../config/config.js";
+import { EXIT_VALIDATION, UsageError, exitCodeForError } from "./exitCodes.js";
 import { createStructuredLogger } from "../logging/logger.js";
 import { recordReferences } from "../markdown/links.js";
+import { requireContentHash } from "../markdown/parser.js";
 import { rebuildFullTextIndex, searchFullText } from "../indexing/fullText.js";
 import { rankContactCandidates } from "../matching/contactMatcher.js";
 import type {
@@ -13,10 +15,6 @@ import { normalizeEmail, normalizeIsoDate, normalizeName, normalizeOrganization,
 import { processCapture } from "../processors/capturePipeline.js";
 import { processInbox } from "../processors/inbox.js";
 import { FileSystemRepository } from "../storage/repository.js";
-
-const EXIT_USAGE = 2;
-const EXIT_VALIDATION = 3;
-const EXIT_CONFLICT = 4;
 
 interface CliContext { repository: FileSystemRepository; json: boolean; args: string[] }
 
@@ -109,9 +107,7 @@ async function normalizeCommand(context: CliContext): Promise<number> {
 }
 
 async function matchCommand(context: CliContext): Promise<number> {
-  const id = requiredArg(context.args, "Capture id");
-  const capture = await context.repository.readById(id);
-  if (!capture || capture.frontmatter.type !== "capture") throw new Error(`Capture not found: ${id}`);
+  const capture = await captureForCommand(context);
   const contacts = (await context.repository.listRecords("contact"))
     .filter((record): record is MarkdownRecord<ContactRecord> => record.frontmatter.type === "contact")
     .map((record) => record.frontmatter);
@@ -164,7 +160,7 @@ async function reviewCommand(context: CliContext): Promise<number> {
   if (!record || record.frontmatter.type !== "review_item") throw new Error(`Review not found: ${id}`);
   const updated: ReviewItemRecord = { ...record.frontmatter, state: action === "approve" ? "approved" : "rejected", updated_at: new Date().toISOString() };
   const filename = record.sourcePath ? basename(record.sourcePath, extname(record.sourcePath)) : record.frontmatter.id;
-  await context.repository.writeRecord({ frontmatter: updated, body: record.body }, { overwrite: true, expectedContentSha256: requireHash(record), filenameHint: filename });
+  await context.repository.writeRecord({ frontmatter: updated, body: record.body }, { overwrite: true, expectedContentSha256: requireContentHash(record), filenameHint: filename });
   return output(context, { id, state: updated.state });
 }
 
@@ -205,12 +201,8 @@ function output(context: CliContext, value: unknown): number {
 function takeFlag(args: string[], flag: string): boolean { const index = args.indexOf(flag); if (index < 0) return false; args.splice(index, 1); return true; }
 function takeOption(args: string[], option: string): string | undefined { const index = args.indexOf(option); if (index < 0) return undefined; const value = args[index + 1]; if (!value) throw new UsageError(`${option} requires a value`); args.splice(index, 2); return value; }
 function requiredArg(args: string[], label: string): string { const value = args.shift(); if (!value) throw new UsageError(`${label} is required`); return value; }
-function requireHash(record: MarkdownRecord): string { if (!record.contentSha256) throw new Error("Record hash missing"); return record.contentSha256; }
 function printHelp(): number { console.log(`mdcrm <command> [--root PATH] [--config FILE] [--json]\n\nCommands:\n  init\n  validate FILE\n  scan-inbox\n  process-inbox\n  process-capture CAPTURE_ID\n  classify CAPTURE_ID\n  extract CAPTURE_ID\n  normalize email|phone|name|company|url|date VALUE\n  match-contact CAPTURE_ID\n  match-company CAPTURE_ID\n  link-event CAPTURE_ID\n  rebuild-index\n  search QUERY\n  review list|approve|reject [REVIEW_ID]\n  doctor`); return 0; }
-class UsageError extends Error {}
-
 main().then((code) => { process.exitCode = code; }).catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(JSON.stringify({ error: message }));
-  process.exitCode = error instanceof UsageError ? EXIT_USAGE : message.includes("changed since processing") ? EXIT_CONFLICT : message.includes("valid") ? EXIT_VALIDATION : 1;
+  console.error(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+  process.exitCode = exitCodeForError(error);
 });
