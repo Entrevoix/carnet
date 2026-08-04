@@ -67,6 +67,7 @@ Any note can optionally be pushed to a self-hosted **Karakeep** instance from it
 carnet/
   apps/
     mobile/          Expo 54 + React Native + TypeScript
+    mdcrm/           Optional Markdown contact/event processor + CLI
   packages/
     shared/          @carnet/shared — note types + markdown helpers
   docs/
@@ -98,6 +99,10 @@ npm run mobile
 # Type-check
 npm -w @carnet/mobile run typecheck
 npm -w @carnet/shared run typecheck
+
+# Build/test the optional server-side Markdown processor
+npm run mdcrm:build
+npm run mdcrm:test
 ```
 
 ## Configuration

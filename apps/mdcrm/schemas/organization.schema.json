@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://carnet.local/schemas/organization.schema.json",
+  "type": "object", "required": ["schema_version", "type", "id", "name", "aliases", "domains", "source_capture_ids"],
+  "properties": {
+    "schema_version": { "const": 1 }, "type": { "const": "organization" }, "id": { "type": "string", "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "name": { "type": "object", "required": ["display", "normalized"], "properties": { "display": { "type": "string", "minLength": 1 }, "normalized": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "aliases": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }, "domains": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "source_capture_ids": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^cap_" }, "uniqueItems": true }, "contact_ids": { "type": "array", "items": { "type": "string", "pattern": "^con_" }, "uniqueItems": true },
+    "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }, "provenance": { "type": "array", "items": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/provenance" } }, "revision": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/revision" }
+  }, "additionalProperties": false
+}

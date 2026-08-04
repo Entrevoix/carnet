@@ -7,7 +7,7 @@
 # Ordering note: filters are exercised BEFORE typing — Paper's Searchbar
 # swaps the trailering (filter) icon for the clear icon while the field has
 # text, so the filter icon is only reachable on an empty query.
-appId: com.ventoux.carnet
+appId: com.ventouxlabs.carnet
 name: Search filters expand, apply, dismiss; text search finds a note
 ---
 - launchApp:

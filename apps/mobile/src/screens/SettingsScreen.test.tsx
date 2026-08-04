@@ -134,6 +134,10 @@ vi.mock("../components/DiagnosticsSection", () => ({
   DiagnosticsSection: () => null,
 }));
 
+vi.mock("../components/SettingsTransferSection", () => ({
+  SettingsTransferSection: () => null,
+}));
+
 vi.mock("../voice/VoiceSetupCheck", () => ({
   VoiceSetupCheck: () => null,
 }));

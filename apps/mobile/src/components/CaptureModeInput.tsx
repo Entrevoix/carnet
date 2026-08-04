@@ -4,8 +4,7 @@ import { Button, HelperText, Text, TextInput } from "react-native-paper";
 
 import { VoiceButton, type VoiceButtonHandle } from "../voice/VoiceButton";
 import { CardScannerModal } from "./CardScannerModal";
-import { getSettings } from "../lib/settings";
-import { resolveActiveProvider } from "../lib/llmProviders";
+import { cardScanHint } from "../lib/cardScanOutcome";
 import type { CaptureMode } from "../lib/storage";
 import { caretProps, useCarnetTheme } from "../lib/theme";
 
@@ -146,14 +145,6 @@ function PersonInput({
 
   const open = async () => {
     setHint(null);
-    const settings = await getSettings();
-    const provider = resolveActiveProvider(settings.llmProviders, settings.activeProviderId);
-    if (!provider.baseUrl.trim()) {
-      setHint(
-        "OmniRoute not configured. Type the card text below, then tap Send.",
-      );
-      return;
-    }
     setScannerVisible(true);
   };
 
@@ -206,8 +197,12 @@ function PersonInput({
       />
       <CardScannerModal
         visible={scannerVisible}
-        onResult={(text) => {
-          onOcrChange(ocrText ? `${ocrText}\n${text}`.trim() : text);
+        onResult={({ text, ocr }) => {
+          if (text) onOcrChange(ocrText ? `${ocrText}\n${text}`.trim() : text);
+          // Restores the specific PR #29 diagnostic: a blank provider URL or
+          // vision model now says so (and says the image survived), instead of
+          // the generic "scan again to retry" that could never work.
+          setHint(cardScanHint(ocr));
         }}
         onClose={() => setScannerVisible(false)}
       />

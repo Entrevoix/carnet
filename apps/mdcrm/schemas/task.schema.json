@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://carnet.local/schemas/task.schema.json",
+  "type": "object", "required": ["schema_version", "type", "id", "title", "state", "source_capture_ids"],
+  "properties": {
+    "schema_version": { "const": 1 }, "type": { "const": "task" }, "id": { "type": "string", "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$" }, "title": { "type": "string", "minLength": 1 }, "state": { "enum": ["open", "completed", "dismissed"] }, "due_at": { "type": "string" },
+    "source_capture_ids": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^cap_" } }, "contact_ids": { "type": "array", "items": { "type": "string", "pattern": "^con_" } },
+    "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }, "provenance": { "type": "array", "items": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/provenance" } }, "revision": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/revision" }
+  }, "additionalProperties": false
+}

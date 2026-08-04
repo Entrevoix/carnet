@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://carnet.local/schemas/event.schema.json",
+  "type": "object", "required": ["schema_version", "type", "id", "name", "contact_ids", "capture_ids"],
+  "properties": {
+    "schema_version": { "const": 1 }, "type": { "const": "event" }, "id": { "type": "string", "pattern": "^evt_(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9-]+)$" }, "name": { "type": "string", "minLength": 1 },
+    "start_at": { "type": "string", "format": "date-time" }, "end_at": { "type": "string", "format": "date-time" },
+    "location": { "type": "object", "required": ["display"], "properties": { "display": { "type": "string" }, "venue": { "type": "string" }, "city": { "type": "string" }, "country": { "type": "string" } }, "additionalProperties": false },
+    "contact_ids": { "type": "array", "items": { "type": "string", "pattern": "^con_" }, "uniqueItems": true }, "capture_ids": { "type": "array", "items": { "type": "string", "pattern": "^cap_" }, "uniqueItems": true },
+    "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }, "provenance": { "type": "array", "items": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/provenance" } }, "revision": { "$ref": "https://carnet.local/schemas/common.schema.json#/$defs/revision" }
+  }, "additionalProperties": false
+}

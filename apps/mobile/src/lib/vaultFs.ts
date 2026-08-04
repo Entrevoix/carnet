@@ -179,6 +179,27 @@ const fileFs: VaultFs = {
 // is safe here: all vault writes happen on this one JS thread/process.
 const inFlightSafCreates = new Map<string, Promise<string>>();
 
+/** Find or create ONE child directory. Callers walk multi-segment paths. */
+async function findOrCreateSafChild(parentUri: string, name: string): Promise<string> {
+  const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
+  const existing = children.find((u) => safLastSegment(u) === name);
+  if (existing) return existing;
+
+  const key = `${parentUri}::${name}`;
+  const inFlight = inFlightSafCreates.get(key);
+  if (inFlight) return inFlight;
+
+  const create = (async () => {
+    try {
+      return await StorageAccessFramework.makeDirectoryAsync(parentUri, name);
+    } finally {
+      inFlightSafCreates.delete(key);
+    }
+  })();
+  inFlightSafCreates.set(key, create);
+  return create;
+}
+
 /** SAF backend — a content:// tree URI granted by the document picker. */
 const safFs: VaultFs = {
   isSaf: true,
@@ -199,23 +220,19 @@ const safFs: VaultFs = {
   },
 
   async findOrCreateSubdir(parentUri, name) {
-    const children = await StorageAccessFramework.readDirectoryAsync(parentUri);
-    const existing = children.find((u) => safLastSegment(u) === name);
-    if (existing) return existing;
-
-    const key = `${parentUri}::${name}`;
-    const inFlight = inFlightSafCreates.get(key);
-    if (inFlight) return inFlight;
-
-    const create = (async () => {
-      try {
-        return await StorageAccessFramework.makeDirectoryAsync(parentUri, name);
-      } finally {
-        inFlightSafCreates.delete(key);
-      }
-    })();
-    inFlightSafCreates.set(key, create);
-    return create;
+    // SAF has no `intermediates: true` equivalent: makeDirectoryAsync takes a
+    // DISPLAY NAME and creates exactly one child per call. A nested subdir
+    // ("attachments/originals") must therefore be walked segment by segment —
+    // passing it whole creates a single folder whose name contains a slash, or
+    // fails outright, and the capture package silently never lands. The file://
+    // backend gets nesting free from expo-file-system, which is why this
+    // divergence went unnoticed until a caller first passed a nested path.
+    let current = parentUri;
+    for (const segment of name.split("/")) {
+      if (!segment) continue; // tolerate a leading/trailing/doubled slash
+      current = await findOrCreateSafChild(current, segment);
+    }
+    return current;
   },
 
   async createFile(parentUri, name, mime) {

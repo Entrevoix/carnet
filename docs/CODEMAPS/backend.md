@@ -1,8 +1,17 @@
 # Device Pipeline & Integrations
 <!-- Generated: 2026-07-17 | Files scanned: ~152 (87 src + tests) | Token estimate: ~880 -->
 
-No HTTP server. The "backend" is the **on-device enrichment + persistence pipeline**,
-plus an opt-in **Karakeep export** REST client.
+The mobile app has no required HTTP server. Its "backend" is the **on-device enrichment +
+persistence pipeline**, plus an opt-in **Karakeep export** REST client. `apps/mdcrm` is an
+optional standalone file processor; it does not sit on the capture path and can be disabled.
+
+## Optional Markdown processor — `apps/mdcrm`
+
+The Node 20 CLI consumes schema-v1 Markdown captures through a filesystem adapter. Its
+Phase 1 pipeline validates YAML and attachment hashes, acquires a lease, applies deterministic
+normalization and contact scoring, emits contact/organization/event/interaction or review
+records, records an idempotent processing job, and rebuilds a disposable full-text index.
+It has no LLM or mobile-runtime dependency. See `docs/mdcrm/architecture.md`.
 
 ## Capture → vault  (mode → enrich → write)
 ```

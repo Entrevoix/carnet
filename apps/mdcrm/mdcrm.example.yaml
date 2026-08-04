@@ -1,0 +1,27 @@
+knowledge_base_path: /data/knowledge-base
+
+processing:
+  auto_create_contact_on_exact_email: true
+  auto_merge_contacts: false
+  create_interactions: true
+  create_follow_up_suggestions: true
+
+matching:
+  automatic_match_threshold: 100
+  review_threshold: 70
+
+llm:
+  enabled: false
+  provider: local
+  model: ""
+  allow_external_api: false
+  include_images: false
+
+indexing:
+  full_text: true
+  embeddings: false
+
+sync:
+  adapter: filesystem
+
+lease_seconds: 300

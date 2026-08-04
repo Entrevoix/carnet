@@ -78,6 +78,7 @@ vi.mock("expo-file-system/legacy", () => {
 import {
   writeIdea,
   writeBinary,
+  writeTextFile,
   appendJournal,
   writePerson,
   readNote,
@@ -814,6 +815,18 @@ describe("writeBinary", () => {
     vi.mocked(saf.readDirectoryAsync).mockReset();
     vi.mocked(saf.createFileAsync).mockReset();
     vi.mocked(saf.writeAsStringAsync).mockReset();
+  });
+});
+
+describe("writeTextFile", () => {
+  beforeEach(clearFiles);
+
+  it("writes a UTF-8 source sidecar and collision-bumps instead of overwriting it", async () => {
+    const first = await writeTextFile("processing/results", "cap_x.ocr.txt", "RAW OCR\n");
+    const second = await writeTextFile("processing/results", "cap_x.ocr.txt", "second");
+    expect(first.finalName).toBe("cap_x.ocr.txt");
+    expect(second.finalName).toBe("cap_x.ocr-2.txt");
+    expect(await readNote(first.filepath)).toBe("RAW OCR\n");
   });
 });
 

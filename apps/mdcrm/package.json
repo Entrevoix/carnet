@@ -1,0 +1,26 @@
+{
+  "name": "@carnet/mdcrm",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "bin": {
+    "mdcrm": "dist/src/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "node dist/src/cli/index.js"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ulid": "^3.0.1",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "typescript": "~5.9.2",
+    "vitest": "^2.1.0"
+  }
+}

@@ -2,11 +2,14 @@
 <!-- Generated: 2026-07-17 | Files scanned: ~152 (87 src + tests) | Token estimate: ~820 -->
 
 Mobile-first knowledge capture. The Android app writes Markdown into a local folder;
-Syncthing replicates it peer-to-peer into an Obsidian vault on the workstation.
-**No server, no database** — the vault (plain files) is the source of truth.
+Syncthing replicates it peer-to-peer into an Obsidian vault on the workstation. The app
+requires **no server and no database**. An optional, independently deployable `mdcrm`
+processor can derive contact/event records from schema-v1 captures; plain files remain the
+source of truth.
 
 ## Workspaces (npm monorepo, v0.2.0)
 - `apps/mobile`    — Expo SDK 54 / React Native 0.81 — the primary surface
+- `apps/mdcrm`     — Node 20 CLI — optional Markdown validation, matching, review, and index pipeline
 - `packages/shared` — `@carnet/shared` — TS types + markdown helpers (no app deps)
 
 (`apps/desktop`, a Tauri placeholder stub, was deprecated and removed 2026-07-25 — see
@@ -25,6 +28,10 @@ Capture (Idea / Journal / Contact / Photo / Audio / Share / notification inline-
         │  (Idea/Journal default SAVE-FIRST: file lands instantly, enrichment patches after — B4)
         ▼  Syncthing p2p
   ~/Obsidian/Carnet/              workstation vault (Obsidian opens it directly)
+
+Optional schema-v1 capture package
+  → apps/mdcrm filesystem adapter → validate / match / review / derive / index
+  → Markdown contacts, organizations, events, interactions, and processing jobs
 
 Export (opt-in, per note, from RecentDetail)
   → lib/karakeepNoteExport.ts → lib/karakeep*.ts (HTTPS REST)
@@ -46,6 +53,8 @@ Export (opt-in, per note, from RecentDetail)
   pure error-decision ladder (`sttErrorPolicy` — restart latching, silence auto-stop,
   mic-revoked classification), onboarding/readiness
 - **Native bridges** `bridges/` + `editor-web/` (TenTap WebView WYSIWYG)
+- **Optional processor** `apps/mdcrm` — LLM-free Phase 1 CLI, JSON Schemas, atomic
+  filesystem repository, deterministic matching, review records, disposable full-text index
 - **External** — OmniRoute (self-hosted LLM gateway, all AI calls), Karakeep (export),
   Syncthing (sync), Android STT RecognitionServices, camera/mic/location
 

@@ -73,6 +73,8 @@ export default defineConfig({
       // Aliasing the legacy entry to a plain-TS stub keeps the resolution
       // chain inside files vite-node can parse.
       "expo-file-system/legacy": path.join(stubDir, "expo-file-system-legacy.ts"),
+      "expo-document-picker": path.join(stubDir, "expo-document-picker.ts"),
+      "expo-sharing": path.join(stubDir, "expo-sharing.ts"),
       // expo-location -> expo-modules-core -> react-native (Flow), unparseable
       // by Rollup. Stub it so the pure coord helpers are testable.
       "expo-location": path.join(stubDir, "expo-location.ts"),

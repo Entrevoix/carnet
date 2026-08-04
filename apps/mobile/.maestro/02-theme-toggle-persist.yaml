@@ -1,7 +1,7 @@
 # Core journey 2: the manual theme override applies instantly and survives
 # a full app restart (persisted via lib/themePreference.ts).
 # Restores "System" at the end so the device is left as found.
-appId: com.ventoux.carnet
+appId: com.ventouxlabs.carnet
 name: Dark mode toggle persists across restart
 ---
 - launchApp:

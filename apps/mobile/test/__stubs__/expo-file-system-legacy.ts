@@ -11,6 +11,7 @@
  */
 
 export const documentDirectory: string = "file:///stub/";
+export const cacheDirectory: string = "file:///stub-cache/";
 
 export const EncodingType = {
   UTF8: "utf8" as const,
