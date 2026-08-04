@@ -1,6 +1,6 @@
 # PR plan: Settings export and import
 
-Status: in-progress
+Status: shipped
 
 ## Goal
 
@@ -53,3 +53,17 @@ app, avoiding reconfiguration of providers, prompts, and capture behavior.
 - Encrypted credential backups or password recovery.
 - Queue, drafts, capture history, vault files, or crash logs.
 - Automatic migration between app identifiers; users choose the file explicitly.
+
+## Shipped with a known limitation (2026-08-04)
+
+The headline user story — export from the OLD app after the
+`com.ventoux.carnet` → `com.ventouxlabs.carnet` rename — is **not** achievable
+for anyone already on the old id: the export UI ships only in the new package,
+so the app holding the settings worth moving never gains the button. Raised by
+an independent review of PR #126; the owner closed it as won't-fix rather than
+shipping a bridge release under the old id.
+
+The feature is still fully functional for its other cases (moving settings to a
+second device, or to a reinstall of the current id). Anyone on the old id
+re-enters settings by hand once, which is also the only option for their API
+keys, since those are deliberately never serialized.

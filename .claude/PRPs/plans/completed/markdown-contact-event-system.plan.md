@@ -1,6 +1,6 @@
 # PR plan: Markdown contact and event processing system
 
-Status: in-progress
+Status: shipped
 
 ## Outcome
 

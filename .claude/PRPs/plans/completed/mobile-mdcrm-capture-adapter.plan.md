@@ -1,6 +1,6 @@
 # PR plan: Mobile schema-v1 card-capture adapter
 
-Status: in-progress
+Status: shipped
 
 ## Goal
 
