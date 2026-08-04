@@ -130,15 +130,42 @@ is device-only: it needs a real camera and a reachable vision model.)_
 
 ## Capture — Person (without the gateway)
 
-_(automated coverage: `npm -w @carnet/mobile test -- omniroute` — the
-not-configured error path is pinned by `omniroute.test.ts`; the banner copy and
-the manual-entry flow are device-only.)_
+_(automated coverage: `cardScanOutcome.test.ts` pins the three-way
+notConfigured / permanent / transient classification, `llmClient.test.ts` pins
+the not-configured error shape. The banner copy and the manual-entry flow are
+device-only. `omniroute.test.ts` no longer exists — that client merged into
+`llmClient.ts` in #120.)_
 
-- [ ] Settings → clear the OmniRoute URL → Save.
-- [ ] Home → **Contact** → scanning surfaces the friendly banner: *"OmniRoute not
-      configured. Type the card text below, then tap Send."*
+- [ ] Settings → clear the provider URL (or the vision model) → Save.
+- [ ] Home → **Contact** → **Scan card** → the camera still opens. The scanner no
+      longer blocks up front: the original image is written *before* OCR is
+      attempted, so a failed OCR never loses the card.
+- [ ] After **Capture**, the banner names the real cause and does NOT tell you to
+      scan again: *"… not configured — set it in Settings. Your card image was
+      saved — scanning again won't help until this is set."*
+- [ ] Turn the provider back on but point it at an unreachable host → the banner
+      instead says *"OCR unavailable — … Scan again to retry"*. The two cases must
+      not read the same; only one of them is worth retrying.
 - [ ] Type the OCR text + context manually → **Send** → **Save** → the file still
       lands on disk.
+
+## Capture package on a SAF vault (`content://` folder picker)
+
+_(automated coverage: `writerSaf.test.ts` → "nested subdirs (SAF)" — but only
+against a **mock**. Real SAF behaviour is device-only, and this is exactly where
+a nested-directory bug already shipped once: the mock stored a flat map, so
+`"attachments/originals"` looked like a legal single key and the whole suite
+stayed green while capture silently failed on a real vault.)_
+
+- [ ] Settings → capture folder → pick a folder with **Android's folder picker**
+      (this yields a `content://` SAF URI, not a plain filesystem path).
+- [ ] Home → **Contact** → **Scan card** → **Capture**.
+- [ ] In the vault, both nested paths exist as **real nested folders**:
+      `attachments/originals/att_*.jpg` and `processing/results/cap_*.ocr.txt`.
+      A single folder literally named `attachments/originals` (slash in the name)
+      means the segment walk regressed.
+- [ ] `captures/cap_*.md` exists, and its frontmatter `path:` and
+      `raw_text_path:` resolve to those two files.
 
 ## Offline queue (capture while unreachable)
 
