@@ -1,6 +1,6 @@
 # Plan: Enhance prose action (Recent detail)
 
-Status: in-progress
+Status: shipped
 
 ## Summary
 Add an **Enhance** action to an already-saved note that sends its prose body to a
@@ -751,6 +751,45 @@ N/A — React Native. Device path below.
 | `RecentDetailScreen.tsx` crosses the 800-line cap | Medium | Low | Task 9 GOTCHA — extract to a `useNoteReprocess` hook if it does |
 | Legacy settings blob strands `enhanceProviderId: undefined` | Medium | Medium | `?? null` in `readPersisted` + a legacy-blob test |
 | Enhance run on a note mid-edit clobbers unsaved edits | Low | Medium | Row is disabled while `actionsBusy`; the screen's existing `DiscardEditsDialog` guards the edit session |
+
+## Device pass — what actually shipped (2026-08-05)
+
+Verified on a Pixel 9 Pro Fold against a live OmniRoute over Tailscale:
+frontmatter and title byte-identical, image embeds preserved and not
+duplicated, `enhanced:` idempotent across repeat runs, no
+frontmatter/heading/code-fence leakage, provider+model override persists, and
+the model catalogue (596 entries) loads from the resolved enhance provider.
+
+Four defects the device found that the plan and its unit tests did not:
+
+1. **Paired-binary links were sent to the model** (fixed, `83c1e3c`). Every
+   photo-bearing entry carries its embed in the body; a model told to return
+   only prose drops it, orphaning the JPEG. `noteReprocess` already guarded
+   this by re-injecting; Enhance now holds attachments back entirely.
+2. **URLs were silently dropped** (fixed, `67bf289`). A live run lost all three
+   links from a real note, including an unreconstructable Maps short-link. The
+   prompt now demands verbatim preservation AND `droppedUrls()` re-appends any
+   casualties — a prompt is a request, not a guarantee.
+3. **The 20s timeout gutted the feature's purpose** (fixed, `d47e0b3`).
+   `FETCH_TIMEOUT_MS` is tuned for capture, where the offline queue catches a
+   fast failure. Enhance has no queue path and exists to run a *slower*
+   model — `auto/best-reasoning` took 36s and was cut off at 20. Enhance now
+   has its own 120s ceiling.
+4. **The fallback masked the real error** (fixed, `d47e0b3`). That timeout is
+   unreachable-class, so the chain retried an unconfigured Relais and reported
+   "Local LLM model not configured" — naming the wrong provider. Pre-existing
+   in `withFallbackChain`, so reachable from any `enrich*` path.
+
+**Known limitation, accepted at merge — the "Strasbourg problem".** A capture
+said "Stroudsburg" (a transcription error for Strasbourg, France). The model
+enriched it with accurate facts about Stroudsburg, Pennsylvania — relocating
+the entry to the wrong continent while making the error look researched.
+Rule 4 ("add a fact only when confident") gives no protection: the model was
+confident and correct *about the wrong entity*. A stronger model does not
+help. Verifying the fact confirms the wrong thing; only the surrounding
+context reveals it. Worth a follow-up on entity-plausibility — an implausible
+entity should read as a signal the source is garbled, not as a research
+prompt.
 
 ## Deviations from this plan during implementation
 Recorded so review doesn't have to rediscover them:
