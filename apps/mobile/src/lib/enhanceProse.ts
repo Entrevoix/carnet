@@ -18,7 +18,11 @@
 
 import { enhanceProse as dispatchEnhance, FALLBACK_PROVIDER_FIELD } from "./dispatcher";
 import { splitFrontmatter, upsertFrontmatterField } from "./frontmatter";
-import { updateNote } from "./writer";
+import {
+  getModificationTime,
+  readNote,
+  updateNoteIfUnchanged,
+} from "./writer";
 
 /** Frontmatter field stamped on a note whose prose has been enhanced. Its
  * presence is the only on-disk signal that a body is machine-polished — the
@@ -61,9 +65,26 @@ function todayLocal(): string {
  * Only a top-level `# ` heading counts: `##` and deeper are section headings
  * that belong to the prose and must be handed to the model with it. Hence the
  * mandatory space/tab after the hash — it is what makes `##` fall through.
+ *
+ * Leading blank lines are tolerated and captured INTO `title`, so they survive
+ * reassembly byte-for-byte. That matters more than it looks: splitFrontmatter
+ * ends its header at the newline closing `---`, so a note written as
+ * `---\n…\n---\n\n# Title` (the layout Obsidian produces) hands this function a
+ * body starting with a blank line. An anchored `^#` missed it, the title went
+ * to the model as prose, and the prompt's "do NOT add a title or heading" rule
+ * meant the model dutifully deleted it — silent title loss on every such note.
+ * Found by an independent review pass, 2026-08-05.
  */
 export function splitLeadingTitle(body: string): { title: string; prose: string } {
-  const match = body.match(/^(#[ \t][^\n]*\n+)([\s\S]*)$/);
+  // (blank lines)* then up to 3 spaces of indent (CommonMark's ATX allowance),
+  // then `# ` — the space is what keeps `##` and deeper out.
+  // Every newline is `\r?\n`, including the trailing run — a bare `\n+` there
+  // keeps only half of a CRLF blank line, splitting `\r\n\r\n` into title
+  // `…\r\n` + prose `\r\nbody`. CRLF reaches the vault via Syncthing from a
+  // Windows workstation, so this is not hypothetical.
+  const match = body.match(
+    /^((?:[ \t]*\r?\n)*[ \t]{0,3}#[ \t][^\r\n]*(?:\r?\n)+)([\s\S]*)$/,
+  );
   return match ? { title: match[1], prose: match[2] } : { title: "", prose: body };
 }
 
@@ -164,7 +185,29 @@ export async function enhanceNoteProse(input: {
   filepath: string;
 }): Promise<EnhanceProseOutcome> {
   try {
-    const { header, body } = splitFrontmatter(input.body);
+    // Baseline BEFORE the model call, then transform the file's CURRENT
+    // content rather than the caller's snapshot — the same shape
+    // promoteIdeaOnDisk uses, and for the same reason. Two distinct races,
+    // both real:
+    //   - the caller's `input.body` is whatever the screen loaded, which may
+    //     already be stale if the note was edited in Obsidian or synced since;
+    //     re-reading means we enhance what is actually on disk.
+    //   - the model call can take up to ENHANCE_TIMEOUT_MS (120s), a wide
+    //     window for an edit to land mid-flight; the mtime guard turns that
+    //     into a reported conflict instead of a silent clobber.
+    // Observed live 2026-08-05: a note was edited on-device while an Enhance
+    // was in flight. The unguarded write would have discarded those edits.
+    const baseline = await getModificationTime(input.filepath);
+    let source = input.body;
+    try {
+      source = await readNote(input.filepath);
+    } catch {
+      // Unreadable (SAF quirk, moved file) — fall back to the caller's copy,
+      // exactly as promoteIdeaOnDisk falls back to its passed markdown. The
+      // mtime guard below still protects the write.
+    }
+
+    const { header, body } = splitFrontmatter(source);
     const { title, prose } = splitLeadingTitle(body);
     // Attachments are held back from the model and re-attached below — see
     // extractAttachmentLines for why losing them would be data loss. The
@@ -206,7 +249,14 @@ export async function enhanceNoteProse(input: {
       `${header}${title}${attachBlock}${cleaned}${linkBlock}\n`,
       outcome,
     );
-    await updateNote(input.filepath, next);
+    const written = await updateNoteIfUnchanged(input.filepath, next, baseline);
+    if (!written.ok) {
+      // The note moved under us. Keep the user's version — an enhancement is
+      // regenerable, their edit is not.
+      throw new Error(
+        "This note changed while Enhance was running, so your version was kept. Try again.",
+      );
+    }
     return { kind: "updated", nextBody: next, providerLabel: outcome.providerLabel };
   } catch (err: unknown) {
     return {
