@@ -85,8 +85,42 @@ check_file "app/src/main/java/$PKG_PATH/notification/QuickIdeaTaskService.kt" "Q
 
 echo "→ Widget plugin — emitted Kotlin + resources:"
 check_file "app/src/main/java/$PKG_PATH/widget/CaptureWidgetProvider.kt" "CaptureWidgetProvider.kt"
-check_file "app/src/main/res/layout/widget_capture.xml" "widget_capture.xml (layout)"
+check_file "app/src/main/res/layout/widget_capture.xml" "widget_capture.xml (4x1 layout)"
+# The provider references R.layout.widget_capture_2x2 unconditionally, so a
+# missing 2x2 layout breaks the Kotlin COMPILE, not just the rendering.
+check_file "app/src/main/res/layout/widget_capture_2x2.xml" "widget_capture_2x2.xml (2x2 layout)"
 check_file "app/src/main/res/xml/widget_capture_info.xml" "widget_capture_info.xml"
+
+echo "→ Widget resizability + layout id parity:"
+WIDGET_INFO="$ANDROID_DIR/app/src/main/res/xml/widget_capture_info.xml"
+if grep -qF 'android:resizeMode="horizontal|vertical"' "$WIDGET_INFO" 2>/dev/null; then
+  echo "  ✓ widget declares horizontal|vertical resize"
+else
+  echo "  ✗ widget_capture_info.xml must declare resizeMode=\"horizontal|vertical\" (else the 2x2 is unreachable)"
+  EXIT=1
+fi
+# targetCell* must stay 4x1: it sets the DEFAULT drop size, so changing it
+# would reshape widgets users have already placed.
+if grep -qF 'android:targetCellWidth="4"' "$WIDGET_INFO" 2>/dev/null &&
+  grep -qF 'android:targetCellHeight="1"' "$WIDGET_INFO" 2>/dev/null; then
+  echo "  ✓ default drop size still 4x1"
+else
+  echo "  ✗ targetCellWidth/Height must remain 4x1 so existing placements are unaffected"
+  EXIT=1
+fi
+# The provider binds by id without knowing which layout it got. A mismatch
+# makes setOnClickPendingIntent a silent no-op — dead taps, no crash, no log —
+# which no compile and no screenshot would catch.
+WIDGET_4X1="$ANDROID_DIR/app/src/main/res/layout/widget_capture.xml"
+WIDGET_2X2="$ANDROID_DIR/app/src/main/res/layout/widget_capture_2x2.xml"
+IDS_4X1=$(grep -o 'android:id="@+id/btn_[a-z]*"' "$WIDGET_4X1" 2>/dev/null | sort)
+IDS_2X2=$(grep -o 'android:id="@+id/btn_[a-z]*"' "$WIDGET_2X2" 2>/dev/null | sort)
+if [ -n "$IDS_4X1" ] && [ "$IDS_4X1" = "$IDS_2X2" ]; then
+  echo "  ✓ both layouts expose the same 4 button ids"
+else
+  echo "  ✗ layout button ids differ between 4x1 and 2x2 — taps would silently do nothing"
+  EXIT=1
+fi
 
 echo "→ Shared drawable:"
 check_file "app/src/main/res/drawable/shortcut_audio.xml" "shortcut_audio.xml"
