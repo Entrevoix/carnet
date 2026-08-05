@@ -123,7 +123,7 @@ describe("applyPickedModelToBuffer", () => {
 describe("reassignIdentityAfterDelete", () => {
   it("clears fallbackProviderId to null when it pointed at the deleted entry", () => {
     const result = reassignIdentityAfterDelete(
-      { activeProviderId: "omniroute", fallbackProviderId: "custom-1", visionProviderId: null },
+      { activeProviderId: "omniroute", fallbackProviderId: "custom-1", visionProviderId: null, enhanceProviderId: null },
       "custom-1",
     );
     expect(result.fallbackProviderId).toBeNull();
@@ -132,7 +132,7 @@ describe("reassignIdentityAfterDelete", () => {
 
   it("clears visionProviderId to null when it pointed at the deleted entry", () => {
     const result = reassignIdentityAfterDelete(
-      { activeProviderId: "omniroute", fallbackProviderId: null, visionProviderId: "custom-1" },
+      { activeProviderId: "omniroute", fallbackProviderId: null, visionProviderId: "custom-1", enhanceProviderId: null },
       "custom-1",
     );
     expect(result.visionProviderId).toBeNull();
@@ -140,12 +140,58 @@ describe("reassignIdentityAfterDelete", () => {
 
   it("leaves fallback/vision untouched when the deleted entry is neither active nor fallback nor vision", () => {
     const result = reassignIdentityAfterDelete(
-      { activeProviderId: "omniroute", fallbackProviderId: "relais", visionProviderId: "openai" },
+      { activeProviderId: "omniroute", fallbackProviderId: "relais", visionProviderId: "openai", enhanceProviderId: null },
       "custom-1",
     );
     expect(result.activeProviderId).toBe("omniroute");
     expect(result.fallbackProviderId).toBe("relais");
     expect(result.visionProviderId).toBe("openai");
+  });
+
+  it("clears enhanceProviderId to null when it pointed at the deleted entry", () => {
+    // resolveEnhanceProvider already degrades a stale id to the active entry,
+    // so this is consistency rather than a crash guard — but Settings showing
+    // a deleted entry as the Enhance model is the "recoverable but wrong to
+    // ship" case the identity group exists to prevent.
+    const result = reassignIdentityAfterDelete(
+      {
+        activeProviderId: "omniroute",
+        fallbackProviderId: null,
+        visionProviderId: null,
+        enhanceProviderId: "custom-1",
+      },
+      "custom-1",
+    );
+    expect(result.enhanceProviderId).toBeNull();
+  });
+
+  it("leaves an unrelated enhanceProviderId untouched", () => {
+    const result = reassignIdentityAfterDelete(
+      {
+        activeProviderId: "omniroute",
+        fallbackProviderId: null,
+        visionProviderId: null,
+        enhanceProviderId: "openai",
+      },
+      "custom-1",
+    );
+    expect(result.enhanceProviderId).toBe("openai");
+  });
+
+  it("clears a deleted enhance entry even when the ACTIVE entry is deleted in the same call", () => {
+    // The active-reassignment branch returns early with its own object literal
+    // — a dropped enhanceProviderId there would leave the dangling id behind.
+    const result = reassignIdentityAfterDelete(
+      {
+        activeProviderId: "custom-1",
+        fallbackProviderId: "relais",
+        visionProviderId: null,
+        enhanceProviderId: "custom-1",
+      },
+      "custom-1",
+    );
+    expect(result.activeProviderId).toBe("relais");
+    expect(result.enhanceProviderId).toBeNull();
   });
 
   it("reassigns a deleted ACTIVE provider to the fallback when one is configured, AND vacates the fallback slot", () => {
@@ -154,7 +200,7 @@ describe("reassignIdentityAfterDelete", () => {
     // fallback chain would retry the exact same endpoint it just failed
     // over from — a "configured" fallback that can never fire.
     const result = reassignIdentityAfterDelete(
-      { activeProviderId: "custom-1", fallbackProviderId: "relais", visionProviderId: null },
+      { activeProviderId: "custom-1", fallbackProviderId: "relais", visionProviderId: null, enhanceProviderId: null },
       "custom-1",
     );
     expect(result.activeProviderId).toBe("relais");
@@ -166,7 +212,7 @@ describe("reassignIdentityAfterDelete", () => {
     // deleted id itself), the active id would be left dangling — this is
     // the non-negotiable the Phase 4 spec calls out explicitly.
     const result = reassignIdentityAfterDelete(
-      { activeProviderId: "custom-1", fallbackProviderId: null, visionProviderId: null },
+      { activeProviderId: "custom-1", fallbackProviderId: null, visionProviderId: null, enhanceProviderId: null },
       "custom-1",
     );
     expect(result.activeProviderId).toBe("omniroute");
@@ -177,7 +223,7 @@ describe("reassignIdentityAfterDelete", () => {
     // to null FIRST, so the active reassignment must not pick up the
     // stale (deleted) fallback value.
     const result = reassignIdentityAfterDelete(
-      { activeProviderId: "custom-1", fallbackProviderId: "custom-1", visionProviderId: null },
+      { activeProviderId: "custom-1", fallbackProviderId: "custom-1", visionProviderId: null, enhanceProviderId: null },
       "custom-1",
     );
     expect(result.activeProviderId).toBe("omniroute");

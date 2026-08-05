@@ -27,8 +27,16 @@ behind the "more modes" chevron sheet).
 
 Business logic lives in extracted `lib/*.ts` modules (ideaSaveFirst, saveFirstOutcome,
 captureErrorDecision, attachmentPersistence, promoteIdeaOnDisk, noteReprocess,
-wysiwygSave, vaultImageInsert, settingsForm, modelBrowser, shareHelpers…) — screens are
-mostly UI. Prefer extending those modules over adding inline screen logic.
+enhanceProse, wysiwygSave, vaultImageInsert, settingsForm, modelBrowser, shareHelpers…)
+— screens are mostly UI. Prefer extending those modules over adding inline screen logic.
+
+`enhanceProse` is the ⋮-sheet "Enhance" action: it splits frontmatter + the `# Title` off
+a saved note, sends only the prose to `dispatcher.enhanceProse`, and re-attaches them
+around the result (stamping `enhanced:`). It sits beside `noteReprocess` rather than
+inside it because that module's flows all require a paired binary on disk; Enhance needs
+none, which is why it works on a text-only journal entry. Routing honours
+`Settings.enhanceProviderId` — a dedicated, usually stronger provider that takes
+precedence over the active one (the inverse of `visionProviderId`'s rung).
 
 ## Components (`apps/mobile/src/components`)
 `CaptureFab` (mode launcher) · `CaptureModeInput` (per-mode input incl. Contact card-scan

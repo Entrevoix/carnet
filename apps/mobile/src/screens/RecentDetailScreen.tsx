@@ -68,6 +68,7 @@ import {
 } from "../lib/recentDetailView";
 import { findRelatedNotes, insertRelatedLink } from "../lib/relatedNotes";
 import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
+import { enhanceNoteProse } from "../lib/enhanceProse";
 import { FALLBACK_PROVIDER_FIELD } from "../lib/dispatcher";
 import { useCarnetTheme } from "../lib/theme";
 import { useKarakeepExport } from "../lib/useKarakeepExport";
@@ -101,6 +102,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [reEnrichError, setReEnrichError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
+  const [enhancing, setEnhancing] = useState(false);
+  const [enhanceError, setEnhanceError] = useState<string | null>(null);
+  const [enhancedWith, setEnhancedWith] = useState<string | null>(null);
   // Both read once on mount from the persisted settings: the Karakeep action is
   // gated on a non-blank instance URL, and the rich editor is the default (kept
   // behind a flag so a future gate can flip it off without re-plumbing).
@@ -113,6 +117,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   // would write the .md twice, with whichever finishes second winning.
   const reEnrichingRef = useRef(false);
   const transcribingRef = useRef(false);
+  const enhancingRef = useRef(false);
   // Mounted guard — Back-during-write can unmount before the in-flight
   // updateNote resolves; setState after that triggers a React warning. The
   // write itself still lands on disk.
@@ -297,6 +302,21 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     setTranscribing(false);
   }, [body, entry.filepath]);
 
+  const handleEnhance = useCallback(async () => {
+    if (enhancingRef.current) return;
+    enhancingRef.current = true;
+    setEnhanceError(null);
+    setEnhancedWith(null);
+    setEnhancing(true);
+    const outcome = await enhanceNoteProse({ body, filepath: entry.filepath });
+    if (outcome.kind === "updated") {
+      setBody(outcome.nextBody);
+      setEnhancedWith(outcome.providerLabel);
+    } else setEnhanceError(outcome.reason);
+    enhancingRef.current = false;
+    setEnhancing(false);
+  }, [body, entry.filepath]);
+
   // ── Attachments (images inline + tappable file rows) ──────────────────────
   // Audio is rendered by the dedicated player, so it's excluded here. The
   // markdown renderer can't resolve relative/SAF URIs, so we resolve each link
@@ -448,7 +468,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     }
   }, []);
 
-  const { canReEnrich, canTranscribe, showAudioPlayer } = noteCapabilities(
+  const { canReEnrich, canTranscribe, canEnhance, showAudioPlayer } = noteCapabilities(
     extractFrontmatterField(body, "kind") ?? "",
     missing,
   );
@@ -470,12 +490,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     reEnriching,
     transcribing,
     exportingKarakeep: karakeep.exportingKarakeep,
+    enhancing,
   };
   const activeIssue = activeIssueMessage({
     editError: edit.editError,
     karakeepError: karakeep.karakeepError,
     transcribeError,
     reEnrichError,
+    enhanceError,
   });
   const inlineBusyLabel = busyLabel(busy);
   const actionsBusy = isActionsBusy(busy);
@@ -650,6 +672,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       </Snackbar>
 
       <Snackbar
+        visible={enhancedWith !== null}
+        onDismiss={() => setEnhancedWith(null)}
+        duration={2500}
+      >
+        {enhancedWith ? `Enhanced with ${enhancedWith}.` : ""}
+      </Snackbar>
+
+      <Snackbar
         visible={karakeep.karakeepQueued}
         onDismiss={karakeep.dismissKarakeepQueued}
         // Informational, not an error — the export will send itself; give the
@@ -667,9 +697,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           onDismiss={() => setActionsOpen(false)}
           canReEnrich={canReEnrich}
           canTranscribe={canTranscribe}
+          canEnhance={canEnhance}
           karakeepConfigured={karakeepConfigured}
           actionsBusy={actionsBusy}
           missing={missing}
+          onEnhance={() => {
+            setActionsOpen(false);
+            void handleEnhance();
+          }}
           onReEnrich={() => {
             setActionsOpen(false);
             void handleReEnrich();

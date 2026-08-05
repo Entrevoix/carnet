@@ -70,15 +70,16 @@ export function applyPickedModelToBuffer(
   return target === "vision" ? { ...buffer, visionModel: id } : { ...buffer, model: id };
 }
 
-/** The three identity ids a Settings blob carries alongside `llmProviders`
- * — grouped here because {@link reassignIdentityAfterDelete} must update all
- * three together in one persisted write (the non-negotiable from the Phase
+/** The identity ids a Settings blob carries alongside `llmProviders`
+ * — grouped here because {@link reassignIdentityAfterDelete} must update them
+ * all together in one persisted write (the non-negotiable from the Phase
  * 4 spec: a dangling id left behind by a delete is recoverable but wrong to
  * ship). */
 export interface ProviderIdentity {
   activeProviderId: string;
   fallbackProviderId: string | null;
   visionProviderId: string | null;
+  enhanceProviderId: string | null;
 }
 
 /**
@@ -115,14 +116,25 @@ export function reassignIdentityAfterDelete(
     identity.fallbackProviderId === deletedId ? null : identity.fallbackProviderId;
   const visionProviderId =
     identity.visionProviderId === deletedId ? null : identity.visionProviderId;
+  // Clears like the other two. resolveEnhanceProvider already degrades a stale
+  // id to the active entry, so this is consistency rather than a crash guard —
+  // but a Settings screen showing a deleted entry as the Enhance model is
+  // exactly the "recoverable but wrong to ship" case above.
+  const enhanceProviderId =
+    identity.enhanceProviderId === deletedId ? null : identity.enhanceProviderId;
 
   if (identity.activeProviderId !== deletedId) {
-    return { activeProviderId: identity.activeProviderId, fallbackProviderId, visionProviderId };
+    return {
+      activeProviderId: identity.activeProviderId,
+      fallbackProviderId,
+      visionProviderId,
+      enhanceProviderId,
+    };
   }
   const activeProviderId = fallbackProviderId ?? "omniroute";
   // The fallback slot is vacated unconditionally here — whether it just got
   // promoted into `activeProviderId` or was already null, the result after
   // deleting the active entry is never a fallback that equals the new
   // active entry.
-  return { activeProviderId, fallbackProviderId: null, visionProviderId };
+  return { activeProviderId, fallbackProviderId: null, visionProviderId, enhanceProviderId };
 }

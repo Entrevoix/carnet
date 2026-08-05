@@ -46,7 +46,11 @@
  */
 
 import { getSettings, getPromptOverrides, DEFAULT_OMNIROUTE_MODEL, type Settings } from "./settings";
-import { resolveActiveProvider, resolveVisionProvider } from "./llmProviders";
+import {
+  resolveActiveProvider,
+  resolveEnhanceProvider,
+  resolveVisionProvider,
+} from "./llmProviders";
 import * as providerKeys from "./providerKeys";
 import * as llmClient from "./llmClient";
 import type { EnrichResult, ProviderConfig } from "./llmClient";
@@ -211,7 +215,20 @@ async function withFallbackChain<T>(
       throw err;
     }
     const fallbackConfig = await buildConfig(settings, fallbackId);
-    const result = await call(fallbackConfig);
+    let result: T;
+    try {
+      result = await call(fallbackConfig);
+    } catch (fallbackErr: unknown) {
+      // A fallback that is merely UNCONFIGURED must not overwrite the primary's
+      // error. Observed on-device 2026-08-05: OmniRoute timed out on a slow
+      // reasoning model, the chain retried an unconfigured Relais, and the user
+      // was told "Local LLM model not configured — set it in Settings" — which
+      // points at the wrong provider and hides the real fault entirely. A
+      // fallback that genuinely tried and failed still surfaces its own error,
+      // since that reflects a real second attempt.
+      if (llmClient.isNotConfiguredError(fallbackErr)) throw err;
+      throw fallbackErr;
+    }
     return { result, usedFallback: true, fallbackProviderId: fallbackId };
   }
 }
@@ -313,6 +330,62 @@ export async function promoteIdea(
     llmClient.promoteIdea(currentMarkdown, target, config),
   );
   return withFallbackMarker(outcome);
+}
+
+/** What {@link enhanceProse} hands back: the raw result plus the fallback
+ * facts and the resolved provider's display label (for the success snackbar). */
+export interface EnhanceOutcome {
+  result: EnrichResult;
+  usedFallback: boolean;
+  fallbackProviderId: string | null;
+  providerLabel: string;
+}
+
+/**
+ * Rewrite a note's prose body with the Enhance provider.
+ *
+ * Returns the result UNMARKED — deliberately the one enrichment entry point
+ * that does not call withFallbackMarker. That helper runs
+ * upsertFrontmatterField on the result, but this result is bare prose with no
+ * frontmatter, so the marker would prepend a stray `---` block into the middle
+ * of the note body. The fallback facts are handed outward instead, and
+ * lib/enhanceProse.ts stamps them AFTER re-attaching the real frontmatter.
+ */
+export async function enhanceProse(body: string): Promise<EnhanceOutcome> {
+  const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
+  // Resolved once — its id routes the call, its label names the provider in
+  // the success snackbar. Unlike resolveVisionProviderId (which prefers the
+  // ACTIVE entry whenever it is vision-capable), a configured
+  // enhanceProviderId WINS here: reaching for a better model than the active
+  // one is the entire point of the setting.
+  const provider = resolveEnhanceProvider(
+    settings.llmProviders,
+    settings.activeProviderId,
+    settings.enhanceProviderId,
+  );
+  // The model override applies to the PRIMARY attempt only. A model id is only
+  // meaningful against the endpoint that lists it, so forcing e.g. a Sonnet id
+  // onto a local Relais fallback would turn a recoverable network blip into a
+  // hard "model not found". withFallbackChain calls this exactly once for the
+  // primary and at most once more for the fallback, in that order, so the
+  // first invocation is the primary. Keyed on call order rather than
+  // config.label because labels are not unique — validateProvider permits two
+  // entries to share one, and a same-labelled fallback would then wrongly
+  // inherit the override.
+  const enhanceModel = settings.enhanceModel.trim();
+  let primaryAttempt = true;
+  const outcome = await withFallbackChain(settings, provider.id, (config) => {
+    const effective =
+      enhanceModel && primaryAttempt ? { ...config, model: enhanceModel } : config;
+    primaryAttempt = false;
+    return llmClient.enhanceProse(body, effective, overrides.enhanceProse);
+  });
+  return {
+    result: outcome.result,
+    usedFallback: outcome.usedFallback,
+    fallbackProviderId: outcome.fallbackProviderId,
+    providerLabel: provider.label,
+  };
 }
 
 export async function ocrCardViaVision(input: {

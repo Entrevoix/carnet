@@ -10,6 +10,8 @@ interface NoteActionsSheetProps {
   /** Kind-gated rows (see lib/recentDetailView.ts noteCapabilities). */
   canReEnrich: boolean;
   canTranscribe: boolean;
+  /** Not kind-gated — false only when the .md is gone from disk. */
+  canEnhance: boolean;
   /** Gated on a non-blank Karakeep instance URL in Settings. */
   karakeepConfigured: boolean;
   /** True while any long-running action is in flight. */
@@ -18,6 +20,7 @@ interface NoteActionsSheetProps {
   missing: boolean;
   onReEnrich: () => void;
   onTranscribe: () => void;
+  onEnhance: () => void;
   onSendToKarakeep: () => void;
   onFileInfo: () => void;
   onDelete: () => void;
@@ -36,11 +39,13 @@ export function NoteActionsSheet({
   onDismiss,
   canReEnrich,
   canTranscribe,
+  canEnhance,
   karakeepConfigured,
   actionsBusy,
   missing,
   onReEnrich,
   onTranscribe,
+  onEnhance,
   onSendToKarakeep,
   onFileInfo,
   onDelete,
@@ -60,6 +65,16 @@ export function NoteActionsSheet({
         },
       ]}
     >
+      {canEnhance ? (
+        <List.Item
+          title="Enhance"
+          description="Rewrite this entry's prose with a stronger model"
+          left={(p) => <List.Icon {...p} icon="feather" />}
+          disabled={actionsBusy || missing}
+          onPress={onEnhance}
+          style={styles.sheetRow}
+        />
+      ) : null}
       {canReEnrich ? (
         <List.Item
           title="Re-enrich"

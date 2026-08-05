@@ -41,6 +41,8 @@ export type IdentityPatch = Partial<
     | "nextCustomSeq"
     | "fallbackProviderId"
     | "visionProviderId"
+    | "enhanceProviderId"
+    | "enhanceModel"
   >
 >;
 

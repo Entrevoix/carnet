@@ -24,6 +24,7 @@
 
 import { sanitizeAndNormalize, sanitizeMarkdown, type NoteType } from "./enrichSanitize";
 import {
+  buildEnhanceProsePrompt,
   buildIdeaPrompt,
   buildJournalPrompt,
   buildPersonPrompt,
@@ -163,6 +164,18 @@ export function isNotConfiguredError(err: unknown): boolean {
 // Trade-off: a genuine generation that runs longer than this is cut off.
 const FETCH_TIMEOUT_MS = 20_000;
 
+/**
+ * Longer ceiling for Enhance. The 20s above is tuned for CAPTURE, where an
+ * unreachable host must fail fast so the offline queue takes over — but
+ * Enhance has no queue path (it rewrites a note already on disk), is
+ * explicitly user-initiated, and exists precisely to run a slower, stronger
+ * model. Measured on-device 2026-08-05: `auto/best-reasoning` over a tailnet
+ * blew past 20s, timed out, fell through to the Relais fallback, and surfaced
+ * as "Local LLM model not configured" — i.e. the 20s cap made the feature's
+ * headline use case (pick a better model) fail, and fail misleadingly.
+ */
+const ENHANCE_TIMEOUT_MS = 120_000;
+
 /** Hard cap on image payload sent to a vision model. Vision providers reject
  * >10 MB payloads and the in-memory peak on a phone (base64 inflates by 33%,
  * then JSON.stringify duplicates it for the request body) can OOM the app.
@@ -297,6 +310,7 @@ async function executeChat(
   messages: OpenAIMessage[],
   noteType: NoteType,
   label: string,
+  timeoutMs: number = FETCH_TIMEOUT_MS,
 ): Promise<EnrichResult> {
   const trimmed = assertUrlConfigured(baseUrl, label);
   const trimmedUrl = trimmed.replace(/\/+$/, "");
@@ -306,7 +320,7 @@ async function executeChat(
   const body = JSON.stringify({ model, messages, stream: false });
 
   return await withTimeout(
-    FETCH_TIMEOUT_MS,
+    timeoutMs,
     (ms) => timeoutError(label, ms),
     async (signal) => {
       let response: Response;
@@ -371,12 +385,13 @@ async function chatCompletion(
   prompt: PromptPair,
   noteType: NoteType,
   label: string,
+  timeoutMs?: number,
 ): Promise<EnrichResult> {
   const messages: OpenAIMessage[] = [
     { role: "system", content: prompt.system },
     { role: "user", content: prompt.user },
   ];
-  return executeChat(baseUrl, apiKey, model, messages, noteType, label);
+  return executeChat(baseUrl, apiKey, model, messages, noteType, label, timeoutMs);
 }
 
 /** Strip a leading ``` fence (and matching trailer). Does not trim unfenced content. */
@@ -754,5 +769,42 @@ export async function promoteIdea(
     buildPromoteIdeaPrompt(currentMarkdown, target),
     "idea",
     config.label,
+  );
+}
+
+/**
+ * Rewrite a note's prose body with a (typically stronger) model.
+ *
+ * Input and output are BODY TEXT ONLY — the caller (`lib/enhanceProse.ts`)
+ * owns splitting off frontmatter and the `# Title` heading and re-attaching
+ * them afterwards, so neither is ever exposed to the model.
+ *
+ * The `"journal"` NoteType is inert for this call, and deliberately so:
+ * executeChat feeds it to sanitizeAndNormalize, whose normalizeFrontmatter
+ * bails at its first check (`if (!header) return null`) because prose-only
+ * output has no frontmatter block. The per-type REQUIRED_KEYS/CANONICAL_ORDER
+ * tables are therefore never consulted and no frontmatter can be fabricated
+ * onto the body — it falls through to plain sanitizeMarkdown, which still
+ * neutralizes Templater/HTML/dataviewjs. Any NoteType member would behave
+ * identically here; do NOT add an "enhance" member just for this.
+ */
+export async function enhanceProse(
+  body: string,
+  config: ProviderConfig,
+  override?: string,
+): Promise<EnrichResult> {
+  // Unlike promoteIdea, the URL is asserted too (matching enrichSharedLink):
+  // a blank base URL must surface as not-configured rather than as an opaque
+  // fetch error — the defect fixed in #29.
+  const model = assertModelConfigured(config.model, config.label);
+  assertUrlConfigured(config.baseUrl, config.label);
+  return chatCompletion(
+    config.baseUrl,
+    config.apiKey,
+    model,
+    withSystemOverride(buildEnhanceProsePrompt(body), override),
+    "journal",
+    config.label,
+    ENHANCE_TIMEOUT_MS,
   );
 }

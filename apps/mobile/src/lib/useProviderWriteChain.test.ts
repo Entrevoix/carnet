@@ -31,6 +31,7 @@ function baseSettings(overrides: Record<string, unknown> = {}) {
     nextCustomSeq: 1,
     fallbackProviderId: null,
     visionProviderId: null,
+    enhanceProviderId: null,
     ...overrides,
   };
 }
