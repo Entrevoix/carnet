@@ -67,6 +67,40 @@ export function splitLeadingTitle(body: string): { title: string; prose: string 
   return match ? { title: match[1], prose: match[2] } : { title: "", prose: body };
 }
 
+/** A line that is solely a `../{Photos|Audio|Files}/…` embed or link. Mirrors
+ * the matcher in writer.ts's stripPairedBinaryLinks — keep the two in step. */
+const PAIRED_LINK_LINE = /^!?\[[^\]]*\]\(\.\.\/(?:Photos|Audio|Files)\/[^)]+\)$/;
+
+/**
+ * Pull paired-binary link lines out of the prose so they are never handed to
+ * the model.
+ *
+ * Without this, an image embed sitting in the body ("![](../Photos/x.jpg)")
+ * reaches a model instructed to return *only* enhanced prose — which drops it.
+ * The .jpg then survives on disk as an orphan while the note silently loses its
+ * only reference to it. That is data loss, and it is not hypothetical: it is
+ * the shape of every photo-bearing journal entry in the vault.
+ * `noteReprocess.reEnrichNote` guards the same hazard by re-injecting the embed
+ * after its LLM call (see writer.ts's injectImageEmbed); this is that guard for
+ * a body that may hold several attachments of any kind.
+ *
+ * Returns the extracted lines in their original order plus the remaining prose,
+ * with the blank runs left behind by the removal collapsed.
+ */
+export function extractAttachmentLines(prose: string): {
+  attachments: string[];
+  rest: string;
+} {
+  const attachments: string[] = [];
+  const kept = prose.split("\n").filter((line) => {
+    if (!PAIRED_LINK_LINE.test(line.trim())) return true;
+    attachments.push(line.trim());
+    return false;
+  });
+  const rest = kept.join("\n").replace(/\n{3,}/g, "\n\n");
+  return { attachments, rest };
+}
+
 /**
  * Stamp provenance onto a note that already carries frontmatter.
  *
@@ -100,11 +134,16 @@ export async function enhanceNoteProse(input: {
   try {
     const { header, body } = splitFrontmatter(input.body);
     const { title, prose } = splitLeadingTitle(body);
-    if (prose.trim().length < MIN_PROSE_CHARS) {
+    // Attachments are held back from the model and re-attached below — see
+    // extractAttachmentLines for why losing them would be data loss. The
+    // length guard then runs on `rest`, so an image-only note (no real prose)
+    // is correctly refused rather than sent off to be "enhanced" into text.
+    const { attachments, rest } = extractAttachmentLines(prose);
+    if (rest.trim().length < MIN_PROSE_CHARS) {
       throw new Error("This note is too short to enhance — add some prose first.");
     }
 
-    const outcome = await dispatchEnhance(prose);
+    const outcome = await dispatchEnhance(rest);
     // Already fence-stripped AND security-sanitized upstream: executeChat runs
     // stripCodeFences, then sanitizeAndNormalize(...) ?? sanitizeMarkdown(...),
     // and prose-only output falls through to the latter because
@@ -116,9 +155,15 @@ export async function enhanceNoteProse(input: {
       throw new Error("The model returned nothing — the note was left unchanged.");
     }
 
+    // Attachments go back directly under the title, matching where
+    // writer.ts's injectImageEmbed puts one. For a note with several inline
+    // images this collects them above the prose rather than restoring their
+    // exact interleaving — a deliberate trade: a moved embed is cosmetic, a
+    // dropped one is data loss.
+    const attachBlock = attachments.length > 0 ? `${attachments.join("\n")}\n\n` : "";
     // header already carries its own trailing newline (see splitFrontmatter),
     // as does title, so neither needs a separator added here.
-    const next = stampProvenance(`${header}${title}${cleaned}\n`, outcome);
+    const next = stampProvenance(`${header}${title}${attachBlock}${cleaned}\n`, outcome);
     await updateNote(input.filepath, next);
     return { kind: "updated", nextBody: next, providerLabel: outcome.providerLabel };
   } catch (err: unknown) {
