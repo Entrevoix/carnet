@@ -10,6 +10,7 @@ vi.mock("./dispatcher", () => ({
 }));
 
 import {
+  droppedUrls,
   enhanceNoteProse,
   extractAttachmentLines,
   splitLeadingTitle,
@@ -80,7 +81,73 @@ describe("extractAttachmentLines", () => {
   });
 });
 
+describe("droppedUrls", () => {
+  it("reports links the model removed", () => {
+    expect(droppedUrls("see https://a.test/x and https://b.test/y", "see nothing")).toEqual([
+      "https://a.test/x",
+      "https://b.test/y",
+    ]);
+  });
+
+  it("reports nothing when every link survived", () => {
+    expect(droppedUrls("go to https://a.test/x", "please go to https://a.test/x now")).toEqual(
+      [],
+    );
+  });
+
+  it("ignores trailing sentence punctuation when comparing", () => {
+    // "…/x." in the source is the same link as "…/x" in the output.
+    expect(droppedUrls("visit https://a.test/x.", "visit https://a.test/x")).toEqual([]);
+  });
+
+  it("does not report the same link twice", () => {
+    expect(droppedUrls("https://a.test/x https://a.test/x", "gone")).toEqual([
+      "https://a.test/x",
+    ]);
+  });
+
+  it("handles a markdown link whose label is itself a URL", () => {
+    // The real vault note used [https://maps…](https://maps…?g_st=ac).
+    const src = "[https://maps.test/Qb](https://maps.test/Qb?g_st=ac)";
+    expect(droppedUrls(src, "preserved: https://maps.test/Qb?g_st=ac")).toEqual([
+      "https://maps.test/Qb",
+    ]);
+  });
+});
+
 describe("enhanceNoteProse", () => {
+  it("recovers links the model dropped, under a Links section", async () => {
+    // Regression guard for a live-model run on 2026-08-05 that silently
+    // dropped all three URLs from Journal/2026-08-04.md — including a Google
+    // Maps short-link that cannot be reconstructed once lost.
+    mockDispatch.mockResolvedValue(ok("A polished paragraph with no links at all."));
+    const input =
+      `# T\n\n${LONG_PROSE}\n\n` +
+      "- [https://maps.app.goo.gl/QbZYrjdUBukFu9Uu7](https://maps.app.goo.gl/QbZYrjdUBukFu9Uu7?g_st=ac)\n" +
+      "- https://www.istc-sof.org/\n";
+
+    await enhanceNoteProse({ body: input, filepath: "f.md" });
+
+    const written = mockUpdateNote.mock.calls[0][1];
+    expect(written).toContain("## Links");
+    expect(written).toContain("https://maps.app.goo.gl/QbZYrjdUBukFu9Uu7");
+    expect(written).toContain("https://www.istc-sof.org/");
+  });
+
+  it("adds NO Links section when the model preserved every link", async () => {
+    // The backstop must stay invisible on the happy path.
+    mockDispatch.mockResolvedValue(
+      ok("I looked it up at https://www.istc-sof.org/ afterwards, and it holds up."),
+    );
+
+    await enhanceNoteProse({
+      body: `# T\n\n${LONG_PROSE} See https://www.istc-sof.org/ for more.\n`,
+      filepath: "f.md",
+    });
+
+    expect(mockUpdateNote.mock.calls[0][1]).not.toContain("## Links");
+  });
+
   it("never sends a paired-binary link to the model, and restores it after", async () => {
     // Regression guard for a defect found on-device 2026-08-05: every
     // photo-bearing journal entry has the embed sitting in the body, and a

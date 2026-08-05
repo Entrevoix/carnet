@@ -101,6 +101,38 @@ export function extractAttachmentLines(prose: string): {
   return { attachments, rest };
 }
 
+/** URL run, stopping before markdown/sentence punctuation that commonly
+ * trails a link rather than belonging to it. */
+const URL_RE = /https?:\/\/[^\s)<>\]]+/g;
+
+/** Trailing characters that are punctuation around a link, not part of it. */
+const TRAILING_PUNCT = /[.,;:!?]+$/;
+
+function urlsIn(text: string): string[] {
+  return (text.match(URL_RE) ?? []).map((u) => u.replace(TRAILING_PUNCT, ""));
+}
+
+/**
+ * URLs present in the source prose but missing from the model's output.
+ *
+ * Prompt rule 5 tells the model to preserve links verbatim, but a prompt is a
+ * request, not a guarantee: on 2026-08-05 a live run dropped all three links
+ * from a real vault note (a Google Maps short-link and an org homepage) while
+ * happily obeying every formatting rule. A maps short-link like
+ * `.../QbZYrjdUBukFu9Uu7` cannot be reconstructed once lost, so this is a
+ * deterministic backstop rather than a nicety — the same reasoning that makes
+ * extractAttachmentLines hold embeds back instead of asking for them.
+ */
+export function droppedUrls(source: string, enhanced: string): string[] {
+  const after = new Set(urlsIn(enhanced));
+  const seen = new Set<string>();
+  return urlsIn(source).filter((u) => {
+    if (after.has(u) || seen.has(u)) return false;
+    seen.add(u);
+    return true;
+  });
+}
+
 /**
  * Stamp provenance onto a note that already carries frontmatter.
  *
@@ -161,9 +193,19 @@ export async function enhanceNoteProse(input: {
     // exact interleaving — a deliberate trade: a moved embed is cosmetic, a
     // dropped one is data loss.
     const attachBlock = attachments.length > 0 ? `${attachments.join("\n")}\n\n` : "";
+    // Backstop only: this section appears solely when the model ignored prompt
+    // rule 5 and dropped a link. Appending is the only recovery a deterministic
+    // check can offer — it cannot know where in the new prose the link belonged
+    // — but a relocated link beats an unrecoverable one.
+    const lost = droppedUrls(rest, cleaned);
+    const linkBlock =
+      lost.length > 0 ? `\n\n## Links\n${lost.map((u) => `- <${u}>`).join("\n")}` : "";
     // header already carries its own trailing newline (see splitFrontmatter),
     // as does title, so neither needs a separator added here.
-    const next = stampProvenance(`${header}${title}${attachBlock}${cleaned}\n`, outcome);
+    const next = stampProvenance(
+      `${header}${title}${attachBlock}${cleaned}${linkBlock}\n`,
+      outcome,
+    );
     await updateNote(input.filepath, next);
     return { kind: "updated", nextBody: next, providerLabel: outcome.providerLabel };
   } catch (err: unknown) {

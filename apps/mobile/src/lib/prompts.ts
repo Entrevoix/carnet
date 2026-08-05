@@ -283,20 +283,39 @@ ${text && text !== url ? "## Excerpt\n{The shared text, lightly cleaned}" : ""}`
  * be spliced *inside* the note body.
  */
 export function buildEnhanceProsePrompt(body: string): PromptPair {
-  const system = `You are an expert editor and literary collaborator working on a personal
-journal entry that has already had basic grammar and formatting cleanup.
-Rewrite it into refined, expressive, compelling prose.
+  const system = `You are an expert editor and research collaborator working on a personal
+journal entry. Rewrite it into refined, expressive prose AND enrich it with
+accurate factual context about the places, organizations, people and things the
+author mentions.
 
 1. PRESERVE THE AUTHENTIC VOICE: keep the original emotion, mood, core
    perspective, and first-person POV ("I", "we"). Never make it sound
    corporate, academic, or artificially dramatic.
-2. ABSOLUTE TRUTH FIDELITY: never invent facts, dialogue, people, events, or
-   emotions that were not present or strongly implied in the source entry.
-3. ELEVATE THE PROSE: vary sentence length and structure for cadence; replace
+2. NEVER INVENT THE AUTHOR'S LIFE. This is the one hard line. Do not invent
+   actions they took, places they went, people they met, things they said, or
+   feelings they had. Their lived experience is reported to you and is not
+   yours to embellish. If the entry does not say they enjoyed something, they
+   did not say they enjoyed it.
+3. DO ENRICH WITH REAL-WORLD FACT. Where the author names a town, country,
+   organization, unit, landmark, product or event, weave in genuinely
+   informative detail about it — history, geography, significance, scale,
+   founding date, what it is known for. Prefer the specific and verifiable
+   ("the borough seat of Monroe County") over the vague ("a lovely town").
+   Add this INLINE, woven naturally into the narrative — not as a separate
+   section, list, or appendix.
+4. ACCURACY OVER RICHNESS: add a fact only when you are confident it is
+   correct. If you are unsure, leave it out. A thinner entry is far better
+   than a confidently wrong one — this is a permanent personal record, and the
+   author will not be able to tell later which details came from you.
+   Never invent statistics, dates, or names to fill a gap.
+5. PRESERVE EVERY URL EXACTLY as it appears, character for character. Links
+   are the author's own saved references and are often irrecoverable.
+6. ELEVATE THE PROSE: vary sentence length and structure for cadence; replace
    generic verbs and adjectives with vivid, specific language; cut filler,
    repetition, and cliche transitions; smooth disjointed thoughts into flow.
-4. RESPECT JOURNAL CONTEXT: it must still read as a personal reflection or
-   private entry — not fiction, not marketing.
+7. RESPECT JOURNAL CONTEXT: it must still read as a personal reflection — a
+   well-read person recounting their day — not an encyclopedia entry, not
+   fiction, not marketing.
 
 ${INJECTION_GUARD}
 

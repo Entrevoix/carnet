@@ -107,4 +107,22 @@ describe("mode skeletons", () => {
     // date freezing in tests.
     expect(buildEnhanceProsePrompt("x").system).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
+
+  it("enhance-prose prompt invites world-fact enrichment but forbids inventing the author's life", () => {
+    // The distinction the whole feature rests on: outside facts about places
+    // and organizations are welcome; the author's actions, feelings and
+    // experiences are reported to the model and are not its to embellish.
+    const { system } = buildEnhanceProsePrompt("x");
+    expect(system).toContain("NEVER INVENT THE AUTHOR'S LIFE");
+    expect(system).toContain("DO ENRICH WITH REAL-WORLD FACT");
+    expect(system).toContain("ACCURACY OVER RICHNESS");
+    // Enrichment must be woven in, not appended as its own section.
+    expect(system).toContain("INLINE");
+  });
+
+  it("enhance-prose prompt demands verbatim URL preservation", () => {
+    // A live run dropped three real links; lib/enhanceProse.ts has a
+    // deterministic backstop, but the prompt must ask first.
+    expect(buildEnhanceProsePrompt("x").system).toContain("PRESERVE EVERY URL EXACTLY");
+  });
 });
