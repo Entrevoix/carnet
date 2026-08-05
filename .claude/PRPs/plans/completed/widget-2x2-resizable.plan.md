@@ -1,6 +1,6 @@
 # Plan: Resizable capture widget (4×1 ↔ 2×2)
 
-Status: in-progress
+Status: shipped
 
 ## Summary
 Make the existing home-screen capture widget resizable so it can be dropped as
@@ -458,3 +458,41 @@ EXPECT: no change — this plan touches no TypeScript.
   be committed, and exists only on the machine that made it. CI regenerates the
   whole directory from the plugin on every run. This is why the plan's file
   count is 3 — the plugin **is** the native source.
+
+---
+
+## Implementation record (2026-08-05)
+
+Shipped as planned — no deviations from the six tasks. Three things the plan
+did not anticipate:
+
+1. **`prebuild --clean` wipes `local.properties`**, so the compile command the
+   plugin header had documented for months fails immediately with "SDK location
+   not found". Needs `export ANDROID_HOME="$HOME/Android/Sdk"` first. Both the
+   header and this plan's validation section now say so.
+2. **The plugin header was stale.** It warned that `mobile-android` was
+   non-blocking "until it is promoted into `gate.needs`" — it was promoted
+   2026-07-09 (`gate.needs: [shared, mobile, mobile-android, mdcrm]`), so the
+   comment was telling editors CI would not catch a broken Kotlin template when
+   in fact it does. Corrected.
+3. **The codemaps documented neither native surface.** No mention of the widget
+   or the notification plugin anywhere in `docs/CODEMAPS/`, so
+   `frontend.md` gained a section covering both, the generated-code trap, and
+   the verification ladder.
+
+**Evidence obtained without placing the widget:** `dumpsys appwidget` reports
+the registered provider at `resizeMode=3` (`RESIZE_HORIZONTAL|RESIZE_VERTICAL`,
+was `1`) with `min=(28161x28161)` (was `64001x10241`) — i.e. both attribute
+changes reached the system, not just the emitted XML. The stale pre-rename
+`com.ventoux.carnet` package still on the device provides a clean control at
+`resizeMode=1`.
+
+**Still unproven at merge:** the 2×2 layout inflating, and taps in it. Widget
+placement is a launcher drag-and-drop that resists automation, and it is the
+only rung that catches an unsupported RemoteViews view — which compiles and
+packages cleanly, then throws `InflateException` on a real home screen. Nested
+`LinearLayout` was chosen to avoid that class of failure by construction.
+
+**Shipped untested:** the API 24–30 `onAppWidgetOptionsChanged` path. Both
+devices on the rig run Android 17, so it has nothing to execute on. Reverting to
+31+-only (older devices keep the 4×1) remains a one-line change.
