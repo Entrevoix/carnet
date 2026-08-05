@@ -38,6 +38,7 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     nextCustomSeq: 1,
     fallbackProviderId: null,
     visionProviderId: null,
+    enhanceProviderId: null,
     omniRouteApiKey: "test-key",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,
@@ -90,6 +91,7 @@ globalThis.fetch = fetchMock as unknown as typeof fetch;
 
 import {
   enrichIdea,
+  enhanceProse,
   enrichJournal,
   enrichPerson,
   enrichSharedImage,
@@ -132,6 +134,72 @@ beforeEach(() => {
 // backend and reaches the real llmClient.ts with it — the load-bearing "zero
 // behavior change" guarantee for existing users, now verified via the actual
 // HTTP request rather than via a second module's call count.
+
+describe("enhanceProse routing", () => {
+  it("uses the active provider when no enhanceProviderId is set", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://llm.example.com/v1/chat/completions");
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("gpt-4o-mini");
+  });
+
+  it("routes to enhanceProviderId's entry OVER the active one", async () => {
+    // The test that proves "a better llm" actually takes effect. The active
+    // entry has a perfectly good text model; the Enhance entry must still win.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais"
+          ? { ...p, baseUrl: "http://127.0.0.1:8080", model: "big-local-model" }
+          : p,
+      ),
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    const outcome = await enhanceProse("rough prose");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8080/v1/chat/completions");
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("big-local-model");
+    expect(outcome.providerLabel).toBe("Relais (local)");
+  });
+
+  it("falls back to the active entry when enhanceProviderId is stale", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceProviderId: "custom-deleted",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://llm.example.com/v1/chat/completions");
+  });
+
+  it("returns prose with NO frontmatter marker spliced into it", async () => {
+    // enhanceProse is the one entry point that must skip withFallbackMarker:
+    // the result is bare prose, so a marker would prepend a stray `---` block
+    // into the note body. lib/enhanceProse.ts stamps AFTER re-attaching the
+    // real frontmatter instead.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      fallbackProviderId: "relais",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    const outcome = await enhanceProse("rough prose");
+
+    expect(outcome.result.markdown).not.toContain("---");
+    expect(outcome.result.markdown).toContain("polished prose");
+  });
+});
 
 describe("dispatcher backend routing", () => {
   it("routes to the OmniRoute config when llmBackend is 'omniroute' (the default)", async () => {

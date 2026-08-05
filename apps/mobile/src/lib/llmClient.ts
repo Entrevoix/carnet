@@ -24,6 +24,7 @@
 
 import { sanitizeAndNormalize, sanitizeMarkdown, type NoteType } from "./enrichSanitize";
 import {
+  buildEnhanceProsePrompt,
   buildIdeaPrompt,
   buildJournalPrompt,
   buildPersonPrompt,
@@ -753,6 +754,42 @@ export async function promoteIdea(
     model,
     buildPromoteIdeaPrompt(currentMarkdown, target),
     "idea",
+    config.label,
+  );
+}
+
+/**
+ * Rewrite a note's prose body with a (typically stronger) model.
+ *
+ * Input and output are BODY TEXT ONLY — the caller (`lib/enhanceProse.ts`)
+ * owns splitting off frontmatter and the `# Title` heading and re-attaching
+ * them afterwards, so neither is ever exposed to the model.
+ *
+ * The `"journal"` NoteType is inert for this call, and deliberately so:
+ * executeChat feeds it to sanitizeAndNormalize, whose normalizeFrontmatter
+ * bails at its first check (`if (!header) return null`) because prose-only
+ * output has no frontmatter block. The per-type REQUIRED_KEYS/CANONICAL_ORDER
+ * tables are therefore never consulted and no frontmatter can be fabricated
+ * onto the body — it falls through to plain sanitizeMarkdown, which still
+ * neutralizes Templater/HTML/dataviewjs. Any NoteType member would behave
+ * identically here; do NOT add an "enhance" member just for this.
+ */
+export async function enhanceProse(
+  body: string,
+  config: ProviderConfig,
+  override?: string,
+): Promise<EnrichResult> {
+  // Unlike promoteIdea, the URL is asserted too (matching enrichSharedLink):
+  // a blank base URL must surface as not-configured rather than as an opaque
+  // fetch error — the defect fixed in #29.
+  const model = assertModelConfigured(config.model, config.label);
+  assertUrlConfigured(config.baseUrl, config.label);
+  return chatCompletion(
+    config.baseUrl,
+    config.apiKey,
+    model,
+    withSystemOverride(buildEnhanceProsePrompt(body), override),
+    "journal",
     config.label,
   );
 }

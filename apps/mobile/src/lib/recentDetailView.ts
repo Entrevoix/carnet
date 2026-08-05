@@ -40,6 +40,7 @@ export interface NoteIssueState {
   karakeepError: string | null;
   transcribeError: string | null;
   reEnrichError: string | null;
+  enhanceError: string | null;
 }
 
 /**
@@ -52,14 +53,16 @@ export function activeIssueMessage(state: NoteIssueState): string | null {
   if (state.karakeepError) return `Karakeep export failed: ${state.karakeepError}`;
   if (state.transcribeError) return `Transcribe failed: ${state.transcribeError}`;
   if (state.reEnrichError) return `Re-enrich failed: ${state.reEnrichError}`;
+  if (state.enhanceError) return `Enhance failed: ${state.enhanceError}`;
   return null;
 }
 
-/** The three long-running actions that share the inline busy row. */
+/** The long-running actions that share the inline busy row. */
 export interface NoteBusyState {
   reEnriching: boolean;
   transcribing: boolean;
   exportingKarakeep: boolean;
+  enhancing: boolean;
 }
 
 /** Label for the inline spinner, or null when nothing is in flight. */
@@ -67,18 +70,22 @@ export function busyLabel(state: NoteBusyState): string | null {
   if (state.reEnriching) return "Re-running vision enrichment…";
   if (state.transcribing) return "Transcribing audio…";
   if (state.exportingKarakeep) return "Sending to Karakeep…";
+  if (state.enhancing) return "Enhancing prose…";
   return null;
 }
 
-/** True while any of the three actions is running (gates the FAB + sheet rows). */
+/** True while any action is running (gates the FAB + sheet rows). */
 export function isActionsBusy(state: NoteBusyState): boolean {
-  return state.reEnriching || state.transcribing || state.exportingKarakeep;
+  return (
+    state.reEnriching || state.transcribing || state.exportingKarakeep || state.enhancing
+  );
 }
 
 /** Which secondary actions this note's `kind` supports. */
 export interface NoteCapabilities {
   canReEnrich: boolean;
   canTranscribe: boolean;
+  canEnhance: boolean;
   showAudioPlayer: boolean;
 }
 
@@ -91,6 +98,13 @@ export interface NoteCapabilities {
  * migration first. Transcribe + the inline player surface for audio notes
  * (both shared-audio and in-app captures use the same kind value); the player
  * additionally needs the file to actually be on disk.
+ *
+ * Enhance is deliberately NOT kind-gated: idea, journal, shared-link and
+ * shared-text notes all carry prose worth polishing, and an image/audio note's
+ * body is prose once it has been enriched or transcribed. The real "is there
+ * enough here to enhance?" test needs the body text, which this function does
+ * not have — it lives in lib/enhanceProse.ts. All that is gated here is
+ * `missing`: a note whose .md is gone from disk must never be written.
  */
 export function noteCapabilities(
   kind: string,
@@ -98,7 +112,12 @@ export function noteCapabilities(
 ): NoteCapabilities {
   const canReEnrich = kind === "shared-image" || kind === "photo";
   const canTranscribe = kind === "shared-audio";
-  return { canReEnrich, canTranscribe, showAudioPlayer: canTranscribe && !missing };
+  return {
+    canReEnrich,
+    canTranscribe,
+    canEnhance: !missing,
+    showAudioPlayer: canTranscribe && !missing,
+  };
 }
 
 /**

@@ -20,6 +20,7 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     nextCustomSeq: 1,
     fallbackProviderId: null,
     visionProviderId: null,
+    enhanceProviderId: null,
     omniRouteApiKey: "omni-key",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,

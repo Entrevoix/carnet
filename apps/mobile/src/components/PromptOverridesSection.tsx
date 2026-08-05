@@ -4,6 +4,7 @@ import { Button, HelperText, List, Text, TextInput } from "react-native-paper";
 
 import type { PromptOverrides } from "../lib/settings";
 import {
+  buildEnhanceProsePrompt,
   buildIdeaPrompt,
   buildJournalPrompt,
   buildPersonPrompt,
@@ -18,6 +19,8 @@ const PROMPT_MODES = [
   { key: "person", label: "Contact", icon: "account" },
   { key: "sharedImage", label: "Photo + Image", icon: "camera" },
   { key: "sharedLink", label: "Link + Text", icon: "link" },
+  // Not a capture mode — this one runs post-hoc, from a saved note's ⋮ sheet.
+  { key: "enhanceProse", label: "Enhance prose", icon: "feather" },
 ] as const;
 
 type PromptModeKey = (typeof PROMPT_MODES)[number]["key"];
@@ -37,6 +40,8 @@ function defaultPromptFor(mode: PromptModeKey): string {
       return buildSharedImagePrompt("").system;
     case "sharedLink":
       return buildSharedLinkPrompt("", "", "", null).system;
+    case "enhanceProse":
+      return buildEnhanceProsePrompt("placeholder").system;
   }
 }
 

@@ -53,6 +53,7 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     nextCustomSeq: 3,
     fallbackProviderId: "relais",
     visionProviderId: "openai",
+    enhanceProviderId: null,
     omniRouteApiKey: "sk-existing",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,

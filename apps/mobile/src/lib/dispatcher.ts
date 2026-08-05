@@ -46,7 +46,11 @@
  */
 
 import { getSettings, getPromptOverrides, DEFAULT_OMNIROUTE_MODEL, type Settings } from "./settings";
-import { resolveActiveProvider, resolveVisionProvider } from "./llmProviders";
+import {
+  resolveActiveProvider,
+  resolveEnhanceProvider,
+  resolveVisionProvider,
+} from "./llmProviders";
 import * as providerKeys from "./providerKeys";
 import * as llmClient from "./llmClient";
 import type { EnrichResult, ProviderConfig } from "./llmClient";
@@ -313,6 +317,48 @@ export async function promoteIdea(
     llmClient.promoteIdea(currentMarkdown, target, config),
   );
   return withFallbackMarker(outcome);
+}
+
+/** What {@link enhanceProse} hands back: the raw result plus the fallback
+ * facts and the resolved provider's display label (for the success snackbar). */
+export interface EnhanceOutcome {
+  result: EnrichResult;
+  usedFallback: boolean;
+  fallbackProviderId: string | null;
+  providerLabel: string;
+}
+
+/**
+ * Rewrite a note's prose body with the Enhance provider.
+ *
+ * Returns the result UNMARKED — deliberately the one enrichment entry point
+ * that does not call withFallbackMarker. That helper runs
+ * upsertFrontmatterField on the result, but this result is bare prose with no
+ * frontmatter, so the marker would prepend a stray `---` block into the middle
+ * of the note body. The fallback facts are handed outward instead, and
+ * lib/enhanceProse.ts stamps them AFTER re-attaching the real frontmatter.
+ */
+export async function enhanceProse(body: string): Promise<EnhanceOutcome> {
+  const [settings, overrides] = await Promise.all([getSettings(), getPromptOverrides()]);
+  // Resolved once — its id routes the call, its label names the provider in
+  // the success snackbar. Unlike resolveVisionProviderId (which prefers the
+  // ACTIVE entry whenever it is vision-capable), a configured
+  // enhanceProviderId WINS here: reaching for a better model than the active
+  // one is the entire point of the setting.
+  const provider = resolveEnhanceProvider(
+    settings.llmProviders,
+    settings.activeProviderId,
+    settings.enhanceProviderId,
+  );
+  const outcome = await withFallbackChain(settings, provider.id, (config) =>
+    llmClient.enhanceProse(body, config, overrides.enhanceProse),
+  );
+  return {
+    result: outcome.result,
+    usedFallback: outcome.usedFallback,
+    fallbackProviderId: outcome.fallbackProviderId,
+    providerLabel: provider.label,
+  };
 }
 
 export async function ocrCardViaVision(input: {

@@ -45,6 +45,7 @@ const storedSettings: Settings = {
   nextCustomSeq: 1,
   fallbackProviderId: null,
   visionProviderId: null,
+  enhanceProviderId: null,
   omniRouteApiKey: "sk-existing",
   localLlmApiKey: "local-existing",
   persistentNotificationEnabled: true,

@@ -36,6 +36,7 @@ import { apiKeyFieldLabel, apiKeyFieldPlaceholder, errorMessage } from "../lib/s
 import { useProviderWriteChain } from "../lib/useProviderWriteChain";
 import { ModelBrowserModal } from "./ModelBrowserModal";
 import { ProviderPickerModal } from "./ProviderPickerModal";
+import { ProviderRoleRow } from "./ProviderRoleRow";
 import { caretProps, spacing, type CarnetTheme } from "../lib/theme";
 
 interface LlmProviderSectionProps {
@@ -51,7 +52,7 @@ interface LlmProviderSectionProps {
 
 /** Which identity id the open ProviderPickerModal is selecting for. `null`
  * means the modal is closed. */
-type PickerMode = "active" | "fallback" | "vision";
+type PickerMode = "active" | "fallback" | "vision" | "enhance";
 
 /**
  * Settings → LLM provider (Phase 4 — see
@@ -95,6 +96,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   const [activeProviderId, setActiveProviderId] = useState("");
   const [fallbackProviderId, setFallbackProviderId] = useState<string | null>(null);
   const [visionProviderId, setVisionProviderId] = useState<string | null>(null);
+  const [enhanceProviderId, setEnhanceProviderId] = useState<string | null>(null);
   const [nextCustomSeq, setNextCustomSeq] = useState(1);
 
   const [editBuffer, setEditBuffer] = useState<EditBuffer>({
@@ -149,6 +151,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       setActiveProviderId(s.activeProviderId);
       setFallbackProviderId(s.fallbackProviderId);
       setVisionProviderId(s.visionProviderId);
+      setEnhanceProviderId(s.enhanceProviderId);
       setNextCustomSeq(s.nextCustomSeq);
       const active = resolveActiveProvider(s.llmProviders, s.activeProviderId);
       setEditBuffer(editBufferFromProvider(active));
@@ -174,6 +177,9 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     : null;
   const visionProvider = visionProviderId
     ? providerList.find((p) => p.id === visionProviderId) ?? null
+    : null;
+  const enhanceProvider = enhanceProviderId
+    ? providerList.find((p) => p.id === enhanceProviderId) ?? null
     : null;
 
   async function loadEntryForEditing(provider: LlmProvider): Promise<void> {
@@ -217,6 +223,17 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       setVisionProviderId(id);
     } catch (e: unknown) {
       onError(errorMessage(e, "Failed to set vision provider"));
+    }
+  }
+
+  async function selectEnhance(id: string | null): Promise<void> {
+    setPickerMode(null);
+    try {
+      await persistIdentity({ enhanceProviderId: id });
+      if (!mountedRef.current) return;
+      setEnhanceProviderId(id);
+    } catch (e: unknown) {
+      onError(errorMessage(e, "Failed to set enhance provider"));
     }
   }
 
@@ -338,12 +355,13 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     // must reflect the entry as gone too rather than show a "configured"
     // provider whose credential silently no longer works.
     const identity = reassignIdentityAfterDelete(
-      { activeProviderId, fallbackProviderId, visionProviderId },
+      { activeProviderId, fallbackProviderId, visionProviderId, enhanceProviderId },
       id,
     );
     setProviders(nextProviders);
     setFallbackProviderId(identity.fallbackProviderId);
     setVisionProviderId(identity.visionProviderId);
+    setEnhanceProviderId(identity.enhanceProviderId);
     setActiveProviderId(identity.activeProviderId);
     if (identity.activeProviderId !== activeProviderId) {
       await loadEntryForEditing(
@@ -353,13 +371,14 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     }
 
     try {
-      // One write for the list AND all three identity ids together — a
-      // dangling id must never be observable, even transiently.
+      // One write for the list AND every identity id together — a dangling id
+      // must never be observable, even transiently.
       await persistIdentity({
         llmProviders: nextProviders,
         activeProviderId: identity.activeProviderId,
         fallbackProviderId: identity.fallbackProviderId,
         visionProviderId: identity.visionProviderId,
+        enhanceProviderId: identity.enhanceProviderId,
       });
     } catch (e: unknown) {
       onError(
@@ -425,23 +444,27 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   // with no URL configured yet), so Test connection is disabled instead.
   const canTestConnection = editBuffer.baseUrl.trim().length > 0 || isRelais;
 
-  const pickerTitle =
-    pickerMode === "fallback"
-      ? "Offline fallback provider"
-      : pickerMode === "vision"
-        ? "Vision provider"
-        : "Choose LLM provider";
-  const pickerSelectedId =
-    pickerMode === "fallback"
-      ? fallbackProviderId
-      : pickerMode === "vision"
-        ? visionProviderId
-        : activeProviderId;
+  const PICKER_TITLES: Record<PickerMode, string> = {
+    active: "Choose LLM provider",
+    fallback: "Offline fallback provider",
+    vision: "Vision provider",
+    enhance: "Enhance model",
+  };
+  const PICKER_SELECTED: Record<PickerMode, string | null> = {
+    active: activeProviderId,
+    fallback: fallbackProviderId,
+    vision: visionProviderId,
+    enhance: enhanceProviderId,
+  };
+  const pickerTitle = pickerMode ? PICKER_TITLES[pickerMode] : PICKER_TITLES.active;
+  const pickerSelectedId = pickerMode ? PICKER_SELECTED[pickerMode] : activeProviderId;
   const handlePickerSelect = (id: string | null) => {
     if (pickerMode === "fallback") {
       void selectFallback(id);
     } else if (pickerMode === "vision") {
       void selectVision(id);
+    } else if (pickerMode === "enhance") {
+      void selectEnhance(id);
     } else if (id !== null) {
       void selectActive(id);
     }
@@ -648,38 +671,34 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         Add custom provider
       </Button>
 
-      <Text variant="titleMedium" style={styles.subTitle}>
-        Offline fallback
-      </Text>
-      <HelperText type="info" visible>
-        Used once, automatically, when the active provider is unreachable —
-        never when it rejects a bad key or model id.
-      </HelperText>
-      <List.Item
-        title={fallbackProvider ? fallbackProvider.label : "None"}
+      <ProviderRoleRow
+        title="Offline fallback"
+        helper="Used once, automatically, when the active provider is unreachable — never when it rejects a bad key or model id."
+        providerLabel={fallbackProvider?.label ?? null}
+        icon="cloud-off-outline"
         accessibilityLabel="Choose offline fallback provider"
-        left={(p) => <List.Icon {...p} icon="cloud-off-outline" />}
-        right={(p) => <List.Icon {...p} icon="chevron-down" />}
-        onPress={() => setPickerMode("fallback")}
         disabled={writing}
-        style={styles.row}
+        onPress={() => setPickerMode("fallback")}
       />
 
-      <Text variant="titleMedium" style={styles.subTitle}>
-        Vision provider
-      </Text>
-      <HelperText type="info" visible>
-        Used for photo/image captures when the active provider has no vision
-        model of its own.
-      </HelperText>
-      <List.Item
-        title={visionProvider ? visionProvider.label : "None"}
+      <ProviderRoleRow
+        title="Vision provider"
+        helper="Used for photo/image captures when the active provider has no vision model of its own."
+        providerLabel={visionProvider?.label ?? null}
+        icon="image-outline"
         accessibilityLabel="Choose vision provider"
-        left={(p) => <List.Icon {...p} icon="image-outline" />}
-        right={(p) => <List.Icon {...p} icon="chevron-down" />}
-        onPress={() => setPickerMode("vision")}
         disabled={writing}
-        style={styles.row}
+        onPress={() => setPickerMode("vision")}
+      />
+
+      <ProviderRoleRow
+        title="Enhance model"
+        helper="Used by the Enhance action on a saved note. Pick a stronger model than the active one — leave as None to use the active provider."
+        providerLabel={enhanceProvider?.label ?? null}
+        icon="feather"
+        accessibilityLabel="Choose enhance provider"
+        disabled={writing}
+        onPress={() => setPickerMode("enhance")}
       />
 
       <ProviderPickerModal

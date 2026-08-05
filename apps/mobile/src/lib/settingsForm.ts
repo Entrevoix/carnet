@@ -44,7 +44,7 @@ export interface ExistingApiKeys {
  * Compose the {@link Settings} object to persist from the form state, the
  * existing keys, and a freshly-read `currentSettings` snapshot. The LLM
  * identity fields (`llmProviders`, `activeProviderId`, `nextCustomSeq`,
- * `fallbackProviderId`, `visionProviderId`) are threaded straight through
+ * `fallbackProviderId`, `visionProviderId`, `enhanceProviderId`) are threaded straight through
  * from `currentSettings` UNCHANGED — as of Phase 4,
  * `components/LlmProviderSection.tsx` persists that slice itself, on its own
  * immediate writes, independent of this form's Save button. This function
@@ -67,6 +67,7 @@ export function composeSettingsForSave(
     nextCustomSeq: currentSettings.nextCustomSeq,
     fallbackProviderId: currentSettings.fallbackProviderId,
     visionProviderId: currentSettings.visionProviderId,
+    enhanceProviderId: currentSettings.enhanceProviderId,
     localLlmApiKey: existing.localLlmApiKey,
     persistentNotificationEnabled: form.persistentNotificationEnabled,
     autoTranscribeOnSave: form.autoTranscribeOnSave,

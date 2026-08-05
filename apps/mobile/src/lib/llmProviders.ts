@@ -158,6 +158,35 @@ export function resolveVisionProvider(
   return null;
 }
 
+/**
+ * Which provider serves an Enhance call:
+ *   1. `enhanceProviderId`'s entry when set AND it names a real entry.
+ *   2. else the active entry.
+ *
+ * Deliberately the INVERSE precedence of {@link resolveVisionProvider}: vision
+ * has a capability test (does this entry have a vision model?), so the active
+ * entry wins whenever it is capable. Enhance has no capability test — every
+ * text provider can serve it — and the entire point of the setting is to reach
+ * for a BETTER model than the active one, so the dedicated entry must win when
+ * set. Copying resolveVisionProvider's ordering here would make the active
+ * (typically cheap) entry win every time and the setting would silently never
+ * take effect.
+ *
+ * Never returns null: a stale `enhanceProviderId` (an entry since deleted)
+ * falls through to the active entry rather than stranding the call.
+ */
+export function resolveEnhanceProvider(
+  providers: readonly LlmProvider[],
+  activeProviderId: string,
+  enhanceProviderId: string | null = null,
+): LlmProvider {
+  if (enhanceProviderId) {
+    const found = providers.find((p) => p.id === enhanceProviderId);
+    if (found) return found;
+  }
+  return resolveActiveProvider(providers, activeProviderId);
+}
+
 /** Labels/URLs beyond this length are almost certainly pasted garbage, not
  * a real endpoint — capped so a fat-fingered paste can't wedge a multi-KB
  * string into the persisted settings blob (and, for baseUrl, into every

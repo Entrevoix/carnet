@@ -15,6 +15,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     nextCustomSeq: 1,
     fallbackProviderId: null,
     visionProviderId: null,
+    enhanceProviderId: null,
     omniRouteApiKey: "omni-secret",
     localLlmApiKey: "local-secret",
     persistentNotificationEnabled: true,

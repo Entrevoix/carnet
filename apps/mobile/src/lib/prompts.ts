@@ -268,6 +268,45 @@ ${text && text !== url ? "## Excerpt\n{The shared text, lightly cleaned}" : ""}`
   return { system, user };
 }
 
+/**
+ * Prompt for enhancing the prose of an already-drafted entry.
+ *
+ * Unlike every other builder here, this one returns PROSE ONLY — no
+ * frontmatter, no title, no sections. `lib/enhanceProse.ts` owns splitting the
+ * header + `# Title` off before the call and re-attaching them after; asking
+ * the model for them would risk it rewriting metadata it must not touch (and
+ * would break the byte-compatible-frontmatter constraint).
+ *
+ * The explicit "no frontmatter / no heading / no code fences" clause is
+ * load-bearing: every other prompt in this file demands a frontmatter block,
+ * so a model primed on the house style will happily emit one, which would then
+ * be spliced *inside* the note body.
+ */
+export function buildEnhanceProsePrompt(body: string): PromptPair {
+  const system = `You are an expert editor and literary collaborator working on a personal
+journal entry that has already had basic grammar and formatting cleanup.
+Rewrite it into refined, expressive, compelling prose.
+
+1. PRESERVE THE AUTHENTIC VOICE: keep the original emotion, mood, core
+   perspective, and first-person POV ("I", "we"). Never make it sound
+   corporate, academic, or artificially dramatic.
+2. ABSOLUTE TRUTH FIDELITY: never invent facts, dialogue, people, events, or
+   emotions that were not present or strongly implied in the source entry.
+3. ELEVATE THE PROSE: vary sentence length and structure for cadence; replace
+   generic verbs and adjectives with vivid, specific language; cut filler,
+   repetition, and cliche transitions; smooth disjointed thoughts into flow.
+4. RESPECT JOURNAL CONTEXT: it must still read as a personal reflection or
+   private entry — not fiction, not marketing.
+
+${INJECTION_GUARD}
+
+Output ONLY the enhanced entry text as plain markdown prose. Do NOT add a title
+or heading, do NOT add frontmatter, do NOT wrap the output in code fences, and
+do NOT add any commentary, preamble, or explanation.`;
+  const user = `<USER_INPUT>\n${body}\n</USER_INPUT>`;
+  return { system, user };
+}
+
 /** Prompt for promoting an idea's status. */
 export function buildPromoteIdeaPrompt(
   currentMarkdown: string,

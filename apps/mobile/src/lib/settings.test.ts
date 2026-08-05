@@ -464,19 +464,25 @@ describe("fallbackProviderId/visionProviderId default via the v3 migration", () 
     const s = await getSettings();
     expect(s.fallbackProviderId).toBeNull();
     expect(s.visionProviderId).toBeNull();
+    // The blob above predates Enhance and has no such key at all. It must read
+    // back as null, never undefined — undefined is DROPPED by JSON.stringify on
+    // the next write, so the key would silently never persist.
+    expect(s.enhanceProviderId).toBeNull();
   });
 
-  it("round-trips a configured fallback/vision provider through save + load", async () => {
+  it("round-trips a configured fallback/vision/enhance provider through save + load", async () => {
     const base = await getSettings();
     await saveSettings({
       ...base,
       fallbackProviderId: "relais",
       visionProviderId: "openai",
+      enhanceProviderId: "groq",
     });
 
     const reloaded = await getSettings();
     expect(reloaded.fallbackProviderId).toBe("relais");
     expect(reloaded.visionProviderId).toBe("openai");
+    expect(reloaded.enhanceProviderId).toBe("groq");
   });
 
   it("treats a non-string persisted value as corrupt and falls back to null", async () => {
@@ -488,6 +494,7 @@ describe("fallbackProviderId/visionProviderId default via the v3 migration", () 
         nextCustomSeq: 1,
         fallbackProviderId: 42,
         visionProviderId: false,
+        enhanceProviderId: { not: "a string" },
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
@@ -501,6 +508,7 @@ describe("fallbackProviderId/visionProviderId default via the v3 migration", () 
     const s = await getSettings();
     expect(s.fallbackProviderId).toBeNull();
     expect(s.visionProviderId).toBeNull();
+    expect(s.enhanceProviderId).toBeNull();
   });
 });
 

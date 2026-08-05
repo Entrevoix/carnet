@@ -65,6 +65,10 @@ export interface PromptOverrides {
   person?: string;
   sharedImage?: string;
   sharedLink?: string;
+  /** Override for the Enhance action's prose-rewrite prompt. Unlike the five
+   * capture modes above, this one's default output is bare prose — see
+   * prompts.ts's buildEnhanceProsePrompt. */
+  enhanceProse?: string;
 }
 
 export interface Settings {
@@ -96,6 +100,12 @@ export interface Settings {
    * only as a second rung — the active entry's own vision model still wins
    * when present. See llmProviders.ts's resolveVisionProvider. */
   visionProviderId: string | null;
+  /** Dedicated provider for the Enhance action (rewriting a saved note's
+   * prose with a stronger model). `null` = use the active entry, i.e. Enhance
+   * runs on whatever serves captures. Mirrors visionProviderId's storage
+   * shape, but NOT its precedence: when set, this entry WINS over the active
+   * one — see llmProviders.ts's resolveEnhanceProvider for why. */
+  enhanceProviderId: string | null;
   /** OmniRoute API key (Bearer). Held in SecureStore, never persisted to the
    * AsyncStorage settings blob. Kept as a dedicated field (rather than
    * folded into a generic per-provider key lookup here) because it predates
@@ -147,6 +157,7 @@ interface PersistedSettings {
   nextCustomSeq: number;
   fallbackProviderId: string | null;
   visionProviderId: string | null;
+  enhanceProviderId: string | null;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
@@ -180,6 +191,7 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   nextCustomSeq: 1,
   fallbackProviderId: null,
   visionProviderId: null,
+  enhanceProviderId: null,
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
@@ -325,6 +337,12 @@ function parseModernBlob(raw: string): PersistedSettings | null {
           : null,
       visionProviderId:
         typeof parsed.visionProviderId === "string" ? parsed.visionProviderId : null,
+      // Additive optional field — a blob written before Enhance shipped has no
+      // such key. The `: null` arm is mandatory, not defensive: leaving it
+      // `undefined` would let JSON.stringify DROP the key on the next write, so
+      // it would silently never persist.
+      enhanceProviderId:
+        typeof parsed.enhanceProviderId === "string" ? parsed.enhanceProviderId : null,
       promptOverrides: sanitisePromptOverrides(parsed.promptOverrides),
     };
   } catch {
@@ -360,6 +378,7 @@ async function readPersisted(): Promise<PersistedSettings> {
         nextCustomSeq: DEFAULT_PERSISTED.nextCustomSeq,
         fallbackProviderId: null,
         visionProviderId: null,
+        enhanceProviderId: null,
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
@@ -383,6 +402,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     nextCustomSeq: settings.nextCustomSeq,
     fallbackProviderId: settings.fallbackProviderId,
     visionProviderId: settings.visionProviderId,
+    enhanceProviderId: settings.enhanceProviderId,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -427,6 +447,7 @@ export async function getSettings(): Promise<Settings> {
     nextCustomSeq: persisted.nextCustomSeq,
     fallbackProviderId: persisted.fallbackProviderId,
     visionProviderId: persisted.visionProviderId,
+    enhanceProviderId: persisted.enhanceProviderId,
     omniRouteApiKey,
     localLlmApiKey,
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
@@ -465,6 +486,7 @@ export async function savePersistedOnly(settings: Settings): Promise<void> {
     nextCustomSeq: settings.nextCustomSeq,
     fallbackProviderId: settings.fallbackProviderId,
     visionProviderId: settings.visionProviderId,
+    enhanceProviderId: settings.enhanceProviderId,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
