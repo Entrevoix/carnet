@@ -39,6 +39,7 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     fallbackProviderId: null,
     visionProviderId: null,
     enhanceProviderId: null,
+    enhanceModel: "",
     omniRouteApiKey: "test-key",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,
@@ -181,6 +182,67 @@ describe("enhanceProse routing", () => {
 
     const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://llm.example.com/v1/chat/completions");
+  });
+
+  it("sends enhanceModel instead of the provider's own model", async () => {
+    // The point of the feature: same endpoint, stronger model. Captures keep
+    // running on gpt-4o-mini; Enhance overrides just the model string.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceModel: "anthropic/claude-sonnet-5",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://llm.example.com/v1/chat/completions");
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("anthropic/claude-sonnet-5");
+  });
+
+  it("treats a whitespace-only enhanceModel as unset", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceModel: "   ",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string,
+    ) as { model: string };
+    expect(body.model).toBe("gpt-4o-mini");
+  });
+
+  it("does NOT force enhanceModel onto the fallback provider", async () => {
+    // A model id only exists on the endpoint that listed it. Carrying a
+    // Sonnet id onto the local Relais fallback would turn a recoverable
+    // network blip into a hard "model not found".
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceModel: "anthropic/claude-sonnet-5",
+      fallbackProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais" ? { ...p, model: "local-small" } : p,
+      ),
+    });
+    // Primary attempt fails in the unreachable class, triggering the retry.
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const primary = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string,
+    ) as { model: string };
+    const fallback = JSON.parse(
+      (fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string,
+    ) as { model: string };
+    expect(primary.model).toBe("anthropic/claude-sonnet-5");
+    expect(fallback.model).toBe("local-small");
   });
 
   it("returns prose with NO frontmatter marker spliced into it", async () => {

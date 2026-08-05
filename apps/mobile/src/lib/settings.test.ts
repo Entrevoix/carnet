@@ -485,6 +485,19 @@ describe("fallbackProviderId/visionProviderId default via the v3 migration", () 
     expect(reloaded.enhanceProviderId).toBe("groq");
   });
 
+  it("round-trips enhanceModel, and defaults it to blank on a blob without it", async () => {
+    const base = await getSettings();
+    // Blank is the "use the provider's own model" sentinel, so it must survive
+    // as "" rather than being dropped to undefined by JSON.stringify.
+    expect(base.enhanceModel).toBe("");
+
+    await saveSettings({ ...base, enhanceModel: "anthropic/claude-sonnet-5" });
+    expect((await getSettings()).enhanceModel).toBe("anthropic/claude-sonnet-5");
+
+    await saveSettings({ ...base, enhanceModel: "" });
+    expect((await getSettings()).enhanceModel).toBe("");
+  });
+
   it("treats a non-string persisted value as corrupt and falls back to null", async () => {
     _async.set(
       SETTINGS_KEY_V3,

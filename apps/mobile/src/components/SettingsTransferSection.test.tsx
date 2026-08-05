@@ -44,6 +44,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     fallbackProviderId: null,
     visionProviderId: null,
     enhanceProviderId: null,
+    enhanceModel: "",
     omniRouteApiKey: "omni-secret",
     localLlmApiKey: "local-secret",
     persistentNotificationEnabled: true,

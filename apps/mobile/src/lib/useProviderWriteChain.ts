@@ -42,6 +42,7 @@ export type IdentityPatch = Partial<
     | "fallbackProviderId"
     | "visionProviderId"
     | "enhanceProviderId"
+    | "enhanceModel"
   >
 >;
 

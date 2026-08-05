@@ -53,6 +53,7 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     fallbackProviderId: null,
     visionProviderId: null,
     enhanceProviderId: null,
+    enhanceModel: "",
     omniRouteApiKey: "",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,

@@ -21,6 +21,7 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     fallbackProviderId: null,
     visionProviderId: null,
     enhanceProviderId: null,
+    enhanceModel: "",
     omniRouteApiKey: "omni-key",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,

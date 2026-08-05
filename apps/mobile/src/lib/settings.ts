@@ -106,6 +106,18 @@ export interface Settings {
    * shape, but NOT its precedence: when set, this entry WINS over the active
    * one — see llmProviders.ts's resolveEnhanceProvider for why. */
   enhanceProviderId: string | null;
+  /** Model id the Enhance action sends, overriding the resolved provider's own
+   * `model`. Blank = use whatever that provider is configured with.
+   *
+   * Separate from {@link enhanceProviderId} because the interesting case is a
+   * DIFFERENT MODEL ON THE SAME ENDPOINT — e.g. captures on
+   * `gemini/gemini-2.5-flash` for speed, Enhance on a stronger model through
+   * the same OmniRoute entry. Without this, that would mean duplicating the
+   * whole provider (base URL, key and all) just to vary one string.
+   *
+   * Must be cleared whenever `enhanceProviderId` changes: a model id is only
+   * meaningful against the endpoint that lists it. */
+  enhanceModel: string;
   /** OmniRoute API key (Bearer). Held in SecureStore, never persisted to the
    * AsyncStorage settings blob. Kept as a dedicated field (rather than
    * folded into a generic per-provider key lookup here) because it predates
@@ -158,6 +170,7 @@ interface PersistedSettings {
   fallbackProviderId: string | null;
   visionProviderId: string | null;
   enhanceProviderId: string | null;
+  enhanceModel: string;
   persistentNotificationEnabled: boolean;
   autoTranscribeOnSave: boolean;
   richEditorEnabled: boolean;
@@ -192,6 +205,7 @@ const DEFAULT_PERSISTED: PersistedSettings = {
   fallbackProviderId: null,
   visionProviderId: null,
   enhanceProviderId: null,
+  enhanceModel: "",
   persistentNotificationEnabled: false,
   autoTranscribeOnSave: false,
   richEditorEnabled: true,
@@ -343,6 +357,9 @@ function parseModernBlob(raw: string): PersistedSettings | null {
       // it would silently never persist.
       enhanceProviderId:
         typeof parsed.enhanceProviderId === "string" ? parsed.enhanceProviderId : null,
+      // Blank (not undefined) is the "use the provider's own model" sentinel —
+      // same JSON.stringify-drops-undefined trap as the ids above.
+      enhanceModel: typeof parsed.enhanceModel === "string" ? parsed.enhanceModel : "",
       promptOverrides: sanitisePromptOverrides(parsed.promptOverrides),
     };
   } catch {
@@ -379,6 +396,7 @@ async function readPersisted(): Promise<PersistedSettings> {
         fallbackProviderId: null,
         visionProviderId: null,
         enhanceProviderId: null,
+        enhanceModel: "",
         persistentNotificationEnabled: false,
         autoTranscribeOnSave: false,
         richEditorEnabled: true,
@@ -403,6 +421,7 @@ async function writePersisted(settings: PersistedSettings): Promise<void> {
     fallbackProviderId: settings.fallbackProviderId,
     visionProviderId: settings.visionProviderId,
     enhanceProviderId: settings.enhanceProviderId,
+    enhanceModel: settings.enhanceModel,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,
@@ -448,6 +467,7 @@ export async function getSettings(): Promise<Settings> {
     fallbackProviderId: persisted.fallbackProviderId,
     visionProviderId: persisted.visionProviderId,
     enhanceProviderId: persisted.enhanceProviderId,
+    enhanceModel: persisted.enhanceModel,
     omniRouteApiKey,
     localLlmApiKey,
     persistentNotificationEnabled: persisted.persistentNotificationEnabled,
@@ -487,6 +507,7 @@ export async function savePersistedOnly(settings: Settings): Promise<void> {
     fallbackProviderId: settings.fallbackProviderId,
     visionProviderId: settings.visionProviderId,
     enhanceProviderId: settings.enhanceProviderId,
+    enhanceModel: settings.enhanceModel,
     persistentNotificationEnabled: settings.persistentNotificationEnabled,
     autoTranscribeOnSave: settings.autoTranscribeOnSave,
     richEditorEnabled: settings.richEditorEnabled,

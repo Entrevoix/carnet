@@ -1,14 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
-import {
-  Button,
-  Dialog,
-  HelperText,
-  List,
-  Portal,
-  Text,
-  TextInput,
-} from "react-native-paper";
+import { Button, HelperText, List, Text, TextInput } from "react-native-paper";
 
 import { getSettings } from "../lib/settings";
 import {
@@ -37,6 +29,9 @@ import { useProviderWriteChain } from "../lib/useProviderWriteChain";
 import { ModelBrowserModal } from "./ModelBrowserModal";
 import { ProviderPickerModal } from "./ProviderPickerModal";
 import { ProviderRoleRow } from "./ProviderRoleRow";
+import { EnhanceRoleSection } from "./EnhanceRoleSection";
+import { DeleteProviderDialog } from "./DeleteProviderDialog";
+import { AddProviderDialog } from "./AddProviderDialog";
 import { caretProps, spacing, type CarnetTheme } from "../lib/theme";
 
 interface LlmProviderSectionProps {
@@ -97,6 +92,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   const [fallbackProviderId, setFallbackProviderId] = useState<string | null>(null);
   const [visionProviderId, setVisionProviderId] = useState<string | null>(null);
   const [enhanceProviderId, setEnhanceProviderId] = useState<string | null>(null);
+  const [enhanceModel, setEnhanceModelState] = useState("");
   const [nextCustomSeq, setNextCustomSeq] = useState(1);
 
   const [editBuffer, setEditBuffer] = useState<EditBuffer>({
@@ -122,7 +118,11 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   const [browseError, setBrowseError] = useState<string | null>(null);
   const [models, setModels] = useState<string[] | null>(null);
   const [modelFilter, setModelFilter] = useState("");
-  const [browseTarget, setBrowseTarget] = useState<"chat" | "vision">("chat");
+  // "enhance" browses against the RESOLVED enhance provider rather than the
+  // entry currently open in the editor above — see openBrowse.
+  const [browseTarget, setBrowseTarget] = useState<"chat" | "vision" | "enhance">(
+    "chat",
+  );
 
   const { persistIdentity, writing } = useProviderWriteChain();
   /** Invalidates an in-flight health check when the edited entry changes
@@ -152,6 +152,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       setFallbackProviderId(s.fallbackProviderId);
       setVisionProviderId(s.visionProviderId);
       setEnhanceProviderId(s.enhanceProviderId);
+      setEnhanceModelState(s.enhanceModel);
       setNextCustomSeq(s.nextCustomSeq);
       const active = resolveActiveProvider(s.llmProviders, s.activeProviderId);
       setEditBuffer(editBufferFromProvider(active));
@@ -229,11 +230,26 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   async function selectEnhance(id: string | null): Promise<void> {
     setPickerMode(null);
     try {
-      await persistIdentity({ enhanceProviderId: id });
+      // Clear the model in the SAME write as the provider change: a model id
+      // only exists on the endpoint that listed it, so carrying e.g. a Groq id
+      // over to OpenAI would leave Enhance pointing at a model that 404s.
+      await persistIdentity({ enhanceProviderId: id, enhanceModel: "" });
       if (!mountedRef.current) return;
       setEnhanceProviderId(id);
+      setEnhanceModelState("");
     } catch (e: unknown) {
       onError(errorMessage(e, "Failed to set enhance provider"));
+    }
+  }
+
+  async function selectEnhanceModel(id: string): Promise<void> {
+    setBrowseOpen(false);
+    try {
+      await persistIdentity({ enhanceModel: id });
+      if (!mountedRef.current) return;
+      setEnhanceModelState(id);
+    } catch (e: unknown) {
+      onError(errorMessage(e, "Failed to set enhance model"));
     }
   }
 
@@ -409,16 +425,26 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     }
   }
 
-  async function openBrowse(target: "chat" | "vision"): Promise<void> {
+  async function openBrowse(target: "chat" | "vision" | "enhance"): Promise<void> {
     setBrowseTarget(target);
     setBrowseError(null);
     setBrowseOpen(true);
     setModelFilter("");
     setBrowseLoading(true);
     try {
-      const stored = await providerKeys.getKey(active.id);
-      const key = resolveBrowseApiKey(pendingKey, stored);
-      const list = await listModels(editBuffer.baseUrl, key);
+      // "enhance" lists models from the provider Enhance will actually call —
+      // enhanceProviderId when set, else the active entry — NOT the entry open
+      // in the editor above, which the user may merely be inspecting. Its
+      // saved baseUrl/key are used rather than editBuffer's unsaved edits.
+      const src =
+        target === "enhance"
+          ? providerList.find((p) => p.id === (enhanceProviderId ?? activeProviderId)) ??
+            active
+          : null;
+      const keyOwnerId = src ? src.id : active.id;
+      const stored = await providerKeys.getKey(keyOwnerId);
+      const key = src ? stored : resolveBrowseApiKey(pendingKey, stored);
+      const list = await listModels(src ? src.baseUrl : editBuffer.baseUrl, key);
       if (!mountedRef.current) return;
       setModels(list);
     } catch (e: unknown) {
@@ -431,6 +457,13 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   }
 
   function pickModel(id: string): void {
+    // The enhance target writes straight to settings (its own immediate
+    // write, like the provider-role rows); chat/vision go to the edit buffer
+    // and land on the section's explicit "Save provider".
+    if (browseTarget === "enhance") {
+      void selectEnhanceModel(id);
+      return;
+    }
     setEditBuffer(applyPickedModelToBuffer(editBuffer, browseTarget, id));
     setBrowseOpen(false);
   }
@@ -691,14 +724,13 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         onPress={() => setPickerMode("vision")}
       />
 
-      <ProviderRoleRow
-        title="Enhance model"
-        helper="Used by the Enhance action on a saved note. Pick a stronger model than the active one — leave as None to use the active provider."
+      <EnhanceRoleSection
         providerLabel={enhanceProvider?.label ?? null}
-        icon="feather"
-        accessibilityLabel="Choose enhance provider"
+        model={enhanceModel}
         disabled={writing}
-        onPress={() => setPickerMode("enhance")}
+        onPickProvider={() => setPickerMode("enhance")}
+        onBrowseModels={() => void openBrowse("enhance")}
+        onResetModel={() => void selectEnhanceModel("")}
       />
 
       <ProviderPickerModal
@@ -716,59 +748,25 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         }}
       />
 
-      <Portal>
-        <Dialog visible={addOpen} onDismiss={() => setAddOpen(false)}>
-          <Dialog.Title>Add custom provider</Dialog.Title>
-          <Dialog.Content style={styles.dialogContent}>
-            <TextInput
-              {...caretProps(theme)}
-              label="Label"
-              mode="outlined"
-              value={addLabel}
-              onChangeText={setAddLabel}
-              placeholder="e.g. My Ollama"
-            />
-            <TextInput
-              {...caretProps(theme)}
-              label="Base URL"
-              mode="outlined"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              value={addBaseUrl}
-              onChangeText={setAddBaseUrl}
-              placeholder="e.g. https://192.168.1.50:11434"
-            />
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={() => setAddOpen(false)}>Cancel</Button>
-            <Button onPress={() => void addCustom()}>Add</Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
+      <AddProviderDialog
+        theme={theme}
+        visible={addOpen}
+        label={addLabel}
+        baseUrl={addBaseUrl}
+        onLabelChange={setAddLabel}
+        onBaseUrlChange={setAddBaseUrl}
+        onCancel={() => setAddOpen(false)}
+        onAdd={() => void addCustom()}
+      />
 
-      <Portal>
-        <Dialog visible={deleteTarget !== null} onDismiss={() => setDeleteTarget(null)}>
-          <Dialog.Title>Delete provider?</Dialog.Title>
-          <Dialog.Content>
-            <Text variant="bodyMedium">
-              "{deleteTargetLabel}" and its stored API key will be removed.
-              This can't be undone.
-            </Text>
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={() => setDeleteTarget(null)}>Cancel</Button>
-            <Button
-              textColor={theme.colors.error}
-              onPress={() => {
-                if (deleteTarget) void performDelete(deleteTarget);
-              }}
-            >
-              Delete
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
+      <DeleteProviderDialog
+        theme={theme}
+        targetLabel={deleteTarget !== null ? deleteTargetLabel : null}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) void performDelete(deleteTarget);
+        }}
+      />
 
       <ModelBrowserModal
         theme={theme}

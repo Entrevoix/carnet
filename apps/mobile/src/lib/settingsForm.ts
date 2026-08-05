@@ -68,6 +68,7 @@ export function composeSettingsForSave(
     fallbackProviderId: currentSettings.fallbackProviderId,
     visionProviderId: currentSettings.visionProviderId,
     enhanceProviderId: currentSettings.enhanceProviderId,
+    enhanceModel: currentSettings.enhanceModel,
     localLlmApiKey: existing.localLlmApiKey,
     persistentNotificationEnabled: form.persistentNotificationEnabled,
     autoTranscribeOnSave: form.autoTranscribeOnSave,

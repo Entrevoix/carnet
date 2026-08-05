@@ -46,6 +46,7 @@ const storedSettings: Settings = {
   fallbackProviderId: null,
   visionProviderId: null,
   enhanceProviderId: null,
+  enhanceModel: "",
   omniRouteApiKey: "sk-existing",
   localLlmApiKey: "local-existing",
   persistentNotificationEnabled: true,

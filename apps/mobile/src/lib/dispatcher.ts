@@ -350,9 +350,23 @@ export async function enhanceProse(body: string): Promise<EnhanceOutcome> {
     settings.activeProviderId,
     settings.enhanceProviderId,
   );
-  const outcome = await withFallbackChain(settings, provider.id, (config) =>
-    llmClient.enhanceProse(body, config, overrides.enhanceProse),
-  );
+  // The model override applies to the PRIMARY attempt only. A model id is only
+  // meaningful against the endpoint that lists it, so forcing e.g. a Sonnet id
+  // onto a local Relais fallback would turn a recoverable network blip into a
+  // hard "model not found". withFallbackChain calls this exactly once for the
+  // primary and at most once more for the fallback, in that order, so the
+  // first invocation is the primary. Keyed on call order rather than
+  // config.label because labels are not unique — validateProvider permits two
+  // entries to share one, and a same-labelled fallback would then wrongly
+  // inherit the override.
+  const enhanceModel = settings.enhanceModel.trim();
+  let primaryAttempt = true;
+  const outcome = await withFallbackChain(settings, provider.id, (config) => {
+    const effective =
+      enhanceModel && primaryAttempt ? { ...config, model: enhanceModel } : config;
+    primaryAttempt = false;
+    return llmClient.enhanceProse(body, effective, overrides.enhanceProse);
+  });
   return {
     result: outcome.result,
     usedFallback: outcome.usedFallback,
