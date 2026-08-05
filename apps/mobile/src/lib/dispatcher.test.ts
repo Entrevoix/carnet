@@ -245,6 +245,39 @@ describe("enhanceProse routing", () => {
     expect(fallback.model).toBe("local-small");
   });
 
+  it("keeps the PRIMARY error when the fallback is merely unconfigured", async () => {
+    // Observed on-device 2026-08-05: OmniRoute timed out on a slow reasoning
+    // model, the chain retried an unconfigured Relais, and the user was told
+    // "Local LLM model not configured — set it in Settings". That names the
+    // wrong provider and hides the real fault, so the primary error must win.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      fallbackProviderId: "relais", // relais has model: "" -> not configured
+    });
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+
+    await expect(enhanceProse("rough prose")).rejects.toThrow(/Network request failed/);
+    // The fallback never got as far as a request — it failed on config.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still surfaces a fallback error when the fallback genuinely tried", async () => {
+    // A configured fallback that actually attempted and failed reflects a real
+    // second attempt, so its error is the honest one to show.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      fallbackProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais" ? { ...p, model: "local-small" } : p,
+      ),
+    });
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(401, "fallback key rejected"));
+
+    await expect(enhanceProse("rough prose")).rejects.toThrow(/fallback key rejected/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("returns prose with NO frontmatter marker spliced into it", async () => {
     // enhanceProse is the one entry point that must skip withFallbackMarker:
     // the result is bare prose, so a marker would prepend a stray `---` block

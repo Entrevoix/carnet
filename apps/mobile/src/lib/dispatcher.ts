@@ -215,7 +215,20 @@ async function withFallbackChain<T>(
       throw err;
     }
     const fallbackConfig = await buildConfig(settings, fallbackId);
-    const result = await call(fallbackConfig);
+    let result: T;
+    try {
+      result = await call(fallbackConfig);
+    } catch (fallbackErr: unknown) {
+      // A fallback that is merely UNCONFIGURED must not overwrite the primary's
+      // error. Observed on-device 2026-08-05: OmniRoute timed out on a slow
+      // reasoning model, the chain retried an unconfigured Relais, and the user
+      // was told "Local LLM model not configured — set it in Settings" — which
+      // points at the wrong provider and hides the real fault entirely. A
+      // fallback that genuinely tried and failed still surfaces its own error,
+      // since that reflects a real second attempt.
+      if (llmClient.isNotConfiguredError(fallbackErr)) throw err;
+      throw fallbackErr;
+    }
     return { result, usedFallback: true, fallbackProviderId: fallbackId };
   }
 }

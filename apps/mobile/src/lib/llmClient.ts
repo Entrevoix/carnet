@@ -164,6 +164,18 @@ export function isNotConfiguredError(err: unknown): boolean {
 // Trade-off: a genuine generation that runs longer than this is cut off.
 const FETCH_TIMEOUT_MS = 20_000;
 
+/**
+ * Longer ceiling for Enhance. The 20s above is tuned for CAPTURE, where an
+ * unreachable host must fail fast so the offline queue takes over — but
+ * Enhance has no queue path (it rewrites a note already on disk), is
+ * explicitly user-initiated, and exists precisely to run a slower, stronger
+ * model. Measured on-device 2026-08-05: `auto/best-reasoning` over a tailnet
+ * blew past 20s, timed out, fell through to the Relais fallback, and surfaced
+ * as "Local LLM model not configured" — i.e. the 20s cap made the feature's
+ * headline use case (pick a better model) fail, and fail misleadingly.
+ */
+const ENHANCE_TIMEOUT_MS = 120_000;
+
 /** Hard cap on image payload sent to a vision model. Vision providers reject
  * >10 MB payloads and the in-memory peak on a phone (base64 inflates by 33%,
  * then JSON.stringify duplicates it for the request body) can OOM the app.
@@ -298,6 +310,7 @@ async function executeChat(
   messages: OpenAIMessage[],
   noteType: NoteType,
   label: string,
+  timeoutMs: number = FETCH_TIMEOUT_MS,
 ): Promise<EnrichResult> {
   const trimmed = assertUrlConfigured(baseUrl, label);
   const trimmedUrl = trimmed.replace(/\/+$/, "");
@@ -307,7 +320,7 @@ async function executeChat(
   const body = JSON.stringify({ model, messages, stream: false });
 
   return await withTimeout(
-    FETCH_TIMEOUT_MS,
+    timeoutMs,
     (ms) => timeoutError(label, ms),
     async (signal) => {
       let response: Response;
@@ -372,12 +385,13 @@ async function chatCompletion(
   prompt: PromptPair,
   noteType: NoteType,
   label: string,
+  timeoutMs?: number,
 ): Promise<EnrichResult> {
   const messages: OpenAIMessage[] = [
     { role: "system", content: prompt.system },
     { role: "user", content: prompt.user },
   ];
-  return executeChat(baseUrl, apiKey, model, messages, noteType, label);
+  return executeChat(baseUrl, apiKey, model, messages, noteType, label, timeoutMs);
 }
 
 /** Strip a leading ``` fence (and matching trailer). Does not trim unfenced content. */
@@ -791,5 +805,6 @@ export async function enhanceProse(
     withSystemOverride(buildEnhanceProsePrompt(body), override),
     "journal",
     config.label,
+    ENHANCE_TIMEOUT_MS,
   );
 }
