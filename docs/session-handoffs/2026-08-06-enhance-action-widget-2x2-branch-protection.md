@@ -2,9 +2,9 @@
 
 ## State at handoff
 
-`main` is at **`e63d951`**. Two features merged this session (#131, #132); a
-follow-up fix PR (**#133**) is open and **fully green on all six checks**,
-waiting only on a merge decision.
+`main` is at **`8efea5d`**. Everything from this session is merged: two features
+(#131, #132), the follow-up data-loss fixes (#133), and this handoff (#134).
+Nothing from this session is left open.
 
 Suite: **1622 mobile tests**, 272 `verify:capture-flow`, 12 `@carnet/shared`.
 `tsc --noEmit` clean, lint clean, `:app:compileDebugKotlin` BUILD SUCCESSFUL.
@@ -78,9 +78,7 @@ Extracted `ProviderRoleRow`, `EnhanceRoleSection`, `DeleteProviderDialog`,
 `AddProviderDialog` purely to keep `LlmProviderSection.tsx` under the 800-line
 ceiling (it ended at 796).
 
-## Open — pick up here
-
-### PR #133 — fully green, awaiting merge decision
+### `35e90c3` — data-loss fixes (#133)
 
 Three defects an **independent read-based review** (`/codex review`) found that
 neither my own review nor the device pass did. Two are silent data loss:
@@ -101,7 +99,9 @@ neither my own review nor the device pass did. Two are silent data loss:
 
 Each regression test was verified to fail without its fix.
 
-### Other open PRs (pre-existing, not touched this session)
+## Open — pick up here
+
+### Open PRs (all pre-existing; nothing from this session is open)
 
 - **#130** — session handoff 2026-08-05. Carries the `.gstack/` `.gitignore`
   rule; until it merges, `.gstack/` shows as untracked in every `git status` on
@@ -178,9 +178,14 @@ Correct procedure:
 
 ## Known gaps
 
-- **PR #133's widget fix is reasoned, not observed** — both phones run Android
-  17, so the API 24–30 path has nothing to test on. Dropping to 31+-only
-  (older devices keep the 4×1) removes untested code if that is preferred.
+These three shipped to `main` unproven. None blocks anything; each is a claim
+currently resting on reasoning rather than observation.
+
+- **The API 24–30 widget path has never run.** Both `minHeight=40dp` (#133) and
+  `onAppWidgetOptionsChanged` (#132) are reasoned from the documented sizing
+  rule — both phones on the rig run Android 17, so there is nothing to execute
+  it. Dropping to 31+-only (older devices keep the 4×1) deletes untested code
+  if that is preferred to carrying it.
 - **The 2×2 layout has never been placed on a home screen.** Widget placement
   is a launcher drag-and-drop that resists automation, and it is the only rung
   that catches an `InflateException`.
