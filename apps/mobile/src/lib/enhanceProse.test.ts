@@ -3,7 +3,13 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./writer", () => ({ updateNote: vi.fn(async () => {}) }));
+vi.mock("./writer", () => ({
+  getModificationTime: vi.fn(async () => 1000),
+  readNote: vi.fn(async () => {
+    throw new Error("not stubbed");
+  }),
+  updateNoteIfUnchanged: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock("./dispatcher", () => ({
   enhanceProse: vi.fn(),
   FALLBACK_PROVIDER_FIELD: "fallback",
@@ -16,10 +22,12 @@ import {
   splitLeadingTitle,
   ENHANCED_FIELD,
 } from "./enhanceProse";
-import { updateNote } from "./writer";
+import { getModificationTime, readNote, updateNoteIfUnchanged } from "./writer";
 import { enhanceProse as dispatchEnhance } from "./dispatcher";
 
-const mockUpdateNote = vi.mocked(updateNote);
+const mockUpdateNote = vi.mocked(updateNoteIfUnchanged);
+const mockReadNote = vi.mocked(readNote);
+const mockMtime = vi.mocked(getModificationTime);
 const mockDispatch = vi.mocked(dispatchEnhance);
 
 /** A dispatcher result with no fallback — the ordinary path. */
@@ -31,6 +39,12 @@ const LONG_PROSE = "went out early. it was cold. saw the heron again by the brid
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockMtime.mockResolvedValue(1000);
+  mockUpdateNote.mockResolvedValue({ ok: true });
+  // Default: the file is unreadable, so enhanceNoteProse falls back to the
+  // caller's snapshot. Tests that care about the fresh-read path stub this
+  // explicitly (see "prefers the file's CURRENT content" below).
+  mockReadNote.mockRejectedValue(new Error("unreadable"));
 });
 
 describe("splitLeadingTitle", () => {
@@ -51,6 +65,29 @@ describe("splitLeadingTitle", () => {
   it("does NOT treat a '##' section heading as the title", () => {
     // Deeper headings belong to the prose and must reach the model with it.
     const body = "## Notes\n\n- a thing";
+    expect(splitLeadingTitle(body)).toEqual({ title: "", prose: body });
+  });
+
+  it("finds the H1 when a blank line separates it from the frontmatter", () => {
+    // Regression: splitFrontmatter ends its header at the newline closing
+    // `---`, so the Obsidian layout `---\n…\n---\n\n# Title` yields a body
+    // starting with a blank line. The old anchored /^#/ missed it, the title
+    // went to the model as prose, and the prompt's no-headings rule deleted it.
+    expect(splitLeadingTitle("\n# Morning walk\n\nwent out early.")).toEqual({
+      title: "\n# Morning walk\n\n",
+      prose: "went out early.",
+    });
+  });
+
+  it("tolerates several blank lines and CRLF, preserving them verbatim", () => {
+    expect(splitLeadingTitle("\r\n\r\n# T\r\n\r\nbody")).toEqual({
+      title: "\r\n\r\n# T\r\n\r\n",
+      prose: "body",
+    });
+  });
+
+  it("still rejects '##' even behind a blank line", () => {
+    const body = "\n## Notes\n\n- a thing";
     expect(splitLeadingTitle(body)).toEqual({ title: "", prose: body });
   });
 });
@@ -112,6 +149,77 @@ describe("droppedUrls", () => {
     expect(droppedUrls(src, "preserved: https://maps.test/Qb?g_st=ac")).toEqual([
       "https://maps.test/Qb",
     ]);
+  });
+});
+
+describe("enhanceNoteProse — disk freshness + write guard", () => {
+  it("keeps the title on an Obsidian-style note (blank line after frontmatter)", async () => {
+    // End-to-end regression for the title-loss bug: this exact layout is what
+    // Obsidian writes, and before the fix the H1 was handed to the model, which
+    // is instructed never to emit headings — so the title vanished.
+    mockDispatch.mockResolvedValue(ok("Polished prose, long enough to pass."));
+    const input =
+      "---\ndate: 2026-08-05\n---\n\n# Morning walk\n\n" + LONG_PROSE + "\n";
+
+    await enhanceNoteProse({ body: input, filepath: "f.md" });
+
+    const written = mockUpdateNote.mock.calls[0][1];
+    expect(written).toContain("# Morning walk");
+    expect(mockDispatch.mock.calls[0][0]).not.toContain("# Morning walk");
+  });
+
+  it("prefers the file's CURRENT content over the caller's stale snapshot", async () => {
+    // The screen's `body` can already be stale (edited in Obsidian, or synced)
+    // by the time Enhance is tapped. Enhancing the snapshot would silently
+    // discard whatever the file actually says.
+    mockReadNote.mockResolvedValue(`# T\n\n${LONG_PROSE} PLUS A DISK EDIT.\n`);
+    mockDispatch.mockResolvedValue(ok("polished enough prose to pass the guard"));
+
+    await enhanceNoteProse({ body: "# T\n\nstale snapshot text\n", filepath: "f.md" });
+
+    expect(mockDispatch.mock.calls[0][0]).toContain("PLUS A DISK EDIT");
+    expect(mockDispatch.mock.calls[0][0]).not.toContain("stale snapshot");
+  });
+
+  it("captures the mtime baseline BEFORE the model call, not after", async () => {
+    // A baseline read after the call would match whatever the edit produced,
+    // making the guard useless for exactly the 120s window it exists to cover.
+    const order: string[] = [];
+    mockMtime.mockImplementation(async () => {
+      order.push("mtime");
+      return 1000;
+    });
+    mockDispatch.mockImplementation(async () => {
+      order.push("dispatch");
+      return ok("polished enough prose to pass the guard");
+    });
+
+    await enhanceNoteProse({ body: `# T\n\n${LONG_PROSE}\n`, filepath: "f.md" });
+
+    expect(order).toEqual(["mtime", "dispatch"]);
+  });
+
+  it("keeps the user's version when the note changed mid-flight", async () => {
+    // Observed live 2026-08-05: a note was edited on-device during an Enhance.
+    mockDispatch.mockResolvedValue(ok("polished enough prose to pass the guard"));
+    mockUpdateNote.mockResolvedValue({ ok: false, reason: "conflict" });
+
+    const outcome = await enhanceNoteProse({
+      body: `# T\n\n${LONG_PROSE}\n`,
+      filepath: "f.md",
+    });
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.reason).toMatch(/changed while/i);
+  });
+
+  it("passes the captured baseline through to the guarded write", async () => {
+    mockMtime.mockResolvedValue(4242);
+    mockDispatch.mockResolvedValue(ok("polished enough prose to pass the guard"));
+
+    await enhanceNoteProse({ body: `# T\n\n${LONG_PROSE}\n`, filepath: "f.md" });
+
+    expect(mockUpdateNote.mock.calls[0][2]).toBe(4242);
   });
 });
 

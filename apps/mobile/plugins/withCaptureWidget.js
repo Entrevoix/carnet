@@ -358,10 +358,17 @@ function widgetCaptureInfoXml() {
   // reshape widgets users have already placed. 110dp ~= 2 cells by the
   // (70 * n - 30) rule; 140dp is the 2-cell OUTER size and rounds up to 3 on
   // some launchers, which would make the square unselectable.
+  //
+  // minHeight stays at ONE cell (40dp), not 110dp. min* is a floor, so it must
+  // admit the SMALLEST supported shape in each axis: 110dp wide (the 2x2) and
+  // 40dp tall (the 4x1 row). Setting minHeight=110dp made the widget demand two
+  // rows, which on API 24-30 — where targetCellHeight is ignored and the
+  // launcher sizes from min* — made the 4x1 layout impossible to place at all,
+  // even though the legacy path still renders it. Caught in review 2026-08-05.
   return `<?xml version="1.0" encoding="utf-8"?>
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:minWidth="110dp"
-    android:minHeight="110dp"
+    android:minHeight="40dp"
     android:targetCellWidth="4"
     android:targetCellHeight="1"
     android:updatePeriodMillis="0"
