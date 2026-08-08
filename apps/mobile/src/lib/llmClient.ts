@@ -489,10 +489,27 @@ export async function listModels(
 export type HealthResult =
   | "ok"
   | "unreachable"
+  | "unauthorized"
   | "blocked-cleartext"
   | "unsafe-url";
 
-export async function healthCheck(baseUrl: string): Promise<HealthResult> {
+/**
+ * Probe the provider the way the app actually talks to it: `GET /v1/models`
+ * with the Bearer key, the same request `listModels` makes.
+ *
+ * It used to GET `/health` with no auth. That endpoint came from the local-LLM
+ * (Relais) client and survived the #120 merge into this unified client, at
+ * which point it started being applied to EVERY provider — including
+ * OpenAI-compatible gateways like OmniRoute, which serve `/v1/*` and have no
+ * `/health` at all. The result was "Unreachable" on a provider whose real
+ * calls were succeeding. Probing an endpoint nothing else uses cannot tell the
+ * user whether the thing they care about works; probing `/v1/models` can, and
+ * it validates the API key besides.
+ */
+export async function healthCheck(
+  baseUrl: string,
+  apiKey: string,
+): Promise<HealthResult> {
   const trimmed = (baseUrl.trim() || DEFAULT_LOCAL_LLM_URL).replace(/\/+$/, "");
   if (!isCredentialSafeUrl(trimmed)) return "unsafe-url";
   try {
@@ -500,8 +517,21 @@ export async function healthCheck(baseUrl: string): Promise<HealthResult> {
       FETCH_TIMEOUT_MS,
       (ms) => timeoutError("LLM provider", ms),
       async (signal) => {
-        const response = await fetch(`${trimmed}/health`, { method: "GET", signal });
-        return response.ok ? "ok" : "unreachable";
+        const response = await fetch(`${trimmed}/v1/models`, {
+          method: "GET",
+          headers: {
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          },
+          signal,
+        });
+        if (response.ok) return "ok";
+        // A rejected credential is not an unreachable host. Saying
+        // "check that the server is running" when the server answered
+        // sends the user to debug the wrong thing.
+        if (response.status === 401 || response.status === 403) {
+          return "unauthorized";
+        }
+        return "unreachable";
       },
     );
   } catch (e: unknown) {
