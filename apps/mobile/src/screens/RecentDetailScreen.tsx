@@ -68,6 +68,7 @@ import {
 } from "../lib/recentDetailView";
 import { findRelatedNotes, insertRelatedLink } from "../lib/relatedNotes";
 import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
+import { finishPendingEnrichment, isPendingEnrich } from "../lib/finishEnrichment";
 import { enhanceNoteProse } from "../lib/enhanceProse";
 import { FALLBACK_PROVIDER_FIELD } from "../lib/dispatcher";
 import { useCarnetTheme } from "../lib/theme";
@@ -285,6 +286,22 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     setReEnriching(true);
     const outcome = await reEnrichNote({ body, filepath: entry.filepath });
     if (outcome.kind === "updated") setBody(outcome.nextBody);
+    else setReEnrichError(outcome.reason);
+    reEnrichingRef.current = false;
+    setReEnriching(false);
+  }, [body, entry.filepath]);
+
+  // Reuses the re-enrich in-flight ref and error slot: both are "re-run the
+  // enrichment call on this note", they are mutually exclusive (a note is
+  // either image-backed or a pending text capture, never both), and sharing
+  // keeps the busy-state wiring in `actionsBusy` unchanged.
+  const handleFinishEnrichment = useCallback(async () => {
+    if (reEnrichingRef.current) return;
+    reEnrichingRef.current = true;
+    setReEnrichError(null);
+    setReEnriching(true);
+    const outcome = await finishPendingEnrichment({ body, filepath: entry.filepath });
+    if (outcome.kind === "updated") setBody(outcome.markdown);
     else setReEnrichError(outcome.reason);
     reEnrichingRef.current = false;
     setReEnriching(false);
@@ -696,6 +713,8 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           visible={actionsOpen}
           onDismiss={() => setActionsOpen(false)}
           canReEnrich={canReEnrich}
+          canFinishEnrichment={!missing && isPendingEnrich(body)}
+          onFinishEnrichment={() => void handleFinishEnrichment()}
           canTranscribe={canTranscribe}
           canEnhance={canEnhance}
           karakeepConfigured={karakeepConfigured}
