@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
@@ -14,7 +14,9 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { ocrCardViaVision } from "../lib/dispatcher";
 import {
   cardScanHint,
+  cardScanPreflightHint,
   classifyCardScanOcrError,
+  probeCardScanReadiness,
   type CardScanOcrOutcome,
 } from "../lib/cardScanOutcome";
 import {
@@ -41,6 +43,27 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
   const [permission, requestPermission] = useCameraPermissions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preflight, setPreflight] = useState<string | null>(null);
+
+  // Tell the user their provider is unset BEFORE they frame a shot, rather
+  // than after a wasted round trip. Deliberately fire-and-forget: the probe
+  // reads settings + SecureStore, and awaiting it here would delay the camera
+  // preview for everyone to benefit the misconfigured minority. Capture stays
+  // enabled either way — the original image is saved before OCR is attempted,
+  // so shooting anyway is a legitimate choice, not a mistake.
+  useEffect(() => {
+    if (!visible) {
+      setPreflight(null);
+      return;
+    }
+    let cancelled = false;
+    void probeCardScanReadiness().then((outcome) => {
+      if (!cancelled) setPreflight(cardScanPreflightHint(outcome));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
 
   const capture = async () => {
     if (!cameraRef.current) return;
@@ -116,6 +139,11 @@ export function CardScannerModal({ visible, onResult, onClose }: Props) {
           </View>
         ) : (
           <View style={styles.body}>
+            {preflight && (
+              <HelperText type="error" visible>
+                {preflight}
+              </HelperText>
+            )}
             <CameraView ref={cameraRef} style={styles.camera} facing="back" />
             <Button
               mode="contained"

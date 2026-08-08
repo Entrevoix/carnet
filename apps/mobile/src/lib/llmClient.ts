@@ -218,6 +218,26 @@ export function assertBase64UnderLimit(base64: string): void {
  * guard; this is not a security change (verified: same predicate, same
  * outcomes either way), only a corrected message.
  */
+/**
+ * Every config precondition a vision call checks BEFORE touching the network,
+ * in one place so a readiness probe and the real call can never disagree.
+ * `ocrCardViaVision` calls this rather than repeating the three asserts, so a
+ * caller that passes this is guaranteed to get past the same point at runtime.
+ *
+ * Order matters and is pinned by tests: vision model, then URL, then transport.
+ * A fully blank config must report the vision model first.
+ *
+ * Throws the same `notConfigured`-flagged {@link LlmClientError} the real call
+ * throws, so callers classify it with the existing predicates.
+ */
+export function assertVisionReady(config: ProviderConfig): { model: string; url: string } {
+  const model = assertVisionModelConfigured(config.visionModel, config.label);
+  const trimmed = assertUrlConfigured(config.baseUrl, config.label);
+  const url = trimmed.replace(/\/+$/, "");
+  assertHttpsOrLocal(url, config.label);
+  return { model, url };
+}
+
 function assertHttpsOrLocal(trimmed: string, label: string): void {
   if (isCredentialSafeUrl(trimmed)) return;
   throw new LlmClientError(
@@ -660,10 +680,7 @@ export async function ocrCardViaVision(
   const safeMime = /^image\/(jpe?g|png|webp|gif|heic|heif)$/.test(input.mimeType)
     ? input.mimeType
     : "image/jpeg";
-  const model = assertVisionModelConfigured(config.visionModel, config.label);
-  const trimmed = assertUrlConfigured(config.baseUrl, config.label);
-  const trimmedUrl = trimmed.replace(/\/+$/, "");
-  assertHttpsOrLocal(trimmedUrl, config.label);
+  const { model, url: trimmedUrl } = assertVisionReady(config);
 
   const dataUrl = `data:${safeMime};base64,${input.base64}`;
   const messages: OpenAIMessage[] = [

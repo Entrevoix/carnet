@@ -58,6 +58,7 @@ import {
   isPermanentError,
   isNotConfiguredError,
   assertBase64UnderLimit,
+  assertVisionReady,
   MAX_SHARED_IMAGE_BYTES,
   withSystemOverride,
   type ProviderConfig,
@@ -1139,5 +1140,46 @@ describe("ocrCardViaVision", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as { model: string };
     expect(body.model).toBe("test-local-model");
+  });
+});
+
+describe("assertVisionReady", () => {
+  const ready: ProviderConfig = {
+    baseUrl: "https://llm.example.com/",
+    apiKey: "k",
+    model: "m",
+    visionModel: "vm",
+    label: "OmniRoute",
+  };
+
+  it("returns the resolved model and a trailing-slash-trimmed url", () => {
+    expect(assertVisionReady(ready)).toEqual({ model: "vm", url: "https://llm.example.com" });
+  });
+
+  it("flags a blank vision model as not-configured", () => {
+    let caught: unknown;
+    try {
+      assertVisionReady({ ...ready, visionModel: "" });
+    } catch (e: unknown) {
+      caught = e;
+    }
+    expect(isNotConfiguredError(caught)).toBe(true);
+  });
+
+  it("flags a blank url as not-configured", () => {
+    let caught: unknown;
+    try {
+      assertVisionReady({ ...ready, baseUrl: "" });
+    } catch (e: unknown) {
+      caught = e;
+    }
+    expect(isNotConfiguredError(caught)).toBe(true);
+  });
+
+  it("reports the vision model first when everything is blank", () => {
+    // Order is load-bearing: ocrCardViaVision shares this function, so the
+    // message a user sees must not change with the extraction.
+    expect(() => assertVisionReady({ ...ready, baseUrl: "", visionModel: "" }))
+      .toThrow(/vision model/i);
   });
 });
