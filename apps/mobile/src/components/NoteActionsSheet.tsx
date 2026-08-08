@@ -12,6 +12,10 @@ interface NoteActionsSheetProps {
   canTranscribe: boolean;
   /** Not kind-gated — false only when the .md is gone from disk. */
   canEnhance: boolean;
+  /** True for a raw save-first capture still carrying `status: pending-enrich`.
+   * Body-derived rather than kind-gated, so it is computed by the screen (see
+   * lib/finishEnrichment.ts isPendingEnrich) rather than noteCapabilities. */
+  canFinishEnrichment: boolean;
   /** Gated on a non-blank Karakeep instance URL in Settings. */
   karakeepConfigured: boolean;
   /** True while any long-running action is in flight. */
@@ -19,6 +23,7 @@ interface NoteActionsSheetProps {
   /** True when the .md is gone from disk — nothing destructive may run. */
   missing: boolean;
   onReEnrich: () => void;
+  onFinishEnrichment: () => void;
   onTranscribe: () => void;
   onEnhance: () => void;
   onSendToKarakeep: () => void;
@@ -40,10 +45,12 @@ export function NoteActionsSheet({
   canReEnrich,
   canTranscribe,
   canEnhance,
+  canFinishEnrichment,
   karakeepConfigured,
   actionsBusy,
   missing,
   onReEnrich,
+  onFinishEnrichment,
   onTranscribe,
   onEnhance,
   onSendToKarakeep,
@@ -82,6 +89,16 @@ export function NoteActionsSheet({
           left={(p) => <List.Icon {...p} icon="auto-fix" />}
           disabled={actionsBusy}
           onPress={onReEnrich}
+          style={styles.sheetRow}
+        />
+      ) : null}
+      {canFinishEnrichment ? (
+        <List.Item
+          title="Finish enrichment"
+          description="This note was saved raw and never enriched — add its title and tags now"
+          left={(p) => <List.Icon {...p} icon="sync-alert" />}
+          disabled={actionsBusy}
+          onPress={onFinishEnrichment}
           style={styles.sheetRow}
         />
       ) : null}
