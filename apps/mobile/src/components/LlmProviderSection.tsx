@@ -412,7 +412,13 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     const requestId = ++connectionRequestRef.current;
     setTestingConnection(true);
     setConnectionResult(null);
-    const result = await healthCheck(editBuffer.baseUrl);
+    // Probe with the key the real calls would use — an unsaved key typed into
+    // the field wins over the stored one, same precedence as Browse models.
+    const stored = await providerKeys.getKey(active.id);
+    const result = await healthCheck(
+      editBuffer.baseUrl,
+      resolveBrowseApiKey(pendingKey, stored),
+    );
     if (!mountedRef.current) return;
     setTestingConnection(false);
     // Stale-result guard: if the edited entry changed (switch, or a delete
@@ -667,6 +673,12 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       {connectionResult === "unreachable" && (
         <HelperText type="error" visible>
           Unreachable — check the URL and that the server is running.
+        </HelperText>
+      )}
+      {connectionResult === "unauthorized" && (
+        <HelperText type="error" visible>
+          The server answered but rejected the API key. The URL is fine — check
+          the key.
         </HelperText>
       )}
       {connectionResult === "blocked-cleartext" && (
