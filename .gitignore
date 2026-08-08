@@ -47,3 +47,6 @@ playwright-report/
 # Local agent harness state
 .omc/
 .claude/scheduled_tasks.lock
+
+# gstack skill scratch (codex stderr/tmp) — regenerated per run.
+.gstack/
