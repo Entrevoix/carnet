@@ -17,6 +17,7 @@ vi.mock("./dispatcher", () => ({
 
 import {
   droppedUrls,
+  stripCitationMarkers,
   enhanceNoteProse,
   extractAttachmentLines,
   splitLeadingTitle,
@@ -115,6 +116,40 @@ describe("extractAttachmentLines", () => {
     // contain one keeps it, matching writer.ts's stripPairedBinaryLinks.
     const prose = "I saved it at ../Photos/a.jpg yesterday";
     expect(extractAttachmentLines(prose).attachments).toEqual([]);
+  });
+});
+
+describe("stripCitationMarkers", () => {
+  it("removes dangling numeric markers, including runs", () => {
+    expect(
+      stripCitationMarkers("Stroudsburg is the county seat[1][3]."),
+    ).toBe("Stroudsburg is the county seat.");
+  });
+
+  it("tidies the gap a removed marker leaves before punctuation", () => {
+    expect(stripCitationMarkers("the Poconos [2] , a region")).toBe(
+      "the Poconos, a region",
+    );
+  });
+
+  it("never touches a markdown link", () => {
+    const s = "see [the map](https://maps.example.com/x) for detail";
+    expect(stripCitationMarkers(s)).toBe(s);
+  });
+
+  it("never touches a numeric-labelled link — the URL is real", () => {
+    const s = "source [1](https://en.wikipedia.org/wiki/Stroudsburg)";
+    expect(stripCitationMarkers(s)).toBe(s);
+  });
+
+  it("never touches task checkboxes", () => {
+    const s = "- [ ] pack maps\n- [x] book room";
+    expect(stripCitationMarkers(s)).toBe(s);
+  });
+
+  it("leaves prose with no markers byte-identical", () => {
+    const s = "Went out early, before the cold had lifted.";
+    expect(stripCitationMarkers(s)).toBe(s);
   });
 });
 

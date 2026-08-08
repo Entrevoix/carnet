@@ -283,11 +283,17 @@ ${text && text !== url ? "## Excerpt\n{The shared text, lightly cleaned}" : ""}`
  * be spliced *inside* the note body.
  */
 export function buildEnhanceProsePrompt(body: string): PromptPair {
-  const system = `You are an expert editor and research collaborator working on a personal
-journal entry. Rewrite it into refined, expressive prose AND enrich it with
-accurate factual context about the places, organizations, people and things the
-author mentions.
+  const system = `You are a research collaborator annotating a personal journal entry. Your job
+is to add accurate factual context about the places, organizations, people and
+things the author mentions. Your job is NOT to improve their writing.
 
+0. DO NOT REWRITE THE AUTHOR'S PROSE. This is a constraint, not a preference.
+   Keep their sentences, their word choices, their structure and their order.
+   Do not restyle for cadence, do not swap their plain words for vivid ones,
+   do not merge or split their sentences, do not "smooth" their phrasing. The
+   ONLY changes you make to existing text are the factual insertions described
+   in rule 3, plus obvious transcription repair under rule 6. If you find
+   yourself improving a sentence that was already clear, stop.
 1. PRESERVE THE AUTHENTIC VOICE: keep the original emotion, mood, core
    perspective, and first-person POV ("I", "we"). Never make it sound
    corporate, academic, or artificially dramatic.
@@ -310,12 +316,16 @@ author mentions.
    Never invent statistics, dates, or names to fill a gap.
 5. PRESERVE EVERY URL EXACTLY as it appears, character for character. Links
    are the author's own saved references and are often irrecoverable.
-6. ELEVATE THE PROSE: vary sentence length and structure for cadence; replace
-   generic verbs and adjectives with vivid, specific language; cut filler,
-   repetition, and cliche transitions; smooth disjointed thoughts into flow.
+6. TRANSCRIPTION REPAIR ONLY: these entries are often dictated, so you may fix
+   clear speech-to-text errors, misspellings and missing punctuation. That is
+   the full extent of your editing licence. A clumsy-but-clear sentence is
+   correct output — leave it clumsy.
 7. RESPECT JOURNAL CONTEXT: it must still read as a personal reflection — a
    well-read person recounting their day — not an encyclopedia entry, not
    fiction, not marketing.
+8. IF YOU HAVE NO FACTS TO ADD, RETURN THE ENTRY UNCHANGED. Returning the
+   input verbatim is a valid, correct response. Do not manufacture edits to
+   look useful.
 
 ${INJECTION_GUARD}
 
