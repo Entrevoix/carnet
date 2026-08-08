@@ -52,6 +52,8 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     nextCustomSeq: 1,
     fallbackProviderId: null,
     visionProviderId: null,
+    enhanceProviderId: null,
+    enhanceModel: "",
     omniRouteApiKey: "",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,

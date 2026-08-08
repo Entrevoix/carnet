@@ -3,7 +3,7 @@
     "name": "Carnet",
     "slug": "carnet",
     "scheme": "carnet",
-    "version": "0.2.0",
+    "version": "0.4.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/icon.png",
@@ -20,6 +20,7 @@
     "android": {
       "softwareKeyboardLayoutMode": "adjustResize",
       "package": "com.ventouxlabs.carnet",
+      "versionCode": 2,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#2C6155"

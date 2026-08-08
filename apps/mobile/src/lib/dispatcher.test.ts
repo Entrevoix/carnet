@@ -38,6 +38,8 @@ const { BASE_SETTINGS } = vi.hoisted(() => ({
     nextCustomSeq: 1,
     fallbackProviderId: null,
     visionProviderId: null,
+    enhanceProviderId: null,
+    enhanceModel: "",
     omniRouteApiKey: "test-key",
     localLlmApiKey: "",
     persistentNotificationEnabled: false,
@@ -90,6 +92,7 @@ globalThis.fetch = fetchMock as unknown as typeof fetch;
 
 import {
   enrichIdea,
+  enhanceProse,
   enrichJournal,
   enrichPerson,
   enrichSharedImage,
@@ -132,6 +135,166 @@ beforeEach(() => {
 // backend and reaches the real llmClient.ts with it — the load-bearing "zero
 // behavior change" guarantee for existing users, now verified via the actual
 // HTTP request rather than via a second module's call count.
+
+describe("enhanceProse routing", () => {
+  it("uses the active provider when no enhanceProviderId is set", async () => {
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://llm.example.com/v1/chat/completions");
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("gpt-4o-mini");
+  });
+
+  it("routes to enhanceProviderId's entry OVER the active one", async () => {
+    // The test that proves "a better llm" actually takes effect. The active
+    // entry has a perfectly good text model; the Enhance entry must still win.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais"
+          ? { ...p, baseUrl: "http://127.0.0.1:8080", model: "big-local-model" }
+          : p,
+      ),
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    const outcome = await enhanceProse("rough prose");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8080/v1/chat/completions");
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("big-local-model");
+    expect(outcome.providerLabel).toBe("Relais (local)");
+  });
+
+  it("falls back to the active entry when enhanceProviderId is stale", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceProviderId: "custom-deleted",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://llm.example.com/v1/chat/completions");
+  });
+
+  it("sends enhanceModel instead of the provider's own model", async () => {
+    // The point of the feature: same endpoint, stronger model. Captures keep
+    // running on gpt-4o-mini; Enhance overrides just the model string.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceModel: "anthropic/claude-sonnet-5",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://llm.example.com/v1/chat/completions");
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("anthropic/claude-sonnet-5");
+  });
+
+  it("treats a whitespace-only enhanceModel as unset", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceModel: "   ",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string,
+    ) as { model: string };
+    expect(body.model).toBe("gpt-4o-mini");
+  });
+
+  it("does NOT force enhanceModel onto the fallback provider", async () => {
+    // A model id only exists on the endpoint that listed it. Carrying a
+    // Sonnet id onto the local Relais fallback would turn a recoverable
+    // network blip into a hard "model not found".
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      enhanceModel: "anthropic/claude-sonnet-5",
+      fallbackProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais" ? { ...p, model: "local-small" } : p,
+      ),
+    });
+    // Primary attempt fails in the unreachable class, triggering the retry.
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    await enhanceProse("rough prose");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const primary = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string,
+    ) as { model: string };
+    const fallback = JSON.parse(
+      (fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string,
+    ) as { model: string };
+    expect(primary.model).toBe("anthropic/claude-sonnet-5");
+    expect(fallback.model).toBe("local-small");
+  });
+
+  it("keeps the PRIMARY error when the fallback is merely unconfigured", async () => {
+    // Observed on-device 2026-08-05: OmniRoute timed out on a slow reasoning
+    // model, the chain retried an unconfigured Relais, and the user was told
+    // "Local LLM model not configured — set it in Settings". That names the
+    // wrong provider and hides the real fault, so the primary error must win.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      fallbackProviderId: "relais", // relais has model: "" -> not configured
+    });
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+
+    await expect(enhanceProse("rough prose")).rejects.toThrow(/Network request failed/);
+    // The fallback never got as far as a request — it failed on config.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still surfaces a fallback error when the fallback genuinely tried", async () => {
+    // A configured fallback that actually attempted and failed reflects a real
+    // second attempt, so its error is the honest one to show.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      fallbackProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais" ? { ...p, model: "local-small" } : p,
+      ),
+    });
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    fetchMock.mockResolvedValueOnce(makeErrorResponse(401, "fallback key rejected"));
+
+    await expect(enhanceProse("rough prose")).rejects.toThrow(/fallback key rejected/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns prose with NO frontmatter marker spliced into it", async () => {
+    // enhanceProse is the one entry point that must skip withFallbackMarker:
+    // the result is bare prose, so a marker would prepend a stray `---` block
+    // into the note body. lib/enhanceProse.ts stamps AFTER re-attaching the
+    // real frontmatter instead.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      fallbackProviderId: "relais",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("polished prose"));
+
+    const outcome = await enhanceProse("rough prose");
+
+    expect(outcome.result.markdown).not.toContain("---");
+    expect(outcome.result.markdown).toContain("polished prose");
+  });
+});
 
 describe("dispatcher backend routing", () => {
   it("routes to the OmniRoute config when llmBackend is 'omniroute' (the default)", async () => {

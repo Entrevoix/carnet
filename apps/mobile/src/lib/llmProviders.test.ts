@@ -8,6 +8,7 @@ import {
   removeProvider,
   resolveActiveProvider,
   resolveVisionProvider,
+  resolveEnhanceProvider,
   validateProvider,
   type LlmProvider,
 } from "./llmProviders";
@@ -155,6 +156,41 @@ describe("resolveVisionProvider", () => {
   it("returns null when visionProviderId is null (default) and the active entry has no vision model", () => {
     const providers = buildDefaultProviders();
     expect(resolveVisionProvider(providers, "omniroute", null)).toBeNull();
+  });
+});
+
+describe("resolveEnhanceProvider", () => {
+  it("returns the active entry when no enhanceProviderId is set", () => {
+    const providers = buildDefaultProviders();
+    expect(resolveEnhanceProvider(providers, "omniroute").id).toBe("omniroute");
+    expect(resolveEnhanceProvider(providers, "omniroute", null).id).toBe("omniroute");
+  });
+
+  // ── The precedence that makes the whole setting work ────────────────────
+  it("prefers enhanceProviderId's entry OVER the active entry", () => {
+    // Deliberately the INVERSE of resolveVisionProvider, which prefers the
+    // active entry whenever it is capable. Enhance has no capability test —
+    // every text provider can serve it — so copying vision's ordering would
+    // make the (typically cheap) active entry win every time and the setting
+    // would silently never take effect. This test is the guard against that.
+    const providers = buildDefaultProviders().map((p) =>
+      p.id === "omniroute" ? { ...p, model: "gpt-4o-mini" } : p,
+    );
+    expect(resolveEnhanceProvider(providers, "omniroute", "openai").id).toBe("openai");
+  });
+
+  it("falls back to the active entry when enhanceProviderId is stale", () => {
+    // A custom entry the user has since deleted must not strand the call.
+    const providers = buildDefaultProviders();
+    expect(resolveEnhanceProvider(providers, "omniroute", "custom-9").id).toBe(
+      "omniroute",
+    );
+  });
+
+  it("never returns null", () => {
+    const providers = buildDefaultProviders();
+    expect(resolveEnhanceProvider(providers, "omniroute", "nope")).not.toBeNull();
+    expect(resolveEnhanceProvider(providers, "also-not-real", null)).not.toBeNull();
   });
 });
 

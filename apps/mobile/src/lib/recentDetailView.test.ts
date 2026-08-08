@@ -16,11 +16,13 @@ const NO_ISSUES = {
   karakeepError: null,
   transcribeError: null,
   reEnrichError: null,
+  enhanceError: null,
 };
 const NOT_BUSY = {
   reEnriching: false,
   transcribing: false,
   exportingKarakeep: false,
+  enhancing: false,
 };
 
 describe("formatMode", () => {
@@ -85,6 +87,7 @@ describe("activeIssueMessage", () => {
         karakeepError: "karakeep-reason",
         transcribeError: "transcribe-reason",
         reEnrichError: "enrich-reason",
+        enhanceError: "enhance-reason",
       }),
     ).toBe("Save failed: save-reason");
   });
@@ -96,6 +99,7 @@ describe("activeIssueMessage", () => {
         karakeepError: "karakeep-reason",
         transcribeError: "transcribe-reason",
         reEnrichError: "enrich-reason",
+        enhanceError: "enhance-reason",
       }),
     ).toBe("Karakeep export failed: karakeep-reason");
     expect(
@@ -104,8 +108,18 @@ describe("activeIssueMessage", () => {
         karakeepError: null,
         transcribeError: "transcribe-reason",
         reEnrichError: "enrich-reason",
+        enhanceError: "enhance-reason",
       }),
     ).toBe("Transcribe failed: transcribe-reason");
+    expect(
+      activeIssueMessage({
+        editError: null,
+        karakeepError: null,
+        transcribeError: null,
+        reEnrichError: "enrich-reason",
+        enhanceError: "enhance-reason",
+      }),
+    ).toBe("Re-enrich failed: enrich-reason");
   });
 });
 
@@ -126,22 +140,36 @@ describe("busyLabel", () => {
     );
   });
 
-  it("orders re-enrich > transcribe > karakeep when several overlap", () => {
+  it("orders re-enrich > transcribe > karakeep > enhance when several overlap", () => {
+    const allBusy = {
+      reEnriching: true,
+      transcribing: true,
+      exportingKarakeep: true,
+      enhancing: true,
+    };
+    expect(busyLabel(allBusy)).toBe("Re-running vision enrichment…");
+    expect(busyLabel({ ...allBusy, reEnriching: false })).toBe("Transcribing audio…");
     expect(
-      busyLabel({ reEnriching: true, transcribing: true, exportingKarakeep: true }),
-    ).toBe("Re-running vision enrichment…");
+      busyLabel({ ...allBusy, reEnriching: false, transcribing: false }),
+    ).toBe("Sending to Karakeep…");
     expect(
-      busyLabel({ reEnriching: false, transcribing: true, exportingKarakeep: true }),
-    ).toBe("Transcribing audio…");
+      busyLabel({
+        ...allBusy,
+        reEnriching: false,
+        transcribing: false,
+        exportingKarakeep: false,
+      }),
+    ).toBe("Enhancing prose…");
   });
 });
 
 describe("isActionsBusy", () => {
-  it("is false only when all three are idle", () => {
+  it("is false only when all actions are idle", () => {
     expect(isActionsBusy(NOT_BUSY)).toBe(false);
     expect(isActionsBusy({ ...NOT_BUSY, reEnriching: true })).toBe(true);
     expect(isActionsBusy({ ...NOT_BUSY, transcribing: true })).toBe(true);
     expect(isActionsBusy({ ...NOT_BUSY, exportingKarakeep: true })).toBe(true);
+    expect(isActionsBusy({ ...NOT_BUSY, enhancing: true })).toBe(true);
   });
 });
 
@@ -165,9 +193,28 @@ describe("noteCapabilities", () => {
     expect(noteCapabilities("shared-audio", true)).toEqual({
       canReEnrich: false,
       canTranscribe: true,
+      canEnhance: false,
       showAudioPlayer: false,
     });
     expect(noteCapabilities("shared-audio", false).showAudioPlayer).toBe(true);
+  });
+
+  it("offers enhance for every kind, but never when the file is missing", () => {
+    // Deliberately NOT kind-gated: the "is there enough prose?" test needs the
+    // body text and lives in lib/enhanceProse.ts. Only `missing` gates here.
+    for (const kind of [
+      "idea",
+      "journal",
+      "person",
+      "photo",
+      "shared-image",
+      "shared-audio",
+      "shared-link",
+      "",
+    ]) {
+      expect(noteCapabilities(kind, false).canEnhance).toBe(true);
+      expect(noteCapabilities(kind, true).canEnhance).toBe(false);
+    }
   });
 
   it("never shows the player for a non-audio kind, missing or not", () => {
