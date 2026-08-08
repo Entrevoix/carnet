@@ -155,6 +155,34 @@ export function droppedUrls(source: string, enhanced: string): string[] {
 }
 
 /**
+ * Strip dangling inline citation markers (`[1]`, `[3]`) from model output.
+ *
+ * Perplexity-family models (sonar-reasoning-pro and friends) cite sources with
+ * inline numeric markers and return the matching URLs in a separate
+ * `annotations` field. Verified against the gateway on 2026-08-08: those
+ * annotations ARE present on a streaming response but are dropped when the
+ * non-streaming OpenAI shape is assembled, which is the shape this client uses.
+ * So the markers arrive pointing at nothing — `[8]` with no `[8]` to follow.
+ * Dangling references in a permanent note are worse than no references.
+ *
+ * Deliberately narrow. Only a bracketed 1-3 digit number NOT followed by `(`,
+ * which leaves markdown links (`[label](url)`), numeric-labelled links
+ * (`[1](https://…)`) and task boxes (`- [ ]`, `- [x]`) untouched.
+ *
+ * REMOVE THIS once the gateway passes annotations through: at that point the
+ * markers become resolvable and should be kept and linked, not deleted.
+ */
+export function stripCitationMarkers(text: string): string {
+  return text
+    .replace(/\[\d{1,3}\](?!\()/g, "")
+    // Markers usually sit before punctuation ("...Pennsylvania[1].") or in runs
+    // ("[1][3]"), so removing them leaves stray gaps. Tidy only that damage.
+    .replace(/[ \t]+([,.;:!?])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+$/gm, "");
+}
+
+/**
  * Stamp provenance onto a note that already carries frontmatter.
  *
  * Only stamps when a frontmatter block is present: upsertFrontmatterField
@@ -225,7 +253,7 @@ export async function enhanceNoteProse(input: {
     // normalizeFrontmatter bails on a missing header. Re-sanitizing here would
     // be redundant, and reaching for sanitizeMarkdown to strip fences would be
     // wrong — it preserves fence bodies verbatim by design.
-    const cleaned = outcome.result.markdown.trim();
+    const cleaned = stripCitationMarkers(outcome.result.markdown.trim()).trim();
     if (!cleaned) {
       throw new Error("The model returned nothing — the note was left unchanged.");
     }

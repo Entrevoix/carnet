@@ -125,4 +125,28 @@ describe("mode skeletons", () => {
     // deterministic backstop, but the prompt must ask first.
     expect(buildEnhanceProsePrompt("x").system).toContain("PRESERVE EVERY URL EXACTLY");
   });
+
+  it("enhance-prose prompt forbids restyling the author's sentences", () => {
+    // The feature is an ANNOTATOR, not an editor. It shipped in #131 asking for
+    // both ("Rewrite it into refined, expressive prose AND enrich it..."), which
+    // produced write-ups the author had not written. Enrichment is the job;
+    // rewriting is now a constraint violation, not a secondary goal.
+    const { system } = buildEnhanceProsePrompt("x");
+    expect(system).toContain("DO NOT REWRITE THE AUTHOR'S PROSE");
+    expect(system).toContain("Your job is NOT to improve their writing");
+    // Returning the input untouched must be an allowed outcome, or the model
+    // will invent changes to look useful on an entry with nothing to enrich.
+    expect(system).toContain("RETURN THE ENTRY UNCHANGED");
+  });
+
+  it("enhance-prose prompt no longer carries the prose-elevation instructions", () => {
+    // Guards against these creeping back in. Each string below was in the
+    // shipped #131 prompt and is precisely what made output read as written-up
+    // rather than annotated.
+    const { system } = buildEnhanceProsePrompt("x");
+    expect(system).not.toContain("ELEVATE THE PROSE");
+    expect(system).not.toContain("refined, expressive prose");
+    expect(system).not.toMatch(/vary sentence length/i);
+    expect(system).not.toMatch(/vivid, specific language/i);
+  });
 });
