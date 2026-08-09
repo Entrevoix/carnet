@@ -35,6 +35,7 @@ import {
   slugify,
   getModificationTime,
   extractNameFromMarkdown,
+  readNote,
   type AttachmentRef,
 } from "../lib/writer";
 import {
@@ -178,6 +179,16 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // resubmit's persistAttachments() returns nothing and the rebuilt draft would
   // come back attachment-less — the binaries stay on disk, unreferenced.
   const preservedAttachmentsRef = useRef<AttachmentRef[]>([]);
+  // True while an editInstead() call is still working through its awaits. A
+  // second tap would otherwise run to completion alongside the first and its
+  // trailing setPhase("input") could land AFTER the resubmit the first one
+  // enabled — silently reverting a newer capture out of its in-flight state.
+  const editInFlightRef = useRef(false);
+  // The most recent attempt's ENTIRE recents-history mutation chain (its
+  // optional removal plus its recordCapture), so the next attempt can await the
+  // whole thing before starting its own read-modify-write. Never rejects — see
+  // submit().
+  const recordCaptureRef = useRef<Promise<void> | null>(null);
   // Non-null while re-editing an Idea whose raw note is ALREADY on disk. The
   // resubmit must overwrite that exact path — writeRawIdea would derive a fresh
   // slug from the edited text and leave the original orphaned as a duplicate.
@@ -371,6 +382,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
     ctx: RawIdeaInput,
     filepath: string,
     mtime: number | null,
+    /** The raw note's bytes at that same baseline — the SAF vault's only
+     * conflict guard, so it has to survive into the queued retry too. */
+    baselineContent: string | null,
     /** Re-checked after this function's own await — Edit can land during the
      * enqueue just as easily as during the model call. */
     superseded: () => boolean,
@@ -401,6 +415,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           // write a duplicate.
           filepath,
           baselineMtime: mtime,
+          baselineContent,
         });
         const depth = await getQueueDepth();
         if (superseded()) return;
@@ -436,17 +451,22 @@ export default function CaptureScreen({ route, navigation }: Props) {
     rawWriteIsRealRef.current = false;
     setPhase("submitting");
     const baseline = await getModificationTime(savedFilepath);
+    // Baseline first, then the bytes at that baseline — on SAF `baseline` is
+    // always null, so this snapshot is the only thing standing between a stale
+    // enrichment and the note the user has since edited.
+    const baselineContent = await readNote(savedFilepath).catch(() => null);
     if (superseded()) return;
     const outcome = await enrichIdeaInPlace({
       filepath: savedFilepath,
       expectedMtime: baseline,
+      expectedContent: baselineContent,
       text: ctx.text,
       tags: ctx.tags,
       location: ctx.location,
       attachments: ctx.attachments,
     });
     if (superseded()) return;
-    await finishSaveFirst(outcome, ctx, savedFilepath, baseline, superseded);
+    await finishSaveFirst(outcome, ctx, savedFilepath, baseline, baselineContent, superseded);
   };
 
   /** Escape hatch offered during "submitting": go back to an editable draft
@@ -457,6 +477,18 @@ export default function CaptureScreen({ route, navigation }: Props) {
    * abandoned re-enrichment there still lands — re-enriching the same text the
    * user already had, not a stub, so this is accepted rather than fixed. */
   const editInstead = async (): Promise<void> => {
+    // A second tap while the first is still awaiting the raw write must not run
+    // its own copy of this — see editInFlightRef.
+    if (editInFlightRef.current) return;
+    editInFlightRef.current = true;
+    try {
+      await runEditInstead();
+    } finally {
+      editInFlightRef.current = false;
+    }
+  };
+
+  const runEditInstead = async (): Promise<void> => {
     // Invalidates every continuation of the attempt now in flight.
     submitGenerationRef.current += 1;
     setError(null);
@@ -616,16 +648,31 @@ export default function CaptureScreen({ route, navigation }: Props) {
         const { filepath, mtime, markdown: rawMarkdown } = await writePromise;
         if (superseded()) return;
         const title = deriveTitle(ctx.text) || "Idea";
-        // recordCapture prepends unconditionally, so the resumed capture drops
-        // its stale-titled row first instead of stacking a duplicate.
-        if (resuming) await removeFromHistoryByFilepath(filepath);
-        await recordCapture({
-          id: localId(),
-          mode,
-          title,
-          filepath,
-          createdAt: Date.now(),
-        });
+        // Every history mutation this attempt performs, as ONE chain: each step
+        // is a read-modify-write over the same AsyncStorage array, so an
+        // interleaved attempt loses one side's write (a duplicate row, or the
+        // stale-titled one resurrected). `recordCapture` prepends
+        // unconditionally, hence the resumed capture dropping its old row first.
+        const priorHistoryWrite = recordCaptureRef.current;
+        const historyWrite = (async () => {
+          await priorHistoryWrite;
+          if (resuming) await removeFromHistoryByFilepath(filepath);
+          await recordCapture({
+            id: localId(),
+            mode,
+            title,
+            filepath,
+            createdAt: Date.now(),
+          });
+        })();
+        // Published BEFORE it is awaited — the same rule rawWriteRef follows. A
+        // resume arriving mid-chain then awaits THIS chain rather than whatever
+        // stale (already-settled) promise the ref happened to hold. Stored as a
+        // never-rejecting derivative so a later attempt can't inherit this one's
+        // failure; `historyWrite` itself is awaited below, so the rejection is
+        // still handled exactly once.
+        recordCaptureRef.current = historyWrite.catch(() => undefined);
+        await historyWrite;
         // Re-checked: the two history awaits above are their own race window,
         // and clearing editingFilepath here would undo an Edit tapped during
         // them, sending the resubmit back through writeRawIdea.
@@ -647,13 +694,16 @@ export default function CaptureScreen({ route, navigation }: Props) {
         const outcome = await enrichIdeaInPlace({
           filepath,
           expectedMtime: mtime,
+          // On SAF `mtime` is null, so the bytes just written are the baseline
+          // the guard compares against — including after an Edit rewrote them.
+          expectedContent: rawMarkdown,
           text: ctx.text,
           tags: ctx.tags,
           location: ctx.location,
           attachments: ctx.attachments,
         });
         if (superseded()) return;
-        await finishSaveFirst(outcome, ctx, filepath, mtime, superseded);
+        await finishSaveFirst(outcome, ctx, filepath, mtime, rawMarkdown, superseded);
       } catch (e: unknown) {
         if (superseded()) return;
         // The raw write itself failed (disk/permission) — nothing was saved,

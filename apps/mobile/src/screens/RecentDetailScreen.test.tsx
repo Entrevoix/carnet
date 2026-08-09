@@ -57,6 +57,7 @@ vi.mock("../lib/vault", async () => {
     // null index → the Related card stays hidden in existing tests.
     loadCachedNoteIndex: vi.fn(async () => null),
     resolveNoteEntry: vi.fn(async () => null),
+    upsertNoteInIndex: vi.fn(async () => {}),
   };
 });
 
@@ -64,6 +65,7 @@ vi.mock("../lib/storage", () => ({
   removeFromHistory: vi.fn(async () => {}),
   removeFromHistoryByFilepath: vi.fn(async () => {}),
   updateCaptureTitle: vi.fn(async () => {}),
+  updateCaptureTitleByFilepath: vi.fn(async () => {}),
 }));
 
 vi.mock("../lib/settings", () => ({
@@ -141,11 +143,11 @@ vi.mock("expo-sharing", () => ({
 import RecentDetailScreen from "./RecentDetailScreen";
 import { readNote, updateNote } from "../lib/writer";
 import { reEnrichNoteInPlace } from "../lib/finishEnrichment";
-import { removeFromHistory } from "../lib/storage";
+import { removeFromHistory, updateCaptureTitleByFilepath } from "../lib/storage";
 
 type ScreenProps = Parameters<typeof RecentDetailScreen>[0];
 
-import { loadCachedNoteIndex, resolveNoteEntry } from "../lib/vault";
+import { loadCachedNoteIndex, resolveNoteEntry, upsertNoteInIndex } from "../lib/vault";
 
 const ENTRY: CaptureEntry = {
   id: "r1",
@@ -404,6 +406,43 @@ describe("RecentDetailScreen — re-enrich family", () => {
       }),
     );
     expect(await screen.findByText(/Re-enriched body\./)).toBeTruthy();
+  });
+
+  it("refreshes the note index and the recents title so other surfaces aren't left stale", async () => {
+    // Enrichment rewrites title and tags, but Home cards, the tag browser and
+    // search all read the cached index + capture history — not this screen's
+    // state. Without this the note stayed stale everywhere until a full rescan.
+    vi.mocked(readNote).mockResolvedValue(ENRICHED_MD);
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Re-enrich"));
+
+    await waitFor(() =>
+      expect(upsertNoteInIndex).toHaveBeenCalledWith(
+        ENTRY.filepath,
+        "---\n---\n# Re-enriched\n\nRe-enriched body.\n",
+      ),
+    );
+    await waitFor(() =>
+      expect(updateCaptureTitleByFilepath).toHaveBeenCalledWith(ENTRY.filepath, "Re-enriched"),
+    );
+  });
+
+  it("leaves the index and recents title alone when re-enrichment fails", async () => {
+    vi.mocked(readNote).mockResolvedValue(ENRICHED_MD);
+    vi.mocked(reEnrichNoteInPlace).mockResolvedValueOnce({
+      kind: "failed",
+      reason: "nope",
+    });
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Re-enrich"));
+
+    await screen.findByText(/nope/);
+    expect(upsertNoteInIndex).not.toHaveBeenCalled();
+    expect(updateCaptureTitleByFilepath).not.toHaveBeenCalled();
   });
 
   it("a pending note still shows Finish enrichment, and only that", async () => {

@@ -716,9 +716,10 @@ export async function updateNote(filepath: string, markdown: string): Promise<vo
  * Read a note file's last-modification time (epoch seconds) via getInfoAsync.
  * Returns null when the file doesn't exist, or when the backend can't report a
  * usable mtime — notably SAF `content://` URIs, which don't expose a reliable
- * modification time. A null baseline means the conflict guard below cannot fire
- * for that file: cross-device edits there resolve to Syncthing
- * `*.sync-conflict-*.md` files instead (see the capture-timing decision memo).
+ * modification time. A null baseline sends `updateNoteIfUnchanged` to its
+ * content-comparison fallback; with no content snapshot either, the guard cannot
+ * fire and cross-device edits resolve to Syncthing `*.sync-conflict-*.md` files
+ * instead (see the capture-timing decision memo).
  *
  * This is the primitive the save-first Idea path and the promote-idea race
  * (TODO.md) both need: record it right after a write, re-check it before the
@@ -743,26 +744,50 @@ export interface GuardedUpdateResult {
 }
 
 /**
- * Overwrite a note ONLY if its on-disk mtime still matches `expectedMtime`.
+ * Overwrite a note ONLY if it still looks the way the caller last saw it.
  *
  * Detects a user edit (or a synced workstation edit that already reached the
- * device) landing between when the caller recorded `expectedMtime` and this
+ * device) landing between when the caller recorded its baseline and this
  * overwrite. On a mismatch the write is skipped and `{ ok: false,
  * reason: "conflict" }` is returned so the caller can keep the existing version
  * and surface a banner instead of clobbering it.
  *
- * When mtime can't be read (SAF, or a null baseline) the guard cannot fire and
- * the overwrite proceeds — cross-device races there fall back to Syncthing
- * conflict files, exactly as the decision memo describes.
+ * Two baselines, in priority order:
+ *   - `expectedMtime` — the fast path (one stat, no file read). Used whenever
+ *     the backend reports an mtime at all.
+ *   - `expectedContent` — the SAF fallback. `getModificationTime` returns null
+ *     for every `content://` URI, which is the NORMAL Android/Syncthing vault
+ *     setup, so an mtime-only guard was dead code exactly where the vault is
+ *     shared with a workstation. Comparing the file's current bytes against the
+ *     snapshot taken alongside the (absent) mtime baseline restores the guard
+ *     there: any intervening write changes the bytes.
+ *
+ * With neither baseline the guard cannot fire and the overwrite proceeds —
+ * cross-device races then fall back to Syncthing conflict files, exactly as the
+ * decision memo describes.
  */
 export async function updateNoteIfUnchanged(
   filepath: string,
   markdown: string,
   expectedMtime: number | null,
+  expectedContent?: string | null,
 ): Promise<GuardedUpdateResult> {
   if (expectedMtime !== null) {
     const current = await getModificationTime(filepath);
     if (current !== null && current !== expectedMtime) {
+      return { ok: false, reason: "conflict" };
+    }
+  } else if (expectedContent != null) {
+    let current: string;
+    try {
+      current = await readByUri(filepath);
+    } catch {
+      // Unreadable (permission revoked, file moved) — no baseline to compare, so
+      // fall through to the write rather than refusing it. Same "can't verify →
+      // proceed" stance the null-baseline case takes.
+      current = expectedContent;
+    }
+    if (current !== expectedContent) {
       return { ok: false, reason: "conflict" };
     }
   }

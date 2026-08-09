@@ -298,11 +298,66 @@ describe("updateNoteIfUnchanged (mtime guard)", () => {
     expect(await readNote(filepath)).toBe("# Theirs\n");
   });
 
-  it("proceeds when the baseline is null (guard cannot fire, e.g. SAF)", async () => {
+  it("proceeds when the baseline is null and no content snapshot was given", async () => {
     const { filepath } = await writeRawIdea({ text: "no baseline", tags: [] });
     const res = await updateNoteIfUnchanged(filepath, "# Forced\n", null);
     expect(res.ok).toBe(true);
     expect(await readNote(filepath)).toBe("# Forced\n");
+  });
+
+  it("falls back to comparing content when there is no mtime baseline", async () => {
+    const { filepath, markdown } = await writeRawIdea({ text: "saf note", tags: [] });
+    const res = await updateNoteIfUnchanged(filepath, "# Enriched\n", null, markdown);
+    expect(res.ok).toBe(true);
+    expect(await readNote(filepath)).toBe("# Enriched\n");
+  });
+
+  it("reports conflict on a content mismatch with no mtime baseline", async () => {
+    const { filepath, markdown } = await writeRawIdea({ text: "saf note", tags: [] });
+    // A workstation edit lands during the enrich window. On SAF there is no
+    // mtime to notice it — only these bytes.
+    _files.set(filepath, { content: "# Workstation edit\n", mtime: 1 });
+    const res = await updateNoteIfUnchanged(filepath, "# Enriched\n", null, markdown);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("conflict");
+    expect(await readNote(filepath)).toBe("# Workstation edit\n");
+  });
+});
+
+// ── applyEnrichedIdea over a mtime-less (SAF) vault ──────────────────────────
+
+describe("applyEnrichedIdea (content guard, no mtime)", () => {
+  it("keeps the user's version when the note changed during enrichment", async () => {
+    // The save-first invariant on the vault people actually run: SAF reports no
+    // mtime, so before the content baseline existed this overwrote the edit.
+    const { filepath, markdown } = await writeRawIdea({ text: "Race me", tags: [] });
+    _files.set(filepath, { content: "# Workstation edit\n", mtime: 1 });
+
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: null,
+      expectedContent: markdown,
+      enrichedMarkdown: "# Enriched clobber\n",
+      tags: [],
+    });
+
+    expect(status).toBe("conflict");
+    expect(_files.get(filepath)!.content).toBe("# Workstation edit\n");
+  });
+
+  it("still applies the enrichment when the note is untouched", async () => {
+    const { filepath, markdown } = await writeRawIdea({ text: "Race me", tags: [] });
+
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: null,
+      expectedContent: markdown,
+      enrichedMarkdown: "# Enriched\n\nStructured.\n",
+      tags: [],
+    });
+
+    expect(status).toBe("updated");
+    expect(_files.get(filepath)!.content).toContain("# Enriched");
   });
 });
 

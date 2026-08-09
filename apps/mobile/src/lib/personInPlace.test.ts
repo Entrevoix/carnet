@@ -56,7 +56,27 @@ describe("enrichPersonInPlace", () => {
       ocrResult: "Ada Lovelace, Analyst",
       context: "met at a conference",
     });
-    expect(mockUpdate).toHaveBeenCalledWith("p.md", expect.any(String), 2000);
+    expect(mockUpdate).toHaveBeenCalledWith("p.md", expect.any(String), 2000, undefined);
+  });
+
+  it("forwards the content baseline so SAF notes get a conflict guard at all", async () => {
+    // getModificationTime returns null for every content:// URI, so on the
+    // normal Android/Syncthing vault the mtime argument is always null and the
+    // snapshot is the ONLY baseline updateNoteIfUnchanged can compare.
+    await enrichPersonInPlace({
+      filepath: "content://tree/p.md",
+      expectedMtime: null,
+      expectedContent: "---\n---\n# Before\n",
+      ocrResult: "x",
+      context: "",
+      tags: [],
+    });
+    expect(mockUpdate).toHaveBeenCalledWith(
+      "content://tree/p.md",
+      expect.any(String),
+      null,
+      "---\n---\n# Before\n",
+    );
   });
 
   it("re-merges the note's tags onto the model output instead of dropping them", async () => {
@@ -154,7 +174,7 @@ describe("enrichPersonInPlace", () => {
     expect(out).toEqual({ kind: "failed", transient: false, reason: "HTTP 400" });
   });
 
-  it("passes a null baseline straight through (SAF, guard cannot fire)", async () => {
+  it("passes a null baseline straight through when there is no snapshot either", async () => {
     await enrichPersonInPlace({
       filepath: "content://p.md",
       expectedMtime: null,
@@ -162,6 +182,11 @@ describe("enrichPersonInPlace", () => {
       context: "",
       tags: [],
     });
-    expect(mockUpdate).toHaveBeenCalledWith("content://p.md", expect.any(String), null);
+    expect(mockUpdate).toHaveBeenCalledWith(
+      "content://p.md",
+      expect.any(String),
+      null,
+      undefined,
+    );
   });
 });

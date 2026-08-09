@@ -84,9 +84,14 @@ import {
   loadCachedNoteIndex,
   resolveNoteEntry,
   tagsForNote,
+  upsertNoteInIndex,
   type NoteIndexEntry,
 } from "../lib/vault";
-import { removeFromHistory, removeFromHistoryByFilepath } from "../lib/storage";
+import {
+  removeFromHistory,
+  removeFromHistoryByFilepath,
+  updateCaptureTitleByFilepath,
+} from "../lib/storage";
 import { getSettings } from "../lib/settings";
 
 type Props = NativeStackScreenProps<RootStackParamList, "RecentDetail">;
@@ -326,11 +331,22 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       filepath: entry.filepath,
       mode: entry.mode,
     });
-    if (outcome.kind === "updated") setBody(outcome.markdown);
-    else setReEnrichError(outcome.reason);
+    if (outcome.kind === "updated") {
+      setBody(outcome.markdown);
+      // Enrichment rewrites the title and tags, and every OTHER surface (Home
+      // cards, tag browser, search) reads those from the cached note index and
+      // the recents history — not from this screen's state. Without these two
+      // the note stays stale everywhere but here until the next full vault scan.
+      // Best-effort: a failure must not undo a write that already landed.
+      void upsertNoteInIndex(entry.filepath, outcome.markdown).catch(() => undefined);
+      void updateCaptureTitleByFilepath(
+        entry.filepath,
+        deriveTitle(outcome.markdown) || entry.title,
+      ).catch(() => undefined);
+    } else setReEnrichError(outcome.reason);
     reEnrichingRef.current = false;
     setReEnriching(false);
-  }, [body, entry.filepath, entry.mode]);
+  }, [body, entry.filepath, entry.mode, entry.title]);
 
   const handleTranscribe = useCallback(async () => {
     if (transcribingRef.current) return;

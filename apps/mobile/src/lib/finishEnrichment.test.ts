@@ -247,6 +247,7 @@ describe("reEnrichNoteInPlace", () => {
     expect(mockPerson).toHaveBeenCalledWith({
       filepath: "p.md",
       expectedMtime: 1000,
+      expectedContent: ENRICHED,
       ocrResult: "Stroudsburg Pennsylvania and the Pocono Mountains region.",
       context: "",
       tags: ["travel"],

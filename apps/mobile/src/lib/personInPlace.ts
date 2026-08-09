@@ -35,6 +35,9 @@ export interface EnrichPersonInPlaceInput {
   filepath: string;
   /** Baseline read BEFORE the model call — see finishEnrichment.ts. */
   expectedMtime: number | null;
+  /** The note's content at that same moment. Carries the conflict guard on SAF
+   * vaults, which report no mtime — see writer.ts's updateNoteIfUnchanged. */
+  expectedContent?: string | null;
   ocrResult: string;
   context: string;
   /** Re-merged onto the model's output, which knows nothing about them. */
@@ -74,6 +77,11 @@ export async function enrichPersonInPlace(
   md = mergeUserTags(md, input.tags);
   if (input.location) md = upsertFrontmatterField(md, "location", input.location);
 
-  const { ok } = await updateNoteIfUnchanged(input.filepath, md, input.expectedMtime);
+  const { ok } = await updateNoteIfUnchanged(
+    input.filepath,
+    md,
+    input.expectedMtime,
+    input.expectedContent,
+  );
   return ok ? { kind: "updated", markdown: md } : { kind: "conflict" };
 }

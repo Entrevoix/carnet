@@ -277,15 +277,50 @@ describe("updateNoteIfUnchanged (SAF)", () => {
     vi.clearAllMocks();
   });
 
-  it("mtime guard is INERT over content:// — a stale baseline still overwrites", async () => {
+  it("the MTIME baseline alone is inert over content:// — a stale one still overwrites", async () => {
     // Backend-divergent by design (writer.ts getModificationTime returns null
-    // for content://): over SAF a concurrent external edit cannot be detected,
-    // so the guard never fires and cross-device races fall back to Syncthing
-    // conflict files. Pin that here so a future "fix" that starts failing SAF
-    // writes on a stale baseline is caught as the behavior change it is.
+    // for content://): an mtime baseline can never be compared over SAF, so it
+    // alone detects nothing. Pin that here so the content baseline below is
+    // understood as the thing actually carrying the guard on this backend.
     const { filepath } = await writeIdea("guarded", "# v1\n");
     const staleBaseline = 12345; // any non-null baseline
     const result = await updateNoteIfUnchanged(filepath, "# v2\n", staleBaseline);
+    expect(result).toEqual({ ok: true });
+    await expect(readNote(filepath)).resolves.toBe("# v2\n");
+  });
+
+  it("writes when the CONTENT baseline still matches the file on disk", async () => {
+    const { filepath } = await writeIdea("guarded", "# v1\n");
+    const result = await updateNoteIfUnchanged(filepath, "# v2\n", null, "# v1\n");
+    expect(result).toEqual({ ok: true });
+    await expect(readNote(filepath)).resolves.toBe("# v2\n");
+  });
+
+  it("skips the write and reports conflict when the content changed under it", async () => {
+    // The whole point of the content fallback: SAF is the NORMAL Android /
+    // Syncthing vault, so before this the enrich-window guard was dead code
+    // exactly where the vault is shared with a workstation. A stale enrichment
+    // could silently overwrite an edit made during the model call.
+    const { filepath } = await writeIdea("guarded", "# v1\n");
+    await updateNote(filepath, "# Workstation edit\n");
+    const result = await updateNoteIfUnchanged(filepath, "# Enriched\n", null, "# v1\n");
+    expect(result).toEqual({ ok: false, reason: "conflict" });
+    await expect(readNote(filepath)).resolves.toBe("# Workstation edit\n");
+  });
+
+  it("proceeds when neither baseline is available", async () => {
+    const { filepath } = await writeIdea("guarded", "# v1\n");
+    const result = await updateNoteIfUnchanged(filepath, "# Forced\n", null, null);
+    expect(result).toEqual({ ok: true });
+    await expect(readNote(filepath)).resolves.toBe("# Forced\n");
+  });
+
+  it("consults the content baseline ONLY when there is no mtime baseline", async () => {
+    // The two baselines are a fast path and its fallback, not two votes. A
+    // caller that has an mtime never pays for the file read — pinned here with
+    // a deliberately mismatched content baseline that must be ignored.
+    const { filepath } = await writeIdea("guarded", "# v1\n");
+    const result = await updateNoteIfUnchanged(filepath, "# v2\n", 12345, "# not-what-is-on-disk\n");
     expect(result).toEqual({ ok: true });
     await expect(readNote(filepath)).resolves.toBe("# v2\n");
   });

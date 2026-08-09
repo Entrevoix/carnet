@@ -38,6 +38,10 @@ vi.mock("@carnet/shared", () => ({
 
 import { handleQuickIdeaCapture } from "./notificationQuickIdea";
 
+/** What writeRawIdea actually returns alongside filepath/mtime. Stubs MUST
+ * carry it: it is the content baseline the SAF conflict guard runs on. */
+const RAW_MD = "---\ncreated: 2026-08-09\nstatus: pending-enrich\n---\nquick idea\n";
+
 beforeEach(() => {
   writeRawIdeaMock.mockReset();
   enrichIdeaInPlaceMock.mockReset();
@@ -52,6 +56,7 @@ function happyPath(): void {
     filepath: "file:///data/Ideas/quick.md",
     slug: "quick",
     mtime: 1001,
+    markdown: RAW_MD,
   });
   enrichIdeaInPlaceMock.mockResolvedValue({ kind: "updated" });
 }
@@ -88,7 +93,12 @@ describe("handleQuickIdeaCapture — save-first ordering", () => {
     const order: string[] = [];
     writeRawIdeaMock.mockImplementation(async () => {
       order.push("write");
-      return { filepath: "file:///data/Ideas/kite.md", slug: "kite", mtime: 1001 };
+      return {
+        filepath: "file:///data/Ideas/kite.md",
+        slug: "kite",
+        mtime: 1001,
+        markdown: RAW_MD,
+      };
     });
     enrichIdeaInPlaceMock.mockImplementation(async () => {
       order.push("enrich");
@@ -147,11 +157,25 @@ describe("handleQuickIdeaCapture — async enrichment outcomes", () => {
     );
   });
 
+  it("passes the raw markdown as the content baseline, the only guard SAF vaults get", async () => {
+    // getModificationTime returns null for every content:// URI — the normal
+    // Android/Syncthing vault — so `expectedMtime` alone leaves the guard inert
+    // (pinned at the writer level in writerSaf.test.ts). Dropping `markdown` in
+    // writeRawIdea's destructure was exactly how this path lost its guard: a
+    // stale enrichment could overwrite an edit made during the model call.
+    happyPath();
+    await handleQuickIdeaCapture("guard me");
+    expect(enrichIdeaInPlaceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedMtime: 1001, expectedContent: RAW_MD }),
+    );
+  });
+
   it("queues the capture for a later drain on a TRANSIENT enrichment failure", async () => {
     writeRawIdeaMock.mockResolvedValue({
       filepath: "file:///data/Ideas/offline.md",
       slug: "offline",
       mtime: 2002,
+      markdown: RAW_MD,
     });
     enrichIdeaInPlaceMock.mockResolvedValue({
       kind: "failed",
@@ -171,6 +195,29 @@ describe("handleQuickIdeaCapture — async enrichment outcomes", () => {
         filepath: "file:///data/Ideas/offline.md",
         baselineMtime: 2002,
       }),
+    );
+  });
+
+  it("carries the content baseline into the queue row so the drain still has a guard", async () => {
+    // The more dangerous half: this row is drained by queue.ts hours later,
+    // with no UI in the loop. Without baselineContent the drain's in-place
+    // overwrite is completely unguarded on a SAF vault.
+    writeRawIdeaMock.mockResolvedValue({
+      filepath: "file:///data/Ideas/offline.md",
+      slug: "offline",
+      mtime: 2002,
+      markdown: RAW_MD,
+    });
+    enrichIdeaInPlaceMock.mockResolvedValue({
+      kind: "failed",
+      transient: true,
+      reason: "network down",
+    });
+
+    await handleQuickIdeaCapture("offline idea");
+
+    expect(enqueueMock).toHaveBeenCalledWith(
+      expect.objectContaining({ baselineMtime: 2002, baselineContent: RAW_MD }),
     );
   });
 

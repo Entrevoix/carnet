@@ -157,6 +157,10 @@ export interface ApplyEnrichedIdeaInput {
   filepath: string;
   /** mtime baseline from writeRawIdea (or a fresh read before a manual re-enrich). */
   expectedMtime: number | null;
+  /** The note's content at the moment `expectedMtime` was taken. Carries the
+   * conflict guard on SAF vaults, where there is no mtime to compare — see
+   * updateNoteIfUnchanged. */
+  expectedContent?: string | null;
   /** Raw enriched markdown from enrichIdea — its own frontmatter + H1. */
   enrichedMarkdown: string;
   tags: string[];
@@ -177,7 +181,12 @@ export async function applyEnrichedIdea(
   let md = injectAttachments(input.enrichedMarkdown, input.attachments ?? []);
   md = mergeUserTags(md, input.tags);
   if (input.location) md = upsertFrontmatterField(md, "location", input.location);
-  const result = await updateNoteIfUnchanged(input.filepath, md, input.expectedMtime);
+  const result = await updateNoteIfUnchanged(
+    input.filepath,
+    md,
+    input.expectedMtime,
+    input.expectedContent,
+  );
   return { status: result.ok ? "updated" : "conflict", markdown: md };
 }
 
@@ -186,6 +195,8 @@ export async function applyEnrichedIdea(
 export interface EnrichIdeaInPlaceInput {
   filepath: string;
   expectedMtime: number | null;
+  /** Content baseline for SAF vaults — see ApplyEnrichedIdeaInput. */
+  expectedContent?: string | null;
   text: string;
   tags: string[];
   location?: string;
@@ -230,6 +241,7 @@ export async function enrichIdeaInPlace(
   const applied = await applyEnrichedIdea({
     filepath: input.filepath,
     expectedMtime: input.expectedMtime,
+    expectedContent: input.expectedContent,
     enrichedMarkdown: enriched,
     tags: input.tags,
     location: input.location,

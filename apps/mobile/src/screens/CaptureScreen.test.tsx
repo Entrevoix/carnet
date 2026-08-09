@@ -50,7 +50,9 @@ vi.mock("../lib/writer", () => ({
   writeBinary: vi.fn(),
   injectAttachments: vi.fn((md: string) => md),
   extFromMime: vi.fn(() => "jpg"),
-  readNote: vi.fn(),
+  // Must honour readNote's real async contract: the saved-screen Re-enrich
+  // reads the note for its conflict baseline and chains off the promise.
+  readNote: vi.fn(async () => "---\nstatus: pending-enrich\n---\nmy idea\n"),
   updateNoteIfUnchanged: vi.fn(),
   getModificationTime: vi.fn(async () => 1),
   rewriteFrontmatterField: vi.fn((md: string) => md),
@@ -105,7 +107,7 @@ import { loadDraft, saveDraft, clearDraft } from "../lib/captureDraft";
 import { writeRawIdea, rewriteRawIdea, enrichIdeaInPlace } from "../lib/ideaSaveFirst";
 import { getSettings } from "../lib/settings";
 import { enrichIdea, enrichJournal, enrichPerson } from "../lib/dispatcher";
-import { recordCapture } from "../lib/storage";
+import { recordCapture, removeFromHistoryByFilepath } from "../lib/storage";
 import { enqueue } from "../lib/queue";
 import { persistAttachments } from "../lib/attachmentPersistence";
 import { clearDraft as clearDraftMock } from "../lib/captureDraft";
@@ -731,5 +733,87 @@ describe("CaptureScreen — Edit during a multi-await continuation", () => {
       expect.anything(),
     );
     expect(rewriteRawIdea).not.toHaveBeenCalled();
+  });
+
+  it("double-tapping Edit runs the handler once, so a stale copy can't revert a newer submit", async () => {
+    // Both taps land while the raw write is still in flight, so without an
+    // in-flight guard BOTH continue past their awaits: two mtime-bump rewrites,
+    // and the second handler's trailing setPhase("input") can fire after the
+    // resubmit the first one enabled — quietly dropping a capture out of its
+    // in-flight state.
+    const write = deferred<{
+      filepath: string;
+      slug: string;
+      mtime: number;
+      markdown: string;
+    }>();
+    vi.mocked(writeRawIdea).mockReturnValueOnce(
+      write.promise as ReturnType<typeof writeRawIdea>,
+    );
+    const enrich = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace).mockReturnValue(
+      enrich.promise as ReturnType<typeof enrichIdeaInPlace>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    const editButton = await screen.findByText("Edit");
+    fireEvent.click(editButton);
+    fireEvent.click(editButton);
+
+    write.resolve({
+      filepath: "file:///v/Ideas/my-idea.md",
+      slug: "my-idea",
+      mtime: 111,
+      markdown: "---\nstatus: pending-enrich\n---\nmy idea\n",
+    });
+
+    const reopened = await screen.findByDisplayValue("my idea");
+    await waitFor(() => expect(rewriteRawIdea).toHaveBeenCalledTimes(1));
+
+    // The resubmit owns the screen from here; no stale Edit may pull it back.
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(screen.getByText(/structuring the note/)).toBeTruthy());
+    await Promise.resolve();
+    expect(screen.getByText(/structuring the note/)).toBeTruthy();
+  });
+
+  it("a resumed submit waits for the interrupted recordCapture before rewriting history", async () => {
+    // recordCapture and removeFromHistoryByFilepath are both read-modify-write
+    // cycles over one AsyncStorage array. Interleaved, one side's write is lost:
+    // either a duplicate row or the stale-titled one resurrected.
+    const record = deferred<void>();
+    vi.mocked(recordCapture).mockReturnValueOnce(record.promise);
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(recordCapture).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByText("Edit"));
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    // The resubmit has already rewritten the note on disk, so it is past the
+    // point where the unguarded version reached the history.
+    await waitFor(() =>
+      expect(rewriteRawIdea).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "my edited idea" }),
+        expect.anything(),
+      ),
+    );
+    expect(removeFromHistoryByFilepath).not.toHaveBeenCalled();
+
+    record.resolve();
+    await waitFor(() =>
+      expect(removeFromHistoryByFilepath).toHaveBeenCalledWith("file:///v/Ideas/my-idea.md"),
+    );
+    await waitFor(() => expect(recordCapture).toHaveBeenCalledTimes(2));
   });
 });

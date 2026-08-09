@@ -102,8 +102,13 @@ export async function finishPendingEnrichment(input: {
     const baseline = await getModificationTime(input.filepath);
 
     let source = input.body;
+    // Only a snapshot read from DISK is a valid content baseline for the SAF
+    // guard; the caller's copy may already be stale, which would report a
+    // phantom conflict on every run.
+    let expectedContent: string | null = null;
     try {
       source = await readNote(input.filepath);
+      expectedContent = source;
     } catch {
       // Unreadable: fall back to the caller's snapshot rather than refusing.
       // The mtime guard still protects the write.
@@ -129,6 +134,7 @@ export async function finishPendingEnrichment(input: {
     const outcome = await enrichIdeaInPlace({
       filepath: input.filepath,
       expectedMtime: baseline,
+      expectedContent,
       text,
       tags: getFrontmatterTags(source),
       location,
@@ -202,8 +208,12 @@ export async function reEnrichNoteInPlace(input: {
     const baseline = await getModificationTime(input.filepath);
 
     let source = input.body;
+    // See finishPendingEnrichment: a disk read is the only valid content
+    // baseline for the SAF guard.
+    let expectedContent: string | null = null;
     try {
       source = await readNote(input.filepath);
+      expectedContent = source;
     } catch {
       // Unreadable: fall back to the caller's snapshot rather than refusing.
       // The mtime guard still protects the write.
@@ -219,6 +229,7 @@ export async function reEnrichNoteInPlace(input: {
         await enrichIdeaInPlace({
           filepath: input.filepath,
           expectedMtime: baseline,
+          expectedContent,
           text,
           tags: getFrontmatterTags(source),
           location: extractFrontmatterField(source, "location") ?? undefined,
@@ -232,6 +243,7 @@ export async function reEnrichNoteInPlace(input: {
       await enrichPersonInPlace({
         filepath: input.filepath,
         expectedMtime: baseline,
+        expectedContent,
         ocrResult: text,
         context: "",
         // The model's output carries none of the user's filing metadata, so
