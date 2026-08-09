@@ -24,7 +24,7 @@ import {
   CaptureSavedCard,
 } from "../components/CaptureViews";
 import { getSettings } from "../lib/settings";
-import { recordCapture, type CaptureMode } from "../lib/storage";
+import { recordCapture, removeFromHistoryByFilepath, type CaptureMode } from "../lib/storage";
 import {
   enrichIdea,
   enrichJournal,
@@ -39,6 +39,7 @@ import {
 } from "../lib/writer";
 import {
   enrichIdeaInPlace,
+  rewriteRawIdea,
   writeRawIdea,
   type EnrichIdeaOutcome,
   type RawIdeaInput,
@@ -147,6 +148,25 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // enrichment against the same text/tags/location/attachments after the input
   // fields were cleared.
   const saveFirstCtxRef = useRef<RawIdeaInput | null>(null);
+  // Monotonic id for the current capture attempt. Every async continuation
+  // captures the generation it started under and bails if it no longer matches,
+  // so tapping Edit (or simply resubmitting) invalidates every in-flight
+  // continuation from the attempt before it. A boolean "aborted" flag cannot do
+  // this: the next submit has to clear it, which un-cancels the abandoned call
+  // and lets its late result drive the screen. The requests themselves are not
+  // cancelled — only their effects are dropped.
+  const submitGenerationRef = useRef(0);
+  // The draft the in-flight attempt is working from, stashed before any await
+  // so Edit can restore it no matter how far the attempt got.
+  const submittedDraftRef = useRef<RawIdeaInput | null>(null);
+  // The in-flight raw write. Edit awaits it so the filepath it produces is
+  // known before the user can resubmit — otherwise a resubmit issued during
+  // the write falls through to writeRawIdea again and orphans a duplicate.
+  const rawWriteRef = useRef<Promise<{ filepath: string }> | null>(null);
+  // Non-null while re-editing an Idea whose raw note is ALREADY on disk. The
+  // resubmit must overwrite that exact path — writeRawIdea would derive a fresh
+  // slug from the edited text and leave the original orphaned as a duplicate.
+  const [editingFilepath, setEditingFilepath] = useState<string | null>(null);
 
   // Draft persistence: restore on entry, autosave (debounced) while typing,
   // cleared at every point the capture is safely persisted. State (not a
@@ -279,6 +299,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const handleCaptureError = async (
     e: unknown,
     enqueueFn: () => Promise<void>,
+    /** Re-checked after EVERY await below. This runs while the Edit button is
+     * still on screen, and its input-clearing block would otherwise wipe the
+     * draft the user just restored — leaving the un-edited capture queued. */
+    superseded: () => boolean,
   ): Promise<void> => {
     // A blank OmniRoute URL is a config problem (not an offline blip) and a 4xx
     // is permanent — both surface the message and keep the text for a resend.
@@ -292,8 +316,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
     // Wrap the queue write so a failure here can never strand the user on the
     // "submitting" spinner — the finally always returns to the input phase.
     try {
+      // Known limitation: a queue entry is durable the moment this resolves, so
+      // an Edit tapped during the write cannot retract it — the original
+      // capture may still drain later as a duplicate. Out of scope here.
       await enqueueFn();
+      if (superseded()) return;
       const depth = await getQueueDepth();
+      if (superseded()) return;
       setQueueDepth(depth);
       setError("Offline — capture queued.");
       // The capture is safely persisted in the queue — clear the inputs so the
@@ -307,10 +336,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setLocation(null);
       void clearDraft(mode).catch(() => undefined);
     } catch (qe: unknown) {
+      if (superseded()) return;
       const qmsg = qe instanceof Error ? qe.message : String(qe);
       setError(`Couldn't reach OmniRoute, and queuing offline failed: ${qmsg}`);
     } finally {
-      setPhase("input");
+      // The `return`s above skip this by design: a superseded attempt must not
+      // pull the user out of the draft they went back to editing.
+      if (!superseded()) setPhase("input");
     }
   };
 
@@ -324,6 +356,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
     ctx: RawIdeaInput,
     filepath: string,
     mtime: number | null,
+    /** Re-checked after this function's own await — Edit can land during the
+     * enqueue just as easily as during the model call. */
+    superseded: () => boolean,
   ): Promise<void> => {
     const plan = planSaveFirstOutcome(outcome);
     if (plan.kind === "close") {
@@ -352,9 +387,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
           filepath,
           baselineMtime: mtime,
         });
-        setQueueDepth(await getQueueDepth());
+        const depth = await getQueueDepth();
+        if (superseded()) return;
+        setQueueDepth(depth);
         setEnrichNotice(plan.notice);
       } catch {
+        if (superseded()) return;
         setEnrichNotice(plan.fallbackNotice);
       }
       setPhase("saved");
@@ -373,8 +411,15 @@ export default function CaptureScreen({ route, navigation }: Props) {
     setError(null);
     setDegradedReason(null);
     setEnrichNotice(null);
+    const myGeneration = ++submitGenerationRef.current;
+    const superseded = (): boolean => submitGenerationRef.current !== myGeneration;
+    // Edit is offered during this pass too, so give it the same draft and
+    // already-written filepath the submit path publishes.
+    submittedDraftRef.current = ctx;
+    rawWriteRef.current = Promise.resolve({ filepath: savedFilepath });
     setPhase("submitting");
     const baseline = await getModificationTime(savedFilepath);
+    if (superseded()) return;
     const outcome = await enrichIdeaInPlace({
       filepath: savedFilepath,
       expectedMtime: baseline,
@@ -383,7 +428,44 @@ export default function CaptureScreen({ route, navigation }: Props) {
       location: ctx.location,
       attachments: ctx.attachments,
     });
-    await finishSaveFirst(outcome, ctx, savedFilepath, baseline);
+    if (superseded()) return;
+    await finishSaveFirst(outcome, ctx, savedFilepath, baseline, superseded);
+  };
+
+  /** Escape hatch offered during "submitting": go back to an editable draft
+   * instead of waiting for (and accepting) the enrichment now in flight. The
+   * request itself keeps running — only its UI and disk effects are suppressed. */
+  const editInstead = async (): Promise<void> => {
+    // Invalidates every continuation of the attempt now in flight.
+    submitGenerationRef.current += 1;
+    setError(null);
+    setDegradedReason(null);
+    setEnrichNotice(null);
+
+    if (mode === "idea") {
+      const draft = submittedDraftRef.current;
+      if (draft) {
+        // Save-first clears the inputs once the raw note lands — put them back.
+        setText(draft.text);
+        setTags(draft.tags);
+        setLocation(draft.location ?? null);
+      }
+      // The raw write may still be in flight; its filepath is what the resubmit
+      // must overwrite. Phase stays "submitting" until it resolves, which is
+      // what keeps Send disabled and makes the resubmit safe.
+      const write = rawWriteRef.current;
+      if (write) {
+        try {
+          setEditingFilepath((await write).filepath);
+        } catch {
+          // The write failed, so there is nothing on disk to overwrite — the
+          // resubmit correctly falls through to a fresh writeRawIdea.
+        }
+      }
+    }
+    // Journal and Person write nothing before enrichment, so their transcript /
+    // ocrText / text are all still in state — there is nothing to restore.
+    setPhase("input");
   };
 
   const submit = async () => {
@@ -392,6 +474,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
     // same treatment — otherwise the keyboard stays up through submitting/preview
     // and the user has to back out of it manually.
     Keyboard.dismiss();
+    const myGeneration = ++submitGenerationRef.current;
+    /** True once Edit (or another submit) has superseded this attempt. Checked
+     * before EVERY state write in an async continuation below. */
+    const superseded = (): boolean => submitGenerationRef.current !== myGeneration;
+    submittedDraftRef.current = null;
+    rawWriteRef.current = null;
     setPhase("submitting");
     setError(null);
     setDegradedReason(null);
@@ -402,6 +490,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       if (previewBeforeSave) {
         try {
           const result = await enrichIdea(text.trim());
+          if (superseded()) return;
           const title = deriveTitle(result.markdown);
           const slug = slugify(title) || "untitled";
           setPendingIdea({ slug, markdown: result.markdown, model: result.model });
@@ -409,6 +498,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           setResponse(buildCapturePreviewResponse(result.markdown));
           setPhase("preview");
         } catch (e: unknown) {
+          if (superseded()) return;
           await handleCaptureError(e, async () => {
             // Write the binaries to disk first (local + offline-safe), then
             // queue only their rel-paths — never base64.
@@ -420,22 +510,45 @@ export default function CaptureScreen({ route, navigation }: Props) {
               tags,
               location: location ?? undefined,
             });
-          });
+          }, superseded);
         }
         return;
       }
 
       // Save-first (default): write the raw note NOW, then enrich it in place.
       try {
-        const refs = await persistAttachments();
-        const ctx: RawIdeaInput = {
+        // Stashed before the first await so Edit can restore the draft even if
+        // it is tapped while the attachments are still being written.
+        submittedDraftRef.current = {
           text: text.trim(),
           tags,
           location: location ?? undefined,
-          attachments: refs,
         };
-        const { filepath, mtime, markdown: rawMarkdown } = await writeRawIdea(ctx);
+        const refs = await persistAttachments();
+        // Earliest await in the path, and upstream of rawWriteRef being
+        // published — an Edit tapped here finds no write to await, so bailing
+        // is what keeps editingFilepath from being left null (which would send
+        // the resubmit back through writeRawIdea and orphan a duplicate).
+        // Safe to abandon: nothing is on disk yet, and persistAttachments
+        // memoizes by PickedAttachment identity, so a resubmit reuses these.
+        if (superseded()) return;
+        const ctx: RawIdeaInput = { ...submittedDraftRef.current, attachments: refs };
+        submittedDraftRef.current = ctx;
+        // Resubmitting after Edit: overwrite the note already on disk rather
+        // than writing a second one under the edited text's new slug.
+        const resuming = editingFilepath;
+        const writePromise = resuming
+          ? rewriteRawIdea({ ...ctx, filepath: resuming })
+          : writeRawIdea(ctx);
+        // Published before awaiting, so an Edit tapped mid-write can await the
+        // same promise and learn the filepath instead of racing it.
+        rawWriteRef.current = writePromise;
+        const { filepath, mtime, markdown: rawMarkdown } = await writePromise;
+        if (superseded()) return;
         const title = deriveTitle(ctx.text) || "Idea";
+        // recordCapture prepends unconditionally, so the resumed capture drops
+        // its stale-titled row first instead of stacking a duplicate.
+        if (resuming) await removeFromHistoryByFilepath(filepath);
         await recordCapture({
           id: localId(),
           mode,
@@ -443,6 +556,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
           filepath,
           createdAt: Date.now(),
         });
+        // Re-checked: the two history awaits above are their own race window,
+        // and clearing editingFilepath here would undo an Edit tapped during
+        // them, sending the resubmit back through writeRawIdea.
+        if (superseded()) return;
+        setEditingFilepath(null);
         // Upsert (not invalidate) so Home's cards can show this note's tags
         // and pending-enrich stamp immediately — dropping the whole cached
         // index left cards bare until the next full vault scan.
@@ -464,8 +582,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
           location: ctx.location,
           attachments: ctx.attachments,
         });
-        await finishSaveFirst(outcome, ctx, filepath, mtime);
+        if (superseded()) return;
+        await finishSaveFirst(outcome, ctx, filepath, mtime, superseded);
       } catch (e: unknown) {
+        if (superseded()) return;
         // The raw write itself failed (disk/permission) — nothing was saved,
         // so keep the inputs and return the user to the form.
         const msg = e instanceof Error ? e.message : String(e);
@@ -479,12 +599,14 @@ export default function CaptureScreen({ route, navigation }: Props) {
       const combined = [transcript, text].map((s) => s.trim()).filter(Boolean).join("\n\n");
       try {
         const result = await enrichJournal({ transcript: combined, notes: "" });
+        if (superseded()) return;
         const today = todayLocal();
         setPendingJournal({ date: today, markdown: result.markdown, model: result.model });
         setOmniModel(result.model);
         setResponse(buildCapturePreviewResponse(result.markdown));
         setPhase("preview");
       } catch (e: unknown) {
+        if (superseded()) return;
         await handleCaptureError(e, async () => {
           const refs = await persistAttachments();
           await enqueue({
@@ -496,7 +618,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
             tags,
             location: location ?? undefined,
           });
-        });
+        }, superseded);
       }
       return;
     }
@@ -504,6 +626,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
     // mode === "person"
     try {
       const result = await enrichPerson({ ocrResult: ocrText.trim(), context: text.trim() });
+      if (superseded()) return;
       const nameField = extractNameFromMarkdown(result.markdown);
       setPendingPerson({
         firstName: nameField.firstName,
@@ -515,6 +638,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setResponse(buildCapturePreviewResponse(result.markdown));
       setPhase("preview");
     } catch (e: unknown) {
+      if (superseded()) return;
       await handleCaptureError(e, () =>
         enqueue({
           mode: "person",
@@ -523,6 +647,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           tags,
           location: location ?? undefined,
         }),
+        superseded,
       );
     }
   };
@@ -731,6 +856,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
               ? "Local LLM is structuring the note…"
               : "OmniRoute is structuring the note…"}
           </Text>
+          <Button
+            mode="text"
+            onPress={() => void editInstead()}
+            accessibilityLabel="Edit before enriching"
+          >
+            Edit
+          </Button>
         </View>
       )}
 

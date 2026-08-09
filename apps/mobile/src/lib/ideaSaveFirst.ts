@@ -23,6 +23,7 @@ import {
   getModificationTime,
   injectAttachments,
   slugify,
+  updateNote,
   updateNoteIfUnchanged,
   writeIdea,
   type AttachmentRef,
@@ -118,6 +119,38 @@ export async function writeRawIdea(
   const { filepath } = await writeIdea(slug, markdown);
   const mtime = await getModificationTime(filepath);
   return { filepath, slug, mtime, markdown };
+}
+
+export interface RewriteRawIdeaInput extends RawIdeaInput {
+  /** The already-on-disk note to overwrite — NOT re-derived from the text. */
+  filepath: string;
+}
+
+export interface RewriteRawIdeaResult {
+  filepath: string;
+  /** Fresh baseline for the enriched overwrite that follows this rewrite. */
+  mtime: number | null;
+  markdown: string;
+}
+
+/**
+ * Overwrite an EXISTING raw Idea note in place with a revised draft — the
+ * edit-then-resubmit path, where the user tapped Edit while enrichment was in
+ * flight and changed their text.
+ *
+ * Deliberately not `writeRawIdea`: that derives the slug from the text's first
+ * line and goes through `writeIdea`, which collision-suffixes rather than
+ * overwrites. Calling it again after an edit would leave the original
+ * `pending-enrich` note orphaned beside a new `-2.md`.
+ */
+export async function rewriteRawIdea(
+  input: RewriteRawIdeaInput,
+  now?: Date,
+): Promise<RewriteRawIdeaResult> {
+  const markdown = buildRawIdeaMarkdown(input, now);
+  await updateNote(input.filepath, markdown);
+  const mtime = await getModificationTime(input.filepath);
+  return { filepath: input.filepath, mtime, markdown };
 }
 
 export interface ApplyEnrichedIdeaInput {

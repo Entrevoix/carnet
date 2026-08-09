@@ -138,6 +138,7 @@ import {
   deriveRawIdeaSlug,
   enrichIdeaInPlace,
   PENDING_ENRICH_STATUS,
+  rewriteRawIdea,
   usesSaveFirst,
   writeRawIdea,
 } from "./ideaSaveFirst";
@@ -371,5 +372,56 @@ describe("enrichIdeaInPlace", () => {
     });
     expect(outcome.kind).toBe("conflict");
     expect(_files.get(filepath)!.content).toBe("# Theirs\n");
+  });
+});
+
+// ── rewriteRawIdea (edit-then-resubmit during the enrich window) ──────────────
+
+describe("rewriteRawIdea", () => {
+  it("overwrites the SAME file rather than creating a collision-suffixed twin", async () => {
+    const first = await writeRawIdea({ text: "Build a kite", tags: [] });
+    const before = [..._files.keys()].filter((u) => u.endsWith(".md"));
+    expect(before).toHaveLength(1);
+
+    const out = await rewriteRawIdea({
+      filepath: first.filepath,
+      text: "Build a kite that actually flies",
+      tags: [],
+    });
+
+    expect(out.filepath).toBe(first.filepath);
+    const after = [..._files.keys()].filter((u) => u.endsWith(".md"));
+    expect(after).toEqual(before);
+    expect(_files.get(first.filepath)!.content).toContain("Build a kite that actually flies");
+  });
+
+  it("returns a bumped mtime so the follow-up enrich guard uses a fresh baseline", async () => {
+    const first = await writeRawIdea({ text: "baseline", tags: [] });
+    const out = await rewriteRawIdea({ filepath: first.filepath, text: "edited", tags: [] });
+    expect(out.mtime).not.toBeNull();
+    expect(out.mtime!).toBeGreaterThan(first.mtime!);
+    expect(await getModificationTime(first.filepath)).toBe(out.mtime);
+  });
+
+  it("keeps the pending-enrich stamp and re-merges tags/location on the edit", async () => {
+    const first = await writeRawIdea({ text: "trip notes", tags: ["travel"] });
+    const out = await rewriteRawIdea({
+      filepath: first.filepath,
+      text: "trip notes, revised",
+      tags: ["travel", "alps"],
+      location: "47.20114,10.11660",
+    });
+    expect(out.markdown).toContain(`status: ${PENDING_ENRICH_STATUS}`);
+    expect(out.markdown).toContain("alps");
+    expect(out.markdown).toContain("location: 47.20114,10.11660");
+    expect(await readNote(first.filepath)).toBe(out.markdown);
+  });
+
+  it("ignores the slug the edited text would have produced", async () => {
+    // A slug-derived rewrite would land in a totally different filename here.
+    const first = await writeRawIdea({ text: "Alpha", tags: [] });
+    await rewriteRawIdea({ filepath: first.filepath, text: "Omega", tags: [] });
+    expect([..._files.keys()].filter((u) => u.endsWith(".md"))).toEqual([first.filepath]);
+    expect(first.filepath).toContain("alpha");
   });
 });

@@ -16,6 +16,10 @@ interface NoteActionsSheetProps {
    * Body-derived rather than kind-gated, so it is computed by the screen (see
    * lib/finishEnrichment.ts isPendingEnrich) rather than noteCapabilities. */
   canFinishEnrichment: boolean;
+  /** True for any text-backed note (idea/journal/person) still on disk — the
+   * "I edited this, enrich my edit" action. Unlike the two above it is gated on
+   * the note's mode alone, not on its enrichment status. */
+  canReEnrichGeneral: boolean;
   /** Gated on a non-blank Karakeep instance URL in Settings. */
   karakeepConfigured: boolean;
   /** True while any long-running action is in flight. */
@@ -24,11 +28,30 @@ interface NoteActionsSheetProps {
   missing: boolean;
   onReEnrich: () => void;
   onFinishEnrichment: () => void;
+  onGeneralReEnrich: () => void;
   onTranscribe: () => void;
   onEnhance: () => void;
   onSendToKarakeep: () => void;
   onFileInfo: () => void;
   onDelete: () => void;
+}
+
+/**
+ * Which single re-enrich-family row this note gets, in descending specificity.
+ * The three capabilities can genuinely overlap — a pending-enrich Idea note
+ * with a paired photo satisfies all of them — and they all run the same
+ * enrichment call through the same busy slot, so only the most specific one is
+ * offered rather than a menu of synonyms.
+ */
+function pickReEnrichRow(caps: {
+  canFinishEnrichment: boolean;
+  canReEnrich: boolean;
+  canReEnrichGeneral: boolean;
+}): "finish" | "image" | "text" | "none" {
+  if (caps.canFinishEnrichment) return "finish";
+  if (caps.canReEnrich) return "image";
+  if (caps.canReEnrichGeneral) return "text";
+  return "none";
 }
 
 /**
@@ -46,17 +69,24 @@ export function NoteActionsSheet({
   canTranscribe,
   canEnhance,
   canFinishEnrichment,
+  canReEnrichGeneral,
   karakeepConfigured,
   actionsBusy,
   missing,
   onReEnrich,
   onFinishEnrichment,
+  onGeneralReEnrich,
   onTranscribe,
   onEnhance,
   onSendToKarakeep,
   onFileInfo,
   onDelete,
 }: NoteActionsSheetProps) {
+  const reEnrichRow = pickReEnrichRow({
+    canFinishEnrichment,
+    canReEnrich,
+    canReEnrichGeneral,
+  });
   return (
     <Modal
       visible={visible}
@@ -82,7 +112,17 @@ export function NoteActionsSheet({
           style={styles.sheetRow}
         />
       ) : null}
-      {canReEnrich ? (
+      {reEnrichRow === "finish" ? (
+        <List.Item
+          title="Finish enrichment"
+          description="This note was saved raw and never enriched — add its title and tags now"
+          left={(p) => <List.Icon {...p} icon="sync-alert" />}
+          disabled={actionsBusy}
+          onPress={onFinishEnrichment}
+          style={styles.sheetRow}
+        />
+      ) : null}
+      {reEnrichRow === "image" ? (
         <List.Item
           title="Re-enrich"
           description="Re-run AI enrichment on the original image"
@@ -92,13 +132,13 @@ export function NoteActionsSheet({
           style={styles.sheetRow}
         />
       ) : null}
-      {canFinishEnrichment ? (
+      {reEnrichRow === "text" ? (
         <List.Item
-          title="Finish enrichment"
-          description="This note was saved raw and never enriched — add its title and tags now"
-          left={(p) => <List.Icon {...p} icon="sync-alert" />}
+          title="Re-enrich"
+          description="Re-run AI enrichment on this note's current text"
+          left={(p) => <List.Icon {...p} icon="auto-fix" />}
           disabled={actionsBusy}
-          onPress={onFinishEnrichment}
+          onPress={onGeneralReEnrich}
           style={styles.sheetRow}
         />
       ) : null}

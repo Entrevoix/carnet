@@ -24,7 +24,9 @@
  */
 
 import { getFrontmatterTags, extractFrontmatterField, stripFrontmatter } from "./frontmatter";
-import { enrichIdeaInPlace, PENDING_ENRICH_STATUS } from "./ideaSaveFirst";
+import { enrichIdeaInPlace, PENDING_ENRICH_STATUS, type EnrichIdeaOutcome } from "./ideaSaveFirst";
+import { enrichPersonInPlace, type EnrichInPlaceOutcome } from "./personInPlace";
+import type { CaptureMode } from "./storage";
 import { getModificationTime, readNote } from "./writer";
 
 /**
@@ -34,6 +36,25 @@ import { getModificationTime, readNote } from "./writer";
 export type FinishEnrichmentOutcome =
   | { kind: "updated"; markdown: string }
   | { kind: "failed"; reason: string };
+
+/** The capture modes whose note is a single unit of text that can be handed to
+ * a model and overwritten wholesale. `photo`/`audio` go through the
+ * image/transcription paths instead (noteReprocess.ts).
+ *
+ * `journal` is deliberately EXCLUDED: a Journal day file holds many entries
+ * under `## HH:MM` headings, so re-enriching the file would collapse the whole
+ * day into one enrichment of the concatenated text and destroy that structure.
+ * Journal needs an entry-scoped re-enrichment, which is a different operation
+ * than this whole-file overwrite. (The Edit-during-capture affordance is
+ * unaffected — it runs before anything is written.) */
+const RE_ENRICHABLE_MODES = ["idea", "person"] as const;
+
+type ReEnrichableMode = (typeof RE_ENRICHABLE_MODES)[number];
+
+/** True when a note's mode has an in-place enrichment path (see above). */
+export function isReEnrichableMode(mode: CaptureMode): mode is ReEnrichableMode {
+  return (RE_ENRICHABLE_MODES as readonly CaptureMode[]).includes(mode);
+}
 
 /** True when this note is a raw save-first capture still awaiting enrichment. */
 export function isPendingEnrich(body: string): boolean {
@@ -101,6 +122,98 @@ export async function finishPendingEnrichment(input: {
       };
     }
     return { kind: "failed", reason: outcome.reason };
+  } catch (e: unknown) {
+    return { kind: "failed", reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Both in-place outcome unions are structurally identical, so one mapper
+ * flattens either into the screen-facing FinishEnrichmentOutcome. */
+function mapInPlaceOutcome(
+  outcome: EnrichIdeaOutcome | EnrichInPlaceOutcome,
+): FinishEnrichmentOutcome {
+  if (outcome.kind === "updated") return { kind: "updated", markdown: outcome.markdown };
+  if (outcome.kind === "conflict") {
+    return {
+      kind: "failed",
+      reason:
+        "This note changed while enrichment was running, so your version was kept. Try again.",
+    };
+  }
+  return { kind: "failed", reason: outcome.reason };
+}
+
+/**
+ * Re-run enrichment on a saved note, in place, regardless of its status.
+ *
+ * The user-facing counterpart to `finishPendingEnrichment`: that one exists for
+ * notes stuck at `pending-enrich` and refuses anything else, whereas this one is
+ * for "I edited my note, enrich it again". Same baseline-before-the-call
+ * ordering, same read-from-disk-not-the-snapshot rule, same never-throws
+ * contract — only the pending gate is dropped.
+ *
+ * On an already-enriched note this feeds LLM-formatted prose back into a prompt
+ * written for raw input. That is accepted and deliberate (it is what "re-enrich
+ * my edit" means); whatever is on disk is the input, exactly as enhanceProse.ts
+ * and the vision re-enrich path already treat it.
+ */
+export async function reEnrichNoteInPlace(input: {
+  body: string;
+  filepath: string;
+  mode: CaptureMode;
+}): Promise<FinishEnrichmentOutcome> {
+  try {
+    if (input.mode === "journal") {
+      // Not merely unsupported — actively destructive if it were wired up; see
+      // RE_ENRICHABLE_MODES. Kept as its own branch so the reason is specific.
+      return {
+        kind: "failed",
+        reason: "Journal re-enrichment isn't supported yet — it would replace the whole day's entries.",
+      };
+    }
+    if (!isReEnrichableMode(input.mode)) {
+      return { kind: "failed", reason: "This note type cannot be re-enriched." };
+    }
+
+    const baseline = await getModificationTime(input.filepath);
+
+    let source = input.body;
+    try {
+      source = await readNote(input.filepath);
+    } catch {
+      // Unreadable: fall back to the caller's snapshot rather than refusing.
+      // The mtime guard still protects the write.
+    }
+
+    const text = stripFrontmatter(source).trim();
+    if (!text) {
+      return { kind: "failed", reason: "This note has no text to enrich." };
+    }
+
+    if (input.mode === "idea") {
+      return mapInPlaceOutcome(
+        await enrichIdeaInPlace({
+          filepath: input.filepath,
+          expectedMtime: baseline,
+          text,
+          tags: getFrontmatterTags(source),
+          location: extractFrontmatterField(source, "location") ?? undefined,
+        }),
+      );
+    }
+    return mapInPlaceOutcome(
+      await enrichPersonInPlace({
+        filepath: input.filepath,
+        expectedMtime: baseline,
+        ocrResult: text,
+        context: "",
+        // The model's output carries none of the user's filing metadata, so
+        // the note's own tags/location are re-merged onto it — otherwise a
+        // re-enrich silently strips them from the vault.
+        tags: getFrontmatterTags(source),
+        location: extractFrontmatterField(source, "location") ?? undefined,
+      }),
+    );
   } catch (e: unknown) {
     return { kind: "failed", reason: e instanceof Error ? e.message : String(e) };
   }

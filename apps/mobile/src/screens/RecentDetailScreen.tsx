@@ -68,7 +68,12 @@ import {
 } from "../lib/recentDetailView";
 import { findRelatedNotes, insertRelatedLink } from "../lib/relatedNotes";
 import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
-import { finishPendingEnrichment, isPendingEnrich } from "../lib/finishEnrichment";
+import {
+  finishPendingEnrichment,
+  isPendingEnrich,
+  isReEnrichableMode,
+  reEnrichNoteInPlace,
+} from "../lib/finishEnrichment";
 import { enhanceNoteProse } from "../lib/enhanceProse";
 import { FALLBACK_PROVIDER_FIELD } from "../lib/dispatcher";
 import { useCarnetTheme } from "../lib/theme";
@@ -306,6 +311,26 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     reEnrichingRef.current = false;
     setReEnriching(false);
   }, [body, entry.filepath]);
+
+  // The third member of the re-enrich family, and the only one not gated on the
+  // note being stuck: "I edited this note, run enrichment on my edit". Shares
+  // the same ref/error slot as the two above for the same reason — only one of
+  // the three may ever be in flight.
+  const handleGeneralReEnrich = useCallback(async () => {
+    if (reEnrichingRef.current) return;
+    reEnrichingRef.current = true;
+    setReEnrichError(null);
+    setReEnriching(true);
+    const outcome = await reEnrichNoteInPlace({
+      body,
+      filepath: entry.filepath,
+      mode: entry.mode,
+    });
+    if (outcome.kind === "updated") setBody(outcome.markdown);
+    else setReEnrichError(outcome.reason);
+    reEnrichingRef.current = false;
+    setReEnriching(false);
+  }, [body, entry.filepath, entry.mode]);
 
   const handleTranscribe = useCallback(async () => {
     if (transcribingRef.current) return;
@@ -714,7 +739,15 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           onDismiss={() => setActionsOpen(false)}
           canReEnrich={canReEnrich}
           canFinishEnrichment={!missing && isPendingEnrich(body)}
-          onFinishEnrichment={() => void handleFinishEnrichment()}
+          onFinishEnrichment={() => {
+            setActionsOpen(false);
+            void handleFinishEnrichment();
+          }}
+          canReEnrichGeneral={!missing && isReEnrichableMode(entry.mode)}
+          onGeneralReEnrich={() => {
+            setActionsOpen(false);
+            void handleGeneralReEnrich();
+          }}
           canTranscribe={canTranscribe}
           canEnhance={canEnhance}
           karakeepConfigured={karakeepConfigured}

@@ -96,6 +96,22 @@ vi.mock("../lib/dispatcher", () => ({
 }));
 vi.mock("../lib/attachments", () => ({ pickAttachment: vi.fn() }));
 
+// Fully mocked, not importActual: the real module pulls the enrichment chain
+// into a renderer-less environment. The two predicates are trivially restated
+// here; their real behavior is covered in lib/finishEnrichment.test.ts.
+vi.mock("../lib/finishEnrichment", () => ({
+  isPendingEnrich: (body: string) => body.includes("status: pending-enrich"),
+  isReEnrichableMode: (mode: string) => ["idea", "person"].includes(mode),
+  finishPendingEnrichment: vi.fn(async () => ({
+    kind: "updated",
+    markdown: "---\n---\n# Finished\n\nFinished body.\n",
+  })),
+  reEnrichNoteInPlace: vi.fn(async () => ({
+    kind: "updated",
+    markdown: "---\n---\n# Re-enriched\n\nRe-enriched body.\n",
+  })),
+}));
+
 // react-native-markdown-display ships raw JSX in .js files, which vite
 // can't parse once the package is inlined. Markdown → native rendering
 // isn't what this smoke test covers; a passthrough keeps the body text
@@ -124,6 +140,7 @@ vi.mock("expo-sharing", () => ({
 
 import RecentDetailScreen from "./RecentDetailScreen";
 import { readNote, updateNote } from "../lib/writer";
+import { reEnrichNoteInPlace } from "../lib/finishEnrichment";
 import { removeFromHistory } from "../lib/storage";
 
 type ScreenProps = Parameters<typeof RecentDetailScreen>[0];
@@ -149,7 +166,7 @@ function makeNavigation() {
   };
 }
 
-function renderScreen() {
+function renderScreen(entry: CaptureEntry = ENTRY) {
   const navigation = makeNavigation();
   render(
     <PaperProvider theme={carnetLight}>
@@ -159,13 +176,24 @@ function renderScreen() {
           {
             key: "d",
             name: "RecentDetail",
-            params: { entry: ENTRY },
+            params: { entry },
           } as ScreenProps["route"]
         }
       />
     </PaperProvider>,
   );
   return { navigation };
+}
+
+/** Mount the ⋮ the screen installed into the navigation header (which lives
+ * outside this tree) and open the actions sheet through it. */
+function openActionsSheet(navigation: ReturnType<typeof makeNavigation>): void {
+  const withHeader = navigation.setOptions.mock.calls
+    .map(([opts]) => opts)
+    .filter((o) => typeof o.headerRight === "function")
+    .at(-1);
+  render(<PaperProvider theme={carnetLight}>{withHeader.headerRight()}</PaperProvider>);
+  fireEvent.click(screen.getByLabelText("More actions"));
 }
 
 beforeEach(() => {
@@ -335,5 +363,90 @@ describe("RecentDetailScreen", () => {
     fireEvent.click(screen.getByText("Remove from list"));
     await waitFor(() => expect(removeFromHistory).toHaveBeenCalledTimes(1));
     release();
+  });
+});
+
+// ── Generalized re-enrich (mode-gated, not pending-gated) ────────────────────
+
+const ENRICHED_MD =
+  "---\ncreated: 2026-07-08T11:55:46.000Z\nstatus: seedling\ntags: [qa-test]\n---\n# Draft Survival Test\n\nHello body text.\n";
+
+describe("RecentDetailScreen — re-enrich family", () => {
+  // clearAllMocks clears calls, not implementations — restate the default note
+  // so a test that swaps in ENRICHED_MD can't leak into the next one.
+  beforeEach(() => {
+    vi.mocked(readNote).mockResolvedValue(NOTE_MD);
+  });
+
+  it("offers Re-enrich on a normally-enriched Idea note (was unreachable before)", async () => {
+    vi.mocked(readNote).mockResolvedValue(ENRICHED_MD);
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+
+    expect(await screen.findByText("Re-enrich")).toBeTruthy();
+    // Mutually exclusive: the pending-specific row must not also render.
+    expect(screen.queryByText("Finish enrichment")).toBeNull();
+  });
+
+  it("re-enriches with the note's CURRENT body and mode, and shows the result", async () => {
+    vi.mocked(readNote).mockResolvedValue(ENRICHED_MD);
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Re-enrich"));
+
+    await waitFor(() =>
+      expect(reEnrichNoteInPlace).toHaveBeenCalledWith({
+        body: ENRICHED_MD,
+        filepath: ENTRY.filepath,
+        mode: "idea",
+      }),
+    );
+    expect(await screen.findByText(/Re-enriched body\./)).toBeTruthy();
+  });
+
+  it("a pending note still shows Finish enrichment, and only that", async () => {
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+
+    expect(await screen.findByText("Finish enrichment")).toBeTruthy();
+    expect(screen.queryByText("Re-enrich")).toBeNull();
+  });
+
+  it("does not offer Re-enrich for a journal note — its day file holds many entries", async () => {
+    vi.mocked(readNote).mockResolvedValue(ENRICHED_MD);
+    const { navigation } = renderScreen({ ...ENTRY, mode: "journal" });
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+
+    expect(await screen.findByText("File info")).toBeTruthy();
+    expect(screen.queryByText("Re-enrich")).toBeNull();
+  });
+
+  it("does not offer Re-enrich for a mode with no text enrichment path", async () => {
+    vi.mocked(readNote).mockResolvedValue(ENRICHED_MD);
+    const { navigation } = renderScreen({ ...ENTRY, mode: "audio" });
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+
+    expect(await screen.findByText("File info")).toBeTruthy();
+    expect(screen.queryByText("Re-enrich")).toBeNull();
+  });
+
+  it("surfaces a failed re-enrich as a banner instead of replacing the body", async () => {
+    vi.mocked(readNote).mockResolvedValue(ENRICHED_MD);
+    vi.mocked(reEnrichNoteInPlace).mockResolvedValueOnce({
+      kind: "failed",
+      reason: "model exploded",
+    });
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Re-enrich"));
+
+    expect(await screen.findByText(/model exploded/)).toBeTruthy();
+    expect(screen.getByText(/Hello body text\./)).toBeTruthy();
   });
 });
