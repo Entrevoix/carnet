@@ -132,15 +132,61 @@ found real, previously-missed bugs.
 | `apps/mobile/src/screens/CaptureScreen.test.tsx` | +several | Edit-during-submitting for all 3 modes, generation-counter race tests using `deferred()` to pin interleaving across all 3 discovered race windows |
 | `apps/mobile/src/screens/RecentDetailScreen.test.tsx` | +several | `canReEnrichGeneral` gating (idea/person true, journal false), action-sheet mutual exclusivity across the 3 re-enrich-family rows |
 
+## Addendum: PR #142 post-merge review rounds (Codex + 2 more adversarial passes)
+
+After the PR was opened, `/codex review` (independent OpenAI Codex CLI review) found 3
+more P1 bugs, all variants of the same underlying pattern this report already documents:
+attachment refs / mtime state / timestamps getting silently dropped or corrupted across
+an Edit-mid-enrichment or re-enrich boundary. Two further fix rounds were needed to fully
+close them:
+
+**Round 4 (Codex's 3 findings, all confirmed by independent code reading before fixing):**
+1. Attachments dropped on Idea resubmit-after-edit — `submit()` nulls `submittedDraftRef.current`
+   on every call including a resubmit, losing the first attempt's attachment refs before
+   the resubmit could reuse them. Fixed via a new `preservedAttachmentsRef`, populated by
+   `editInstead()` before the ref gets cleared.
+2. A "canceled" enrichment (Edit tapped, never resubmitted) still wrote its result to disk,
+   because tapping Edit never touches the file, so the in-flight `enrichIdeaInPlace`'s mtime
+   guard still matched. Fixed by having `editInstead()` perform a throwaway `rewriteRawIdea`
+   of the same unedited draft, purely to bump the mtime and invalidate the in-flight call's
+   guard — reusing the existing conflict mechanism rather than adding new cancellation plumbing.
+3. Generalized re-enrich (`reEnrichNoteInPlace`) dropped attachments for Idea notes specifically
+   — the identical bug fixed for Person in round 2, never checked against Idea's own branch
+   of the same function. Fixed via a new `attachmentsFromBody()` helper that reuses the
+   existing `listPairedBinaries()` (found in `writer.ts`, not reinvented) to re-derive
+   attachment refs from the note's current markdown.
+
+**Round 5 (adversarial re-review of round 4's fixes found 3 more, closing the pattern):**
+1. HIGH — the round-4 mtime-bump fix was reachable from `reEnrichSaved()` (the "Finish
+   enrichment" trigger on already-saved notes), whose `rawWriteRef` is a *synthetic*
+   promise (no real write happens there). Edit tapped during a `reEnrichSaved()` call would
+   fire the mtime-bump with the ORIGINAL raw pre-enrichment text, unconditionally overwriting
+   an already-enriched or Syncthing-synced note with a stale raw stub — real data loss. Fixed
+   with a `rawWriteIsRealRef` boolean, `true` only where `submit()` publishes a genuine write.
+2. MEDIUM — the mtime-bump write didn't pin `created:`, so `buildRawIdeaMarkdown`'s default
+   `now = new Date()` silently reset the note's original capture timestamp on every Edit tap.
+   Fixed by threading an explicit `createdAt` through every `writeRawIdea`/`rewriteRawIdea`
+   call in the flow, captured once on first write and reused on every resubmit/bump.
+3. MEDIUM — the attachment merge (round 4, fix 1) had no de-dup, risking a doubled attachment
+   embed when a still-staged attachment appeared in both `preservedAttachmentsRef` and a
+   fresh `persistAttachments()` result. Fixed with a `Map` keyed by `rel` path.
+
+**Verification method for round 5**: the final adversarial review pass used mutation testing
+(temporarily reverting each of the 4 guards and confirming the corresponding regression test
+fails) rather than only reading the code — all 4 mutants were killed by their intended test.
+Recommendation was APPROVE with one LOW (a docblock comment overstating what's suppressed in
+the `reEnrichSaved` path), fixed directly as a one-line comment update.
+
+**Total findings across all rounds on this branch: 5 CRITICAL, 3 HIGH, 5 MEDIUM, 1 LOW** —
+all fixed and independently re-verified (typecheck/lint/full test suite/capture-flow gate
+re-run fresh after every round, not taken on the executor's or reviewer's word).
+
 ## Next Steps
-- [ ] Code review via `/code-review` — three independent code-reviewer passes already run
-      during implementation (see Issues Encountered); a final human/PR-level review is
-      still recommended before merge
 - [ ] Manual on-device validation (Pixel, ADB-connected per project memory) — the plan's
       manual validation checklist (Edit during submitting for all 3 modes, re-enrich a
       normally-enriched Idea note, verify pending-enrich notes still show "Finish
       enrichment") has not been exercised on-device in this session
-- [ ] Create PR via `/prp-pr`
+- [x] Create PR — #142, https://github.com/Entrevoix/carnet/pull/142
 - [ ] If Journal re-enrichment is wanted later, it needs to be entry-scoped (operate on
       one `## HH:MM` section, not the whole day file) — a separate plan, not a resumption
       of this one

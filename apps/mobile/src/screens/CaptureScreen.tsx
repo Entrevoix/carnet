@@ -163,6 +163,21 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // known before the user can resubmit — otherwise a resubmit issued during
   // the write falls through to writeRawIdea again and orphans a duplicate.
   const rawWriteRef = useRef<Promise<{ filepath: string }> | null>(null);
+  // True only while rawWriteRef holds a REAL write. reEnrichSaved publishes a
+  // synthetic already-resolved promise there (it re-enriches a note that is
+  // long since on disk), and Edit's mtime bump must not fire against that: its
+  // draft is the ORIGINAL raw text, so rewriting it would overwrite the
+  // enriched — or Syncthing-updated — note on disk with a stale raw stub.
+  const rawWriteIsRealRef = useRef(false);
+  // `created` for the note the current capture owns, so the resubmit and the
+  // mtime bump both rewrite it with its original capture time instead of
+  // letting buildRawIdeaMarkdown default to a fresh `new Date()` each pass.
+  const rawCreatedAtRef = useRef<Date | null>(null);
+  // The attachments the in-flight attempt already wrote to disk, carried across
+  // an Edit. `pending` is cleared the moment the raw note lands, so the
+  // resubmit's persistAttachments() returns nothing and the rebuilt draft would
+  // come back attachment-less — the binaries stay on disk, unreferenced.
+  const preservedAttachmentsRef = useRef<AttachmentRef[]>([]);
   // Non-null while re-editing an Idea whose raw note is ALREADY on disk. The
   // resubmit must overwrite that exact path — writeRawIdea would derive a fresh
   // slug from the edited text and leave the original orphaned as a duplicate.
@@ -417,6 +432,8 @@ export default function CaptureScreen({ route, navigation }: Props) {
     // already-written filepath the submit path publishes.
     submittedDraftRef.current = ctx;
     rawWriteRef.current = Promise.resolve({ filepath: savedFilepath });
+    // Synthetic: no write happens here, this only publishes the known filepath.
+    rawWriteIsRealRef.current = false;
     setPhase("submitting");
     const baseline = await getModificationTime(savedFilepath);
     if (superseded()) return;
@@ -434,7 +451,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
   /** Escape hatch offered during "submitting": go back to an editable draft
    * instead of waiting for (and accepting) the enrichment now in flight. The
-   * request itself keeps running — only its UI and disk effects are suppressed. */
+   * request itself keeps running — its UI effects are always suppressed, and
+   * its disk write is invalidated too EXCEPT from reEnrichSaved (rawWriteIsRealRef
+   * false there): that path's own mtime baseline is deliberately left alone, so an
+   * abandoned re-enrichment there still lands — re-enriching the same text the
+   * user already had, not a stub, so this is accepted rather than fixed. */
   const editInstead = async (): Promise<void> => {
     // Invalidates every continuation of the attempt now in flight.
     submitGenerationRef.current += 1;
@@ -450,16 +471,43 @@ export default function CaptureScreen({ route, navigation }: Props) {
         setTags(draft.tags);
         setLocation(draft.location ?? null);
       }
+      // Carry the already-written attachments across the edit — see
+      // preservedAttachmentsRef. Kept (not overwritten) when this draft was
+      // stashed before its attachments resolved, so a second Edit tapped during
+      // a resubmit can't wipe what the first one preserved.
+      const draftAttachments = draft?.attachments;
+      if (draftAttachments && draftAttachments.length > 0) {
+        preservedAttachmentsRef.current = draftAttachments;
+      }
       // The raw write may still be in flight; its filepath is what the resubmit
       // must overwrite. Phase stays "submitting" until it resolves, which is
       // what keeps Send disabled and makes the resubmit safe.
       const write = rawWriteRef.current;
       if (write) {
         try {
-          setEditingFilepath((await write).filepath);
+          const { filepath } = await write;
+          setEditingFilepath(filepath);
+          // Edit does not touch the file, so the enrichment still in flight
+          // would find a matching mtime and write the result the user just
+          // walked away from. Re-writing the same draft bumps the mtime, which
+          // makes that call's updateNoteIfUnchanged guard fail — the existing
+          // conflict mechanism, rather than a second cancellation path. Only
+          // Idea needs it; Journal/Person write nothing before enrichment.
+          //
+          // Gated on rawWriteIsRealRef: reEnrichSaved's rawWriteRef is
+          // synthetic and its draft is the ORIGINAL raw text, so bumping there
+          // would overwrite the enriched (or synced) note with a raw stub.
+          // `createdAt` is pinned for the same reason the resubmit pins it —
+          // the default would restamp the note's capture time on every Edit.
+          if (draft && rawWriteIsRealRef.current) {
+            await rewriteRawIdea({ ...draft, filepath }, rawCreatedAtRef.current ?? undefined);
+          }
         } catch {
-          // The write failed, so there is nothing on disk to overwrite — the
-          // resubmit correctly falls through to a fresh writeRawIdea.
+          // The raw write failed, so there is nothing on disk to overwrite —
+          // the resubmit correctly falls through to a fresh writeRawIdea. (A
+          // failed mtime bump lands here too, with editingFilepath already set:
+          // the resubmit still targets the right file, and the in-flight
+          // enrichment simply isn't invalidated — the pre-fix behaviour.)
         }
       }
     }
@@ -480,6 +528,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
     const superseded = (): boolean => submitGenerationRef.current !== myGeneration;
     submittedDraftRef.current = null;
     rawWriteRef.current = null;
+    rawWriteIsRealRef.current = false;
     setPhase("submitting");
     setError(null);
     setDegradedReason(null);
@@ -532,17 +581,38 @@ export default function CaptureScreen({ route, navigation }: Props) {
         // Safe to abandon: nothing is on disk yet, and persistAttachments
         // memoizes by PickedAttachment identity, so a resubmit reuses these.
         if (superseded()) return;
-        const ctx: RawIdeaInput = { ...submittedDraftRef.current, attachments: refs };
-        submittedDraftRef.current = ctx;
         // Resubmitting after Edit: overwrite the note already on disk rather
         // than writing a second one under the edited text's new slug.
         const resuming = editingFilepath;
+        // On a resubmit, `refs` covers only what was staged since the Edit —
+        // the first attempt's binaries are on disk but no longer in `pending`,
+        // so they come from preservedAttachmentsRef or they are silently lost.
+        // De-duped by rel: persistAttachments memoizes by identity, so an
+        // attachment still staged when Edit was tapped comes back in BOTH
+        // lists, and injectAttachments would then embed it twice.
+        const attachments = resuming
+          ? [
+              ...new Map(
+                [...preservedAttachmentsRef.current, ...refs].map((r) => [r.rel, r]),
+              ).values(),
+            ]
+          : refs;
+        const ctx: RawIdeaInput = { ...submittedDraftRef.current, attachments };
+        submittedDraftRef.current = ctx;
+        // Consumed — a later, unrelated capture must not inherit these refs.
+        preservedAttachmentsRef.current = [];
+        // A resubmit rewrites the SAME note, so it keeps that note's original
+        // `created` — the capture moment did not change because the text was
+        // edited. Passed explicitly: the default is a fresh `new Date()`.
+        const createdAt = (resuming && rawCreatedAtRef.current) || new Date();
+        rawCreatedAtRef.current = createdAt;
         const writePromise = resuming
-          ? rewriteRawIdea({ ...ctx, filepath: resuming })
-          : writeRawIdea(ctx);
+          ? rewriteRawIdea({ ...ctx, filepath: resuming }, createdAt)
+          : writeRawIdea(ctx, createdAt);
         // Published before awaiting, so an Edit tapped mid-write can await the
         // same promise and learn the filepath instead of racing it.
         rawWriteRef.current = writePromise;
+        rawWriteIsRealRef.current = true;
         const { filepath, mtime, markdown: rawMarkdown } = await writePromise;
         if (superseded()) return;
         const title = deriveTitle(ctx.text) || "Idea";

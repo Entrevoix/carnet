@@ -27,7 +27,30 @@ import { getFrontmatterTags, extractFrontmatterField, stripFrontmatter } from ".
 import { enrichIdeaInPlace, PENDING_ENRICH_STATUS, type EnrichIdeaOutcome } from "./ideaSaveFirst";
 import { enrichPersonInPlace, type EnrichInPlaceOutcome } from "./personInPlace";
 import type { CaptureMode } from "./storage";
-import { getModificationTime, readNote } from "./writer";
+import {
+  getModificationTime,
+  listPairedBinaries,
+  readNote,
+  type AttachmentRef,
+} from "./writer";
+
+/**
+ * Re-derive a note's attachment refs from its own body.
+ *
+ * Enrichment replaces the whole file, and `applyEnrichedIdea` re-injects only
+ * the attachments it is handed — so anything not passed here is stripped from
+ * the note (the binaries survive on disk, unreferenced). The embeds are the
+ * only record of them at this point: nothing tracks attachments in frontmatter.
+ * `Photos` is the only subdir the image path writes to (see
+ * attachmentPersistence.ts); anything else round-trips as a `## Files` link.
+ */
+function attachmentsFromBody(body: string): AttachmentRef[] {
+  return listPairedBinaries(body).map((b): AttachmentRef => ({
+    kind: b.subdir === "Photos" ? "image" : "file",
+    rel: b.rel,
+    filename: b.filename,
+  }));
+}
 
 /**
  * Outcome of finishing a stalled enrichment. Mirrors `EnhanceProseOutcome` and
@@ -109,6 +132,7 @@ export async function finishPendingEnrichment(input: {
       text,
       tags: getFrontmatterTags(source),
       location,
+      attachments: attachmentsFromBody(source),
     });
 
     if (outcome.kind === "updated") {
@@ -198,6 +222,9 @@ export async function reEnrichNoteInPlace(input: {
           text,
           tags: getFrontmatterTags(source),
           location: extractFrontmatterField(source, "location") ?? undefined,
+          // Same reason personInPlace re-merges tags/location: the model's
+          // output carries none of the note's own embeds.
+          attachments: attachmentsFromBody(source),
         }),
       );
     }
@@ -209,9 +236,11 @@ export async function reEnrichNoteInPlace(input: {
         context: "",
         // The model's output carries none of the user's filing metadata, so
         // the note's own tags/location are re-merged onto it — otherwise a
-        // re-enrich silently strips them from the vault.
+        // re-enrich silently strips them from the vault. The note's embeds go
+        // back for the same reason (a Person note's card photo lives in one).
         tags: getFrontmatterTags(source),
         location: extractFrontmatterField(source, "location") ?? undefined,
+        attachments: attachmentsFromBody(source),
       }),
     );
   } catch (e: unknown) {

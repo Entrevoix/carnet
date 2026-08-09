@@ -8,6 +8,20 @@ vi.mock("./writer", () => ({
   readNote: vi.fn(async () => {
     throw new Error("not stubbed");
   }),
+  // Stand-in for the real listPairedBinaries (unit-tested in writer.test.ts),
+  // matching its `../{subdir}/{name}` convention and de-dup behaviour — the
+  // real module can't be imported here (see the importActual note below).
+  listPairedBinaries: vi.fn((body: string) => {
+    const out: { subdir: string; filename: string; rel: string }[] = [];
+    const seen = new Set<string>();
+    for (const m of body.matchAll(/\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/g)) {
+      const rel = `../${m[1]}/${m[2]}`;
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      out.push({ subdir: m[1], filename: m[2], rel });
+    }
+    return out;
+  }),
 }));
 // Fully mocked, not importActual: the real module reaches expo-modules-core,
 // which needs a React Native runtime (`__DEV__`). Same approach as
@@ -83,6 +97,20 @@ describe("finishPendingEnrichment", () => {
     expect(arg.location).toBe("47.20114,10.11660");
   });
 
+  it("preserves the attachments the raw note already embeds", async () => {
+    // A save-first raw note embeds its binaries before enrichment runs, so the
+    // enriched overwrite has to be handed them back or they are dropped.
+    const pendingWithImage = PENDING.replace(
+      "Stroudsburg",
+      "![](../Photos/sketch.png)\n\nStroudsburg",
+    );
+    mockReadNote.mockResolvedValue(pendingWithImage);
+    await finishPendingEnrichment({ body: pendingWithImage, filepath: "f.md" });
+    expect(mockEnrich.mock.calls[0][0].attachments).toEqual([
+      { kind: "image", rel: "../Photos/sketch.png", filename: "sketch.png" },
+    ]);
+  });
+
   it("captures the mtime baseline BEFORE the model call", async () => {
     // Same ordering enhanceProse.ts uses: a baseline taken after the call would
     // match whatever a mid-flight edit produced, making the guard useless.
@@ -152,6 +180,25 @@ location: 47.20114,10.11660
 Stroudsburg Pennsylvania and the Pocono Mountains region.
 `;
 
+/** Same note, plus the two embed shapes injectAttachments emits: an image
+ * under the H1 and a `## Files` link. */
+const WITH_ATTACHMENTS = `---
+created: 2026-08-08T13:54:22.852Z
+status: seedling
+tags: [travel]
+location: 47.20114,10.11660
+---
+# Pocono notes
+
+![](../Photos/sketch.png)
+
+Stroudsburg Pennsylvania and the Pocono Mountains region.
+
+## Files
+
+[spec.pdf](../Files/spec.pdf)
+`;
+
 describe("isReEnrichableMode", () => {
   it("accepts the one-note-per-file text modes", () => {
     expect(isReEnrichableMode("idea")).toBe(true);
@@ -204,8 +251,31 @@ describe("reEnrichNoteInPlace", () => {
       context: "",
       tags: ["travel"],
       location: "47.20114,10.11660",
+      attachments: [],
     });
     expect(mockEnrich).not.toHaveBeenCalled();
+  });
+
+  it("carries the note's existing attachments back into the Idea enrichment", async () => {
+    // Regression: the enriched write replaces the whole file, so an attachment
+    // not handed to applyEnrichedIdea is stripped from the note and its binary
+    // is orphaned on disk. The body's embeds are the only record of them.
+    mockReadNote.mockResolvedValue(WITH_ATTACHMENTS);
+    await reEnrichNoteInPlace({ body: WITH_ATTACHMENTS, filepath: "f.md", mode: "idea" });
+    expect(mockEnrich.mock.calls[0][0].attachments).toEqual([
+      { kind: "image", rel: "../Photos/sketch.png", filename: "sketch.png" },
+      { kind: "file", rel: "../Files/spec.pdf", filename: "spec.pdf" },
+    ]);
+  });
+
+  it("carries the note's existing attachments back into the Person enrichment", async () => {
+    // A Person note's card photo lives in exactly such an embed.
+    mockReadNote.mockResolvedValue(WITH_ATTACHMENTS);
+    await reEnrichNoteInPlace({ body: WITH_ATTACHMENTS, filepath: "p.md", mode: "person" });
+    expect(mockPerson.mock.calls[0][0].attachments).toEqual([
+      { kind: "image", rel: "../Photos/sketch.png", filename: "sketch.png" },
+      { kind: "file", rel: "../Files/spec.pdf", filename: "spec.pdf" },
+    ]);
   });
 
   it("refuses an unsupported mode without touching the file", async () => {
