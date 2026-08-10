@@ -127,6 +127,18 @@ describe("finishPendingEnrichment", () => {
     expect(order).toEqual(["mtime", "enrich"]);
   });
 
+  it("hands the on-disk note to both in-place paths so their frontmatter survives", async () => {
+    // The prompts are fed the BODY only, so every frontmatter field (a Person
+    // note's email/phone/company, an Idea's hand-added field) is invisible to
+    // the model and comes back missing unless the source note goes along.
+    const onDisk = ENRICHED.replace("---\n", "---\nemail: ada@example.com\n");
+    mockReadNote.mockResolvedValue(onDisk);
+    await reEnrichNoteInPlace({ body: ENRICHED, filepath: "p.md", mode: "person" });
+    expect(mockPerson.mock.calls[0][0].preserveFrontmatterFrom).toBe(onDisk);
+    await reEnrichNoteInPlace({ body: ENRICHED, filepath: "f.md", mode: "idea" });
+    expect(mockEnrich.mock.calls[0][0].preserveFrontmatterFrom).toBe(onDisk);
+  });
+
   it("prefers the file's CURRENT content over the caller's snapshot", async () => {
     mockReadNote.mockResolvedValue(
       PENDING.replace("Stroudsburg Pennsylvania", "EDITED ON DISK"),
@@ -250,6 +262,7 @@ describe("reEnrichNoteInPlace", () => {
       expectedContent: ENRICHED,
       ocrResult: "Stroudsburg Pennsylvania and the Pocono Mountains region.",
       context: "",
+      preserveFrontmatterFrom: ENRICHED,
       tags: ["travel"],
       location: "47.20114,10.11660",
       attachments: [],

@@ -143,6 +143,7 @@ import {
   writeRawIdea,
 } from "./ideaSaveFirst";
 import { getModificationTime, updateNoteIfUnchanged, readNote } from "./writer";
+import { extractFrontmatterField } from "./frontmatter";
 
 function clearFiles(): void {
   _files.clear();
@@ -478,5 +479,113 @@ describe("rewriteRawIdea", () => {
     await rewriteRawIdea({ filepath: first.filepath, text: "Omega", tags: [] });
     expect([..._files.keys()].filter((u) => u.endsWith(".md"))).toEqual([first.filepath]);
     expect(first.filepath).toContain("alpha");
+  });
+});
+
+// ── rev — the raw note's revision token ──────────────────────────────────────
+
+describe("rev (raw revision token)", () => {
+  const NOW = new Date("2026-07-04T12:00:00.000Z");
+
+  it("changes on every build, even for byte-identical input", () => {
+    const input = { text: "Build a kite", tags: [] };
+    const a = buildRawIdeaMarkdown(input, NOW);
+    const b = buildRawIdeaMarkdown(input, NOW);
+    expect(extractFrontmatterField(a, "rev")).not.toBeNull();
+    expect(extractFrontmatterField(a, "rev")).not.toBe(extractFrontmatterField(b, "rev"));
+    expect(a).not.toBe(b);
+  });
+
+  it("is the ONLY thing that differs when the draft is unchanged", () => {
+    const input = { text: "Build a kite", tags: ["hobby"] };
+    const a = buildRawIdeaMarkdown(input, NOW, "rev-a");
+    const b = buildRawIdeaMarkdown(input, NOW, "rev-b");
+    expect(a.replace("rev-a", "X")).toBe(b.replace("rev-b", "X"));
+  });
+
+  it("Edit on an UNEDITED draft still invalidates the in-flight enrichment on a SAF vault", async () => {
+    // SAF vaults report no mtime, so updateNoteIfUnchanged falls back to
+    // comparing raw bytes — and before `rev`, re-writing the same unedited
+    // draft produced byte-identical content, so the enrichment the user walked
+    // away from saw no conflict and landed anyway.
+    const { filepath, markdown } = await writeRawIdea({ text: "Build a kite", tags: [] }, NOW);
+
+    // Edit tapped with nothing typed yet: same text, same pinned `created`.
+    await rewriteRawIdea({ filepath, text: "Build a kite", tags: [] }, NOW);
+
+    // The abandoned enrichment finishes and tries to write with its pre-Edit
+    // baseline. `expectedMtime: null` is what SAF always reports.
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: null,
+      expectedContent: markdown,
+      enrichedMarkdown: "---\nstatus: seedling\n---\n# Polished Kite\n\nEnriched.\n",
+      tags: [],
+    });
+
+    expect(status).toBe("conflict");
+    const onDisk = await readNote(filepath);
+    expect(onDisk).not.toContain("# Polished Kite");
+    expect(onDisk).toContain(`status: ${PENDING_ENRICH_STATUS}`);
+  });
+
+  it("does not survive a successful enrichment", async () => {
+    const { filepath, mtime } = await writeRawIdea({ text: "Kite idea", tags: [] });
+    expect(_files.get(filepath)!.content).toContain("rev: ");
+
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: mtime,
+      enrichedMarkdown: "---\ncreated: 2026-07-04\nstatus: seedling\n---\n# Kite\n",
+      tags: [],
+    });
+
+    expect(status).toBe("updated");
+    // The model's frontmatter replaces the raw block wholesale — no cleanup
+    // step is needed for `rev`, exactly as with `status: pending-enrich`.
+    const content = _files.get(filepath)!.content;
+    expect(content).not.toContain("rev: ");
+    expect(content).not.toContain(PENDING_ENRICH_STATUS);
+  });
+
+  it("is never carried onto an enriched note by frontmatter preservation", async () => {
+    // The re-enrich path preserves the source note's own fields; `rev` and
+    // `status` are the two that must NOT come along.
+    const { filepath, mtime, markdown } = await writeRawIdea({ text: "Kite idea", tags: [] });
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: mtime,
+      preserveFrontmatterFrom: markdown,
+      enrichedMarkdown: "---\ncreated: 2026-07-04\nstatus: seedling\n---\n# Kite\n",
+      tags: [],
+    });
+    expect(status).toBe("updated");
+    const content = _files.get(filepath)!.content;
+    expect(content).not.toContain("rev: ");
+    expect(content).not.toContain(PENDING_ENRICH_STATUS);
+  });
+});
+
+// ── Generic frontmatter preservation on the Idea re-enrich path ───────────────
+
+describe("applyEnrichedIdea — frontmatter preservation", () => {
+  it("keeps a hand-added field the model's output knows nothing about", async () => {
+    const { filepath, mtime } = await writeRawIdea({ text: "Kite idea", tags: [] });
+    const savedNote =
+      "---\ncreated: 2026-07-04\nstatus: seedling\nproject: kites\ntags: [idea]\n---\n# Kite\n";
+
+    await applyEnrichedIdea({
+      filepath,
+      expectedMtime: mtime,
+      preserveFrontmatterFrom: savedNote,
+      enrichedMarkdown: "---\ncreated: 2026-07-05\nstatus: seedling\ntags: [idea]\n---\n# Kite v2\n",
+      tags: [],
+    });
+
+    const content = _files.get(filepath)!.content;
+    expect(content).toContain("project: kites");
+    expect(content).toContain("# Kite v2");
+    // The model's own values still win.
+    expect(content).toContain("created: 2026-07-05");
   });
 });

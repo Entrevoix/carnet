@@ -18,7 +18,7 @@
  */
 
 import { enrichPerson, isNotConfiguredError, isPermanentError } from "./dispatcher";
-import { upsertFrontmatterField } from "./frontmatter";
+import { preserveFrontmatterFields, upsertFrontmatterField } from "./frontmatter";
 import { mergeUserTags } from "./tags";
 import { injectAttachments, updateNoteIfUnchanged, type AttachmentRef } from "./writer";
 
@@ -40,6 +40,9 @@ export interface EnrichPersonInPlaceInput {
   expectedContent?: string | null;
   ocrResult: string;
   context: string;
+  /** The note as it exists on disk. Every frontmatter field it carries that the
+   * model's output leaves empty is carried over — see preserveFrontmatterFields. */
+  preserveFrontmatterFrom?: string;
   /** Re-merged onto the model's output, which knows nothing about them. */
   tags: string[];
   location?: string;
@@ -73,7 +76,20 @@ export async function enrichPersonInPlace(
     return { kind: "failed", transient, reason };
   }
 
-  let md = injectAttachments(enriched, input.attachments ?? []);
+  // Before anything else: the re-enrich prompt is fed the BODY only, so every
+  // contact field the note carried (email/phone/company/linkedin/met/where, and
+  // anything the user added by hand) is invisible to the model and comes back
+  // empty or missing. Restoring them generically is deliberate — the named
+  // tags → location → attachments allowlist below has had to grow once per
+  // field, each time after that field was already lost from someone's vault.
+  //
+  // `tags` is excluded because mergeUserTags below owns it outright — leaving
+  // preservation anywhere near the field it does not own is how the model's own
+  // fresh tags got overwritten with the note's older list.
+  let md = input.preserveFrontmatterFrom
+    ? preserveFrontmatterFields(enriched, input.preserveFrontmatterFrom, ["tags"])
+    : enriched;
+  md = injectAttachments(md, input.attachments ?? []);
   md = mergeUserTags(md, input.tags);
   if (input.location) md = upsertFrontmatterField(md, "location", input.location);
 

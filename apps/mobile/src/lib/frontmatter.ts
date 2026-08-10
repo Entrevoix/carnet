@@ -281,6 +281,152 @@ export function upsertFrontmatterField(
   return [lines[0], ...newInner, ...tail].join("\n") + body;
 }
 
+/** One top-level frontmatter key with its raw source lines: the `key:` line
+ * plus any block-list / folded continuation lines beneath it. Lines that belong
+ * to no key (a leading comment, a stray blank) carry `key: null`. */
+interface FieldGroup {
+  key: string | null;
+  lines: string[];
+}
+
+/**
+ * A top-level key line: something other than whitespace, `#` or `-` in column
+ * 0, then everything up to the first colon, which must end the line or be
+ * followed by whitespace.
+ *
+ * Deliberately NOT restricted to an identifier charset. Obsidian's Properties
+ * UI lets a user name a property anything — `date created:`, `Read status:`,
+ * `pdf.page:` are all ordinary — and an identifier-only pattern silently folds
+ * those lines into the PRECEDING group, where they are dropped the moment that
+ * group isn't spliced through. Data loss in the function whose whole job is to
+ * prevent it.
+ */
+const KEY_LINE = /^([^\s#-][^:]*):(\s|$)/;
+
+/** Split a frontmatter block's inner lines into per-key groups, keeping every
+ * line byte-exact so a group can be re-emitted verbatim. */
+function groupFrontmatterLines(inner: string[]): FieldGroup[] {
+  const groups: FieldGroup[] = [];
+  for (const line of inner) {
+    // Anchored at column 0, so only top-level keys start a new group;
+    // indented lines and `- item` list entries fall through to the previous.
+    const match = KEY_LINE.exec(line);
+    if (match) {
+      groups.push({ key: match[1], lines: [line] });
+    } else if (groups.length > 0) {
+      groups[groups.length - 1].lines.push(line);
+    } else {
+      groups.push({ key: null, lines: [line] });
+    }
+  }
+  return groups;
+}
+
+/** True when a group carries an actual value — an inline scalar, or block-list
+ * items beneath a bare key. A bare `key:` and the quoted-empty `key: ""` that
+ * buildPersonPrompt emits for an unreadable field both count as EMPTY. */
+function groupHasValue(group: FieldGroup): boolean {
+  if (group.lines.slice(1).some((line) => line.trim() !== "")) return true;
+  const head = group.lines[0];
+  return stripQuotes(head.slice(head.indexOf(":") + 1).trim()) !== "";
+}
+
+/**
+ * Overlay `original`'s frontmatter fields onto `enriched` for every field the
+ * enriched markdown does not itself provide — preserve-if-absent, model wins.
+ *
+ * Re-enrichment replaces the whole note with the model's output, and the model
+ * knows nothing about fields the user added by hand (a Person note's `email`,
+ * `phone`, `company`, …). Restoring them one named field at a time is the
+ * allowlist this replaces: every new field a note can carry has had to be added
+ * to that list after it was already silently dropped from someone's vault.
+ *
+ * "Provides" means a NON-EMPTY value, so the `email: ""` placeholder the person
+ * prompt emits for an unreadable card field cannot blank out the address the
+ * user typed in themselves.
+ *
+ * Preserved fields are SPLICED as their original source lines, byte-for-byte —
+ * not parsed to a value and re-serialized. Re-serializing round-trips through a
+ * lossy representation: reading strips quotes and writing emits bare, so
+ * `note: "Met at 3: the cafe"` would come back as an unescaped `: ` mid-value
+ * and `quip: "#1 fan"` as a comment — and an invalid line fails the WHOLE
+ * frontmatter block in Obsidian, emptying the note's entire Properties pane.
+ * Splicing also carries block-form values (`aliases:` + `- item` lines, which
+ * Obsidian writes by default) across intact.
+ *
+ * Key names are read loosely on purpose — Obsidian property names may contain
+ * spaces and dots (`date created:`, `Read status:`) — see KEY_LINE.
+ *
+ * Known limitation: a block-form field present-but-EMPTY in `enriched` is
+ * replaced by the original's whole group, and a field's position within the
+ * block is not preserved when it has to be appended. Neither loses data. A
+ * malformed `enriched` block (no exact `---` closing line) is returned
+ * unchanged rather than spliced.
+ *
+ * `exclude` is for fields another step owns outright — `tags` (mergeUserTags)
+ * and the raw note's own bookkeeping. Callers must pass them: this function
+ * cannot tell an owned field from a user's.
+ */
+export function preserveFrontmatterFields(
+  enriched: string,
+  original: string,
+  exclude: readonly string[] = [],
+): string {
+  const excluded = new Set(exclude);
+  const carried = new Map<string, string[]>();
+  for (const group of groupFrontmatterLines(frontmatterInnerLines(splitFrontmatter(original).header))) {
+    if (group.key === null || excluded.has(group.key) || carried.has(group.key)) continue;
+    // A CRLF-sourced note would otherwise splice stray carriage returns into an
+    // LF document; every other writer here emits LF.
+    if (groupHasValue(group)) carried.set(group.key, group.lines.map((l) => l.replace(/\r$/, "")));
+  }
+  if (carried.size === 0) return enriched;
+
+  const { header, body } = splitFrontmatter(enriched);
+  if (!header) {
+    return `---\n${[...carried.values()].flat().join("\n")}\n---\n${enriched}`;
+  }
+  const headerLines = header.split("\n");
+  const closeIdx = headerLines.findIndex((line, i) => i > 0 && line.trim() === "---");
+  // splitFrontmatter accepts a `----` fence that this exact-match scan rejects.
+  // With no closing line to splice before, the carried fields would land in the
+  // body as stray prose — leave the malformed block alone instead.
+  if (closeIdx === -1) return enriched;
+  const inner = headerLines.slice(1, closeIdx);
+  const tail = headerLines.slice(closeIdx);
+
+  const newInner: string[] = [];
+  /** Keys whose empty line in the model's output we filled from `original`. */
+  const filled = new Set<string>();
+  for (const group of groupFrontmatterLines(inner)) {
+    if (group.key === null) {
+      newInner.push(...group.lines);
+      continue;
+    }
+    const replacement = carried.get(group.key);
+    if (groupHasValue(group)) {
+      newInner.push(...group.lines);
+    } else if (filled.has(group.key)) {
+      // The model emitted this key twice and the first copy already took the
+      // carried value; keeping this one leaves a duplicate empty key behind.
+      // Untouched when we filled nothing — deduping the model's own output is
+      // not this function's business.
+      continue;
+    } else if (replacement) {
+      // Replacing the empty group in place (rather than appending the carried
+      // lines) is what keeps the block free of duplicate keys.
+      newInner.push(...replacement);
+      filled.add(group.key);
+    } else {
+      newInner.push(...group.lines);
+    }
+    carried.delete(group.key);
+  }
+  newInner.push(...[...carried.values()].flat());
+
+  return [headerLines[0], ...newInner, ...tail].join("\n") + body;
+}
+
 /**
  * Read the `tags` field, accepting both the inline flow form `tags: [a, b]`
  * and the YAML block form (`tags:` followed by indented `- item` lines). A

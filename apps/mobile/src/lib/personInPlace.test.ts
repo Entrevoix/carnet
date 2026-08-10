@@ -190,3 +190,153 @@ describe("enrichPersonInPlace", () => {
     );
   });
 });
+
+// ── Generic frontmatter preservation (contact fields survive a re-enrich) ─────
+
+describe("enrichPersonInPlace — frontmatter preservation", () => {
+  /** A real saved Person note: the prompt's full field set, plus a field the
+   * user added by hand. The re-enrich prompt is fed the BODY only, so the model
+   * sees none of this. */
+  const SAVED_PERSON = [
+    "---",
+    "name: Ada Lovelace",
+    "company: Analytical Engines Ltd",
+    "title: Analyst",
+    "email: ada@example.com",
+    "phone: +44 20 7946 0000",
+    "linkedin: linkedin.com/in/ada",
+    "met: 2026-05-01",
+    "where: Bletchley",
+    "assistant: Charles",
+    "tags: [person, networking]",
+    "---",
+    "# Ada Lovelace",
+    "",
+    "Analyst.",
+  ].join("\n");
+
+  const written = (): string => mockUpdate.mock.calls[0][1];
+
+  it("keeps every contact field the model's output does not itself set", async () => {
+    await enrichPersonInPlace({
+      filepath: "p.md",
+      expectedMtime: 2000,
+      ocrResult: "Ada Lovelace, Analyst",
+      context: "",
+      preserveFrontmatterFrom: SAVED_PERSON,
+      tags: [],
+    });
+    const md = written();
+    expect(md).toContain("email: ada@example.com");
+    expect(md).toContain("phone: +44 20 7946 0000");
+    expect(md).toContain("company: Analytical Engines Ltd");
+    expect(md).toContain("linkedin: linkedin.com/in/ada");
+    expect(md).toContain("met: 2026-05-01");
+    expect(md).toContain("where: Bletchley");
+    // Not an allowlist: a field carnet has never heard of survives too.
+    expect(md).toContain("assistant: Charles");
+  });
+
+  it("lets the model's own value win over the note's", async () => {
+    mockPerson.mockResolvedValue({
+      markdown: "---\ntitle: Countess of Lovelace\n---\n# Ada Lovelace\n",
+      model: "test",
+    });
+    await enrichPersonInPlace({
+      filepath: "p.md",
+      expectedMtime: 2000,
+      ocrResult: "x",
+      context: "",
+      preserveFrontmatterFrom: SAVED_PERSON,
+      tags: [],
+    });
+    expect(written()).toContain("title: Countess of Lovelace");
+    expect(written()).not.toContain("title: Analyst");
+  });
+
+  it("treats the prompt's empty placeholder as absent, not as a value", async () => {
+    // buildPersonPrompt emits `email: ""` for anything it can't read off the
+    // card — a presence-only test would let that blank the user's address.
+    mockPerson.mockResolvedValue({
+      markdown: '---\nname: Ada Lovelace\nemail: ""\nphone: ""\n---\n# Ada Lovelace\n',
+      model: "test",
+    });
+    await enrichPersonInPlace({
+      filepath: "p.md",
+      expectedMtime: 2000,
+      ocrResult: "x",
+      context: "",
+      preserveFrontmatterFrom: SAVED_PERSON,
+      tags: [],
+    });
+    expect(written()).toContain("email: ada@example.com");
+    expect(written()).toContain("phone: +44 20 7946 0000");
+  });
+
+  it("is inert when no source note is given", async () => {
+    await enrichPersonInPlace({
+      filepath: "p.md",
+      expectedMtime: 2000,
+      ocrResult: "x",
+      context: "",
+      tags: [],
+    });
+    expect(written()).not.toContain("email:");
+  });
+});
+
+// ── tags belong to mergeUserTags, never to frontmatter preservation ──────────
+
+describe("enrichPersonInPlace — tags are left to mergeUserTags", () => {
+  /** The note on disk carries the tags from a PREVIOUS enrichment. */
+  const SAVED_PERSON =
+    "---\nname: Alice\nemail: alice@example.com\ntags: [person, networking]\n---\n# Alice\n";
+
+  it("keeps the model's fresh tags when it emits them in block form", async () => {
+    // Regression: block-form tags read as empty, so preservation treated the
+    // field as "not provided" and overwrote the model's whole list with the
+    // note's older one BEFORE mergeUserTags could merge them — `fintech` and
+    // `conference-2026` silently vanished from the vault.
+    mockPerson.mockResolvedValue({
+      markdown: [
+        "---",
+        "name: Alice",
+        "tags:",
+        "  - person",
+        "  - fintech",
+        "  - conference-2026",
+        "---",
+        "# Alice",
+      ].join("\n"),
+      model: "test",
+    });
+    await enrichPersonInPlace({
+      filepath: "p.md",
+      expectedMtime: 2000,
+      ocrResult: "Alice",
+      context: "",
+      preserveFrontmatterFrom: SAVED_PERSON,
+      tags: ["alice-corp"],
+    });
+    const md = mockUpdate.mock.calls[0][1];
+    expect(md).toContain("tags: [person, fintech, conference-2026, alice-corp]");
+    // The contact field is still preserved — only `tags` is hands-off.
+    expect(md).toContain("email: alice@example.com");
+  });
+
+  it("keeps the model's fresh tags when it emits them in flow form", async () => {
+    mockPerson.mockResolvedValue({
+      markdown: "---\nname: Alice\ntags: [person, fintech]\n---\n# Alice\n",
+      model: "test",
+    });
+    await enrichPersonInPlace({
+      filepath: "p.md",
+      expectedMtime: 2000,
+      ocrResult: "Alice",
+      context: "",
+      preserveFrontmatterFrom: SAVED_PERSON,
+      tags: ["alice-corp"],
+    });
+    expect(mockUpdate.mock.calls[0][1]).toContain("tags: [person, fintech, alice-corp]");
+  });
+});

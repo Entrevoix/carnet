@@ -136,6 +136,11 @@ export async function finishPendingEnrichment(input: {
       expectedMtime: baseline,
       expectedContent,
       text,
+      // The stub's own frontmatter is carnet's, but this note has been sitting
+      // on disk since the failed enrich — long enough for the user (or a synced
+      // workstation) to have added fields to it. `rev`/`status`/`tags` are
+      // excluded downstream; see NEVER_PRESERVED_FIELDS.
+      preserveFrontmatterFrom: source,
       tags: getFrontmatterTags(source),
       location,
       attachments: attachmentsFromBody(source),
@@ -231,6 +236,10 @@ export async function reEnrichNoteInPlace(input: {
           expectedMtime: baseline,
           expectedContent,
           text,
+          // A saved Idea can carry frontmatter carnet never wrote (a hand-added
+          // `project:`, an Obsidian plugin's field). The model sees the body
+          // only, so without this they are dropped on every re-enrich.
+          preserveFrontmatterFrom: source,
           tags: getFrontmatterTags(source),
           location: extractFrontmatterField(source, "location") ?? undefined,
           // Same reason personInPlace re-merges tags/location: the model's
@@ -246,6 +255,9 @@ export async function reEnrichNoteInPlace(input: {
         expectedContent,
         ocrResult: text,
         context: "",
+        // The contact fields (email/phone/company/linkedin/…) live in the
+        // frontmatter this prompt never sees, so they come back empty.
+        preserveFrontmatterFrom: source,
         // The model's output carries none of the user's filing metadata, so
         // the note's own tags/location are re-merged onto it — otherwise a
         // re-enrich silently strips them from the vault. The note's embeds go

@@ -28,13 +28,39 @@ import {
   writeIdea,
   type AttachmentRef,
 } from "./writer";
-import { upsertFrontmatterField } from "./frontmatter";
+import { preserveFrontmatterFields, upsertFrontmatterField } from "./frontmatter";
 import { mergeUserTags } from "./tags";
 import { enrichIdea, isNotConfiguredError, isPermanentError } from "./dispatcher";
 
 /** Frontmatter `status` value stamped on the raw note before enrichment lands.
  * Enrichment overwrites the whole note (including this) with the LLM result. */
 export const PENDING_ENRICH_STATUS = "pending-enrich";
+
+/** Frontmatter key holding the raw note's revision token. Transient: it only
+ * exists while the note is `pending-enrich`, and enrichment replaces the whole
+ * frontmatter block with the model's own, so it never reaches an enriched note. */
+export const RAW_REV_FIELD = "rev";
+
+/**
+ * A fresh revision token, regenerated on EVERY raw write.
+ *
+ * The Edit-during-enrichment escape hatch invalidates the in-flight enrichment
+ * by rewriting the raw note, relying on updateNoteIfUnchanged to then see the
+ * file as changed. On SAF vaults that guard has no mtime and compares raw bytes
+ * — so a user who taps Edit before typing anything produced a byte-IDENTICAL
+ * rewrite, no conflict was detected, and the enrichment they walked away from
+ * landed anyway. Content equality cannot express "this file was written again";
+ * this token can, because it changes even when nothing else does.
+ *
+ * Non-crypto by design, same generator shape as CaptureScreen's `localId` (RN
+ * has no crypto.getRandomValues without a native polyfill). It is a change
+ * detector, not an identifier: it needs to differ from the previous token, not
+ * to be globally unique or unguessable. Time alone would not do — two writes
+ * inside the same millisecond are exactly the Edit-then-resubmit case.
+ */
+function newRevToken(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 /** The captured inputs a save-first Idea needs. Attachments are the post-write
  * rel-path references (binaries already on disk), matching the online + offline
@@ -76,16 +102,25 @@ export function deriveRawIdeaSlug(text: string): string {
 
 /**
  * Build the deterministic client-side markdown written immediately on Save,
- * before any enrichment. Frontmatter carries `created` (ISO) and
- * `status: pending-enrich`; the body is the user's raw text verbatim. User tags
- * and location are injected the same way the enriched paths do, and attachments
- * are folded in so the transient note already references its binaries.
+ * before any enrichment. Frontmatter carries `created` (ISO),
+ * `status: pending-enrich` and `rev`; the body is the user's raw text verbatim.
+ * User tags and location are injected the same way the enriched paths do, and
+ * attachments are folded in so the transient note already references its
+ * binaries.
  *
- * Pure — pass `now` for deterministic output in tests.
+ * `created` and `rev` are deliberate opposites: `created` is pinned across an
+ * Edit-and-resubmit (the capture moment did not change because the text was
+ * edited), while `rev` MUST differ on every single call — see newRevToken.
+ *
+ * Pass `now`/`rev` for deterministic output in tests.
  */
-export function buildRawIdeaMarkdown(input: RawIdeaInput, now: Date = new Date()): string {
+export function buildRawIdeaMarkdown(
+  input: RawIdeaInput,
+  now: Date = new Date(),
+  rev: string = newRevToken(),
+): string {
   const body = input.text.trim();
-  let md = `---\ncreated: ${now.toISOString()}\nstatus: ${PENDING_ENRICH_STATUS}\n---\n${body}\n`;
+  let md = `---\ncreated: ${now.toISOString()}\nstatus: ${PENDING_ENRICH_STATUS}\n${RAW_REV_FIELD}: ${rev}\n---\n${body}\n`;
   // Order matches confirmSave: attachments first (so the tag/location merges see
   // the final body), then user tags, then location.
   md = injectAttachments(md, input.attachments ?? []);
@@ -163,10 +198,27 @@ export interface ApplyEnrichedIdeaInput {
   expectedContent?: string | null;
   /** Raw enriched markdown from enrichIdea — its own frontmatter + H1. */
   enrichedMarkdown: string;
+  /** The note as it exists on disk, when that note may carry frontmatter the
+   * user added by hand. Any field it has that the model's output does not is
+   * carried over — see preserveFrontmatterFields. Omit for a note whose
+   * frontmatter carnet wrote itself (the save-first raw stub): there is nothing
+   * of the user's in it to preserve. */
+  preserveFrontmatterFrom?: string;
   tags: string[];
   location?: string;
   attachments?: AttachmentRef[];
 }
+
+/** Fields preserveFrontmatterFields must keep its hands off.
+ *
+ * `rev` is the raw write's change detector and `status: pending-enrich` would
+ * leave a just-enriched note showing a permanent pending chip — neither may
+ * survive into an enriched note even when the model omits the field itself.
+ *
+ * `tags` belongs to mergeUserTags, which runs after this and merges the model's
+ * tags with the user's. Preserving it first would overwrite the model's own
+ * (block-form) tag list before that merge ever sees it. */
+const NEVER_PRESERVED_FIELDS = [RAW_REV_FIELD, "status", "tags"] as const;
 
 /**
  * Overwrite the raw Idea note in place with the enriched result, preserving the
@@ -178,7 +230,14 @@ export interface ApplyEnrichedIdeaInput {
 export async function applyEnrichedIdea(
   input: ApplyEnrichedIdeaInput,
 ): Promise<{ status: "updated" | "conflict"; markdown: string }> {
-  let md = injectAttachments(input.enrichedMarkdown, input.attachments ?? []);
+  let md = input.preserveFrontmatterFrom
+    ? preserveFrontmatterFields(
+        input.enrichedMarkdown,
+        input.preserveFrontmatterFrom,
+        NEVER_PRESERVED_FIELDS,
+      )
+    : input.enrichedMarkdown;
+  md = injectAttachments(md, input.attachments ?? []);
   md = mergeUserTags(md, input.tags);
   if (input.location) md = upsertFrontmatterField(md, "location", input.location);
   const result = await updateNoteIfUnchanged(
@@ -197,6 +256,8 @@ export interface EnrichIdeaInPlaceInput {
   expectedMtime: number | null;
   /** Content baseline for SAF vaults — see ApplyEnrichedIdeaInput. */
   expectedContent?: string | null;
+  /** See ApplyEnrichedIdeaInput. */
+  preserveFrontmatterFrom?: string;
   text: string;
   tags: string[];
   location?: string;
@@ -242,6 +303,7 @@ export async function enrichIdeaInPlace(
     filepath: input.filepath,
     expectedMtime: input.expectedMtime,
     expectedContent: input.expectedContent,
+    preserveFrontmatterFrom: input.preserveFrontmatterFrom,
     enrichedMarkdown: enriched,
     tags: input.tags,
     location: input.location,
