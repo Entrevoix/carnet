@@ -126,6 +126,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // (confirmSave online, or enqueue offline) so cancelling at preview leaves
   // no orphaned binaries on disk. Idea + Journal only.
   const [pending, setPending] = useState<PickedAttachment[]>([]);
+  // Mirrors preservedAttachmentsRef for display only: attachments already
+  // written to disk from an earlier submit in this capture (Edit tapped
+  // mid-enrichment), shown read-only in the meta sheet so the user doesn't
+  // wrongly conclude they need to re-attach — see CaptureMetaSheet.
+  const [savedAttachments, setSavedAttachments] = useState<
+    { filename: string; kind: "image" | "file" }[]
+  >([]);
   // User-entered tags, merged into the note frontmatter at write time (both the
   // online and offline paths). knownTags backs the autocomplete.
   const [tags, setTags] = useState<string[]>([]);
@@ -358,6 +365,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setTranscript("");
       setOcrText("");
       setPending([]);
+      setSavedAttachments([]);
       setTags([]);
       setLocation(null);
       void clearDraft(mode).catch(() => undefined);
@@ -510,6 +518,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       const draftAttachments = draft?.attachments;
       if (draftAttachments && draftAttachments.length > 0) {
         preservedAttachmentsRef.current = draftAttachments;
+        setSavedAttachments(draftAttachments.map((a) => ({ filename: a.filename, kind: a.kind })));
       }
       // The raw write may still be in flight; its filepath is what the resubmit
       // must overwrite. Phase stays "submitting" until it resolves, which is
@@ -633,6 +642,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         submittedDraftRef.current = ctx;
         // Consumed — a later, unrelated capture must not inherit these refs.
         preservedAttachmentsRef.current = [];
+        setSavedAttachments([]);
         // A resubmit rewrites the SAME note, so it keeps that note's original
         // `created` — the capture moment did not change because the text was
         // edited. Passed explicitly: the default is a fresh `new Date()`.
@@ -687,6 +697,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         // The capture is safely persisted — clear the inputs so a back-out
         // leaves nothing staged and the next capture starts fresh.
         setPending([]);
+      setSavedAttachments([]);
         setTags([]);
         setLocation(null);
         setText("");
@@ -784,6 +795,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           location,
         });
         setPending([]);
+      setSavedAttachments([]);
         setTags([]);
         setLocation(null);
         setSavedFilepath(filepath);
@@ -818,6 +830,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           location,
         });
         setPending([]);
+      setSavedAttachments([]);
         setTags([]);
         setLocation(null);
         setSavedFilepath(filepath);
@@ -962,6 +975,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
             onLocationChange={setLocation}
             showAttachments={mode !== "person"}
             pending={pending}
+            savedAttachments={savedAttachments}
             onAddAttachment={addAttachment}
             onRemoveAttachment={removeAttachment}
           />
