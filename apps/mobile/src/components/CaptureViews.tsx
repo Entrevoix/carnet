@@ -12,8 +12,10 @@ import {
 
 import { TagInput } from "./TagInput";
 import { LocationChip } from "./LocationChip";
+import { PlacesEditor } from "./PlacesEditor";
 import { useCarnetTheme } from "../lib/theme";
 import type { PickedAttachment } from "../lib/attachments";
+import type { Place } from "../lib/writer";
 import { IDEA_STATUSES, type IdeaStatus } from "@carnet/shared";
 
 interface CaptureMetaSheetProps {
@@ -24,6 +26,10 @@ interface CaptureMetaSheetProps {
   knownTags: string[];
   location: string | null;
   onLocationChange: (location: string | null) => void;
+  /** Places are Journal only — the section is hidden for Idea/Person. */
+  showPlaces: boolean;
+  places: Place[];
+  onPlacesChange: (places: Place[]) => void;
   /** Attachments are Idea/Journal only — hidden for Person captures. */
   showAttachments: boolean;
   pending: PickedAttachment[];
@@ -31,8 +37,8 @@ interface CaptureMetaSheetProps {
   onRemoveAttachment: (index: number) => void;
 }
 
-/** The "+" metadata bottom sheet: tags, location, and (Idea/Journal) staged
- * attachments. Purely presentational — CaptureScreen owns all the state and
+/** The "+" metadata bottom sheet: tags, location, (Journal) named places, and
+ * (Idea/Journal) staged attachments. Purely presentational — CaptureScreen owns all the state and
  * threads it in. */
 export function CaptureMetaSheet({
   visible,
@@ -42,6 +48,9 @@ export function CaptureMetaSheet({
   knownTags,
   location,
   onLocationChange,
+  showPlaces,
+  places,
+  onPlacesChange,
   showAttachments,
   pending,
   onAddAttachment,
@@ -68,6 +77,7 @@ export function CaptureMetaSheet({
         <Text variant="titleMedium">Tags & details</Text>
         <TagInput tags={tags} onChange={onTagsChange} knownTags={knownTags} />
         <LocationChip location={location} onChange={onLocationChange} />
+        {showPlaces && <PlacesEditor places={places} onChange={onPlacesChange} />}
         {showAttachments && (
           <View style={styles.attachBlock}>
             <View style={styles.attachRow}>

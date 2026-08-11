@@ -7,8 +7,15 @@ import {
   requestForegroundPermissionsAsync,
   getCurrentPositionAsync,
   reverseGeocodeAsync,
+  geocodeAsync,
 } from "expo-location";
-import { describeCoords, formatCoords, getCurrentCoords, parseCoords } from "./location";
+import {
+  describeCoords,
+  formatCoords,
+  getCurrentCoords,
+  parseCoords,
+  resolvePlaceName,
+} from "./location";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -123,5 +130,63 @@ describe("describeCoords", () => {
   it("returns null on geocode error", async () => {
     vi.mocked(reverseGeocodeAsync).mockRejectedValue(new Error("offline"));
     expect(await describeCoords({ lat: 0, lon: 0 })).toBeNull();
+  });
+});
+
+// ── resolvePlaceName ──────────────────────────────────────────────────────────
+
+type FwdResult = Awaited<ReturnType<typeof geocodeAsync>>;
+const fwd = (entries: Array<{ latitude: number; longitude: number }>): FwdResult =>
+  entries as unknown as FwdResult;
+
+describe("resolvePlaceName", () => {
+  it("resolves a single match to ok", async () => {
+    vi.mocked(geocodeAsync).mockResolvedValue(fwd([{ latitude: 47.2011, longitude: 10.1166 }]));
+    expect(await resolvePlaceName("Rud-Alpe Gastronomie")).toEqual({
+      kind: "ok",
+      place: "Rud-Alpe Gastronomie",
+      coords: { lat: 47.2011, lon: 10.1166 },
+    });
+  });
+
+  it("trims the input before geocoding and echoes the trimmed name", async () => {
+    vi.mocked(geocodeAsync).mockResolvedValue(fwd([{ latitude: 1, longitude: 2 }]));
+    const out = await resolvePlaceName("  Lech  ");
+    expect(geocodeAsync).toHaveBeenCalledWith("Lech");
+    expect(out).toEqual({ kind: "ok", place: "Lech", coords: { lat: 1, lon: 2 } });
+  });
+
+  it("returns notFound for zero matches", async () => {
+    vi.mocked(geocodeAsync).mockResolvedValue(fwd([]));
+    expect(await resolvePlaceName("asdkjfhaskdjf")).toEqual({ kind: "notFound" });
+  });
+
+  it("returns notFound for blank input without calling the geocoder", async () => {
+    expect(await resolvePlaceName("   ")).toEqual({ kind: "notFound" });
+    expect(geocodeAsync).not.toHaveBeenCalled();
+  });
+
+  it("returns ambiguous with every candidate for multiple matches", async () => {
+    vi.mocked(geocodeAsync).mockResolvedValue(
+      fwd([
+        { latitude: 1, longitude: 2 },
+        { latitude: 3, longitude: 4 },
+      ]),
+    );
+    expect(await resolvePlaceName("Main Street")).toEqual({
+      kind: "ambiguous",
+      candidates: [
+        { place: "Main Street", coords: { lat: 1, lon: 2 } },
+        { place: "Main Street", coords: { lat: 3, lon: 4 } },
+      ],
+    });
+  });
+
+  it("collapses a thrown geocoder error to an error outcome", async () => {
+    vi.mocked(geocodeAsync).mockRejectedValue(new Error("no geocoder available"));
+    expect(await resolvePlaceName("Lech")).toEqual({
+      kind: "error",
+      message: "no geocoder available",
+    });
   });
 });

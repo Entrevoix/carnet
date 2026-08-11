@@ -151,6 +151,16 @@ vi.mock("./writer", () => ({
         md,
       ),
   ),
+  // Same idea for places: a stand-in that emits the real section shape, enough
+  // to assert the drain wires payload.places → body → appendJournal.
+  injectPlaces: vi.fn(
+    (md: string, places: { name: string; coords: { lat: number; lon: number } }[]) =>
+      places.length === 0
+        ? md
+        : `${md}\n\n## Places\n\n${places
+            .map((p) => `[${p.name}](geo:${p.coords.lat},${p.coords.lon})`)
+            .join("\n\n")}\n`,
+  ),
 }));
 
 // ── Mock @carnet/shared ───────────────────────────────────────────────────────
@@ -483,6 +493,36 @@ describe("drainQueue", () => {
 
     expect(vi.mocked(appendJournal).mock.calls[0][1]).toContain("location: 1,2");
     expect(vi.mocked(writePerson).mock.calls[0][2]).toContain("location: 3,4");
+  });
+
+  it("round-trips journal places through enqueue → drain into the entry body", async () => {
+    const { appendJournal } = await import("./writer");
+
+    await enqueue({
+      mode: "journal",
+      transcript: "t",
+      notes: "",
+      date: "2026-05-16",
+      places: [
+        { name: "Rud-Alpe", coords: { lat: 47.2011, lon: 10.1166 } },
+        { name: "Lech", coords: { lat: 47.2063, lon: 10.1435 } },
+      ],
+    });
+    await drainQueue();
+
+    const body = vi.mocked(appendJournal).mock.calls[0][1];
+    expect(body).toContain("## Places");
+    expect(body).toContain("[Rud-Alpe](geo:47.2011,10.1166)");
+    expect(body).toContain("[Lech](geo:47.2063,10.1435)");
+  });
+
+  it("adds no Places section when a journal payload carries none", async () => {
+    const { appendJournal } = await import("./writer");
+
+    await enqueue({ mode: "journal", transcript: "t", notes: "", date: "2026-05-16" });
+    await drainQueue();
+
+    expect(vi.mocked(appendJournal).mock.calls[0][1]).not.toContain("## Places");
   });
 
   it("marks 4xx (permanent) errors as permanent failure immediately", async () => {

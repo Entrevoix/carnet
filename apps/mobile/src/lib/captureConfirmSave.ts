@@ -20,10 +20,12 @@ import { mergeUserTags } from "./tags";
 import { upsertFrontmatterField } from "./frontmatter";
 import {
   injectAttachments,
+  injectPlaces,
   writeIdea,
   appendJournal,
   writePerson,
   type AttachmentRef,
+  type Place,
 } from "./writer";
 
 /** Inject the selected location into a note's frontmatter (no-op when unset). */
@@ -70,6 +72,10 @@ export interface ConfirmSaveJournalInput {
   refs: AttachmentRef[];
   tags: string[];
   location: string | null;
+  /** Named places for THIS entry (Journal only). Injected into the entry's own
+   * body, so a second same-day capture keeps its own list rather than
+   * overwriting this one — see injectPlaces. */
+  places?: Place[];
 }
 
 /** Compose the final Journal entry and append it to today's day file.
@@ -78,7 +84,15 @@ export interface ConfirmSaveJournalInput {
 export async function confirmSaveJournal(
   input: ConfirmSaveJournalInput,
 ): Promise<ConfirmSaveResult> {
-  const markdown = composeMarkdown(input.markdown, input.refs, input.tags, input.location);
+  // Places are injected LAST, into this entry's own fragment, before
+  // appendJournal appends that fragment (## Places included) after its
+  // `## HH:MM` heading. The section is a SIBLING of that heading, as ## Files
+  // already is; what keeps same-day entries from sharing one Places section is
+  // that each fragment is injected separately, never the accumulated day file.
+  const markdown = injectPlaces(
+    composeMarkdown(input.markdown, input.refs, input.tags, input.location),
+    input.places ?? [],
+  );
   const { filepath, markdown: dayFileMarkdown } = await appendJournal(input.date, markdown);
   return { filepath, markdown: dayFileMarkdown, title: deriveTitle(input.markdown) };
 }
