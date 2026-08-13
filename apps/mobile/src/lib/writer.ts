@@ -22,6 +22,9 @@ import { fsForUri, safLastSegment, vaultFsFor, type VaultFs } from "./vaultFs";
 // Pure predicate only — syncConflicts.ts stays filesystem-free, so this import
 // cannot form a cycle (its NoteFileRef import back is type-only).
 import { isSyncConflictName } from "./syncConflicts";
+// Pure formatting helper + its type; location.ts imports only expo-location, so
+// this cannot form a cycle back into writer.ts.
+import { formatCoords, type Coords } from "./location";
 // Pure frontmatter helpers used internally; the full set is re-exported below.
 import {
   extractFrontmatterField,
@@ -299,6 +302,83 @@ export function injectAttachments(
     md = upsertSection(md, "Files", body);
   }
   return md;
+}
+
+/** A named place attached to a capture: a display name plus the coordinates it
+ * resolved to (from a Maps link or forward geocoding). Distinct from the
+ * `location` frontmatter field, which is one day-file-scoped GPS scalar —
+ * places are entry-scoped and there can be several per entry. */
+export interface Place {
+  name: string;
+  coords: Coords;
+}
+
+/** Read back the body of a `## {heading}` section, or null when absent. Uses
+ * the same exact-line match and H1/H2 boundary rule as {@link upsertSection},
+ * so what this returns is exactly what an upsert would replace. */
+function readSection(markdown: string, heading: string): string | null {
+  const headingLine = `## ${heading}`;
+  const lines = markdown.split("\n");
+  const startIdx = lines.findIndex((l) => l === headingLine);
+  if (startIdx === -1) return null;
+
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    if (lines[i].startsWith("## ") || lines[i].startsWith("# ")) {
+      endIdx = i;
+      break;
+    }
+  }
+  return lines.slice(startIdx + 1, endIdx).join("\n").trim();
+}
+
+/** Make a place name safe to sit inside a markdown link label.
+ *
+ * Names reach here from two untrusted-ish sources: percent-decoded bytes out of
+ * a pasted Maps URL, and whatever the user typed. A raw newline would break the
+ * link AND — if the next line happened to start with `## ` — invent a section
+ * boundary that upsertSection would later honor, silently restructuring the
+ * note. Brackets would terminate the link label early. */
+function sanitizePlaceName(name: string): string {
+  return name
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[[\]]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Fold named places into an entry's markdown body as a `## Places` section of
+ * `[name](geo:lat,lon)` links.
+ *
+ * Body injection, NOT frontmatter, and deliberately so: a journal day file has
+ * one frontmatter block shared by every same-day capture (see appendJournal),
+ * so a frontmatter list would let the second entry of the day clobber the
+ * first's places. Injected into the entry's own fragment before appendJournal
+ * appends it, each entry keeps its own `## Places` — a sibling of that entry's
+ * `## HH:MM` heading, exactly as `## Files` already is.
+ *
+ * Existing `## Places` content is APPENDED to, never replaced: the enriching
+ * model writes the prose for these entries and may well emit its own Places
+ * heading for a travel day, and silently deleting that is worse than a slightly
+ * redundant section.
+ *
+ * Pure function, same contract as injectAttachments.
+ */
+export function injectPlaces(markdown: string, places: readonly Place[]): string {
+  if (places.length === 0) return markdown;
+  // Blank line between links so adjacent ones don't soft-break onto a single
+  // line in raw markdown (Obsidian) — same rationale as the Files section.
+  const links = places
+    .map((p) => {
+      const name = sanitizePlaceName(p.name);
+      const coords = formatCoords(p.coords);
+      return `[${name || coords}](geo:${coords})`;
+    })
+    .join("\n\n");
+  const existing = readSection(markdown, "Places");
+  const body = existing ? `${existing}\n\n${links}` : links;
+  return upsertSection(markdown, "Places", body);
 }
 
 export interface PairedBinary {

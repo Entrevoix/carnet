@@ -7,6 +7,10 @@ const writePersonMock = vi.fn();
 vi.mock("./writer", () => ({
   injectAttachments: (markdown: string, refs: unknown[]) =>
     refs.length > 0 ? `${markdown}\n<attachments:${refs.length}>` : markdown,
+  injectPlaces: (markdown: string, places: { name: string }[]) =>
+    places.length > 0
+      ? `${markdown}\n<places:${places.map((p) => p.name).join(",")}>`
+      : markdown,
   writeIdea: (...args: unknown[]) => writeIdeaMock(...args),
   appendJournal: (...args: unknown[]) => appendJournalMock(...args),
   writePerson: (...args: unknown[]) => writePersonMock(...args),
@@ -111,6 +115,58 @@ describe("confirmSaveJournal", () => {
       markdown: "<day-file-accumulated>",
       title: "Journal",
     });
+  });
+
+  it("injects places LAST, into the entry fragment handed to appendJournal", async () => {
+    appendJournalMock.mockResolvedValue({
+      filepath: "file:///v/Journal/2026-07-30.md",
+      markdown: "<day-file-accumulated>",
+    });
+
+    await confirmSaveJournal({
+      date: "2026-07-30",
+      markdown: "# Journal\n\nentry",
+      refs: [ref],
+      tags: ["t1"],
+      location: "1,2",
+      places: [
+        { name: "Rud-Alpe", coords: { lat: 47.2011, lon: 10.1166 } },
+        { name: "Lech", coords: { lat: 47.2063, lon: 10.1435 } },
+      ],
+    });
+
+    // Order: attachments → tags → location → places, and the whole composed
+    // fragment (places included) is what appendJournal receives.
+    expect(appendJournalMock).toHaveBeenCalledWith(
+      "2026-07-30",
+      "# Journal\n\nentry\n<attachments:1>\n<tags:t1>\n<location:1,2>\n<places:Rud-Alpe,Lech>",
+    );
+  });
+
+  it("is a no-op when places is empty or omitted", async () => {
+    appendJournalMock.mockResolvedValue({
+      filepath: "file:///v/Journal/2026-07-30.md",
+      markdown: "<day-file-accumulated>",
+    });
+
+    await confirmSaveJournal({
+      date: "2026-07-30",
+      markdown: "# Journal\n\nentry",
+      refs: [],
+      tags: [],
+      location: null,
+      places: [],
+    });
+    expect(appendJournalMock).toHaveBeenCalledWith("2026-07-30", "# Journal\n\nentry");
+
+    await confirmSaveJournal({
+      date: "2026-07-30",
+      markdown: "# Journal\n\nentry",
+      refs: [],
+      tags: [],
+      location: null,
+    });
+    expect(appendJournalMock).toHaveBeenLastCalledWith("2026-07-30", "# Journal\n\nentry");
   });
 });
 

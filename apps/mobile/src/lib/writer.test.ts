@@ -98,6 +98,8 @@ import {
   readPairedBinaryFromNote,
   upsertSection,
   injectAttachments,
+  injectPlaces,
+  type Place,
   listPairedBinaries,
   resolvePairedUri,
   stripPairedBinaryLinks,
@@ -1291,5 +1293,95 @@ describe("upsertSection", () => {
     expect(() => upsertSection("# T\n", "A\rB", "x")).toThrow(
       /heading cannot contain newlines/,
     );
+  });
+});
+
+// ── injectPlaces ──────────────────────────────────────────────────────────────
+
+describe("injectPlaces", () => {
+  const place = (name: string, lat: number, lon: number): Place => ({
+    name,
+    coords: { lat, lon },
+  });
+
+  /** Every non-empty line of the ## Places section. */
+  const readPlacesLinks = (md: string): string[] => {
+    const after = md.split("## Places\n")[1] ?? "";
+    return after.split("\n").filter((l) => l.trim().length > 0);
+  };
+
+  it("returns the body unchanged for an empty place list", () => {
+    const md = "# T\n\nbody\n";
+    expect(injectPlaces(md, [])).toBe(md);
+  });
+
+  it("injects a single place as a geo link under ## Places", () => {
+    const out = injectPlaces("# T\n\nbody\n", [place("Rud-Alpe", 47.2011, 10.1166)]);
+    expect(out).toContain("## Places");
+    expect(out).toContain("[Rud-Alpe](geo:47.20110,10.11660)");
+  });
+
+  it("lists multiple places under one heading, blank-line separated", () => {
+    const out = injectPlaces("# T\n\nbody\n", [
+      place("Rud-Alpe", 47.2011, 10.1166),
+      place("Lech", 47.2063, 10.1435),
+    ]);
+    expect(out.match(/^## Places$/gm)?.length).toBe(1);
+    expect(out).toContain(
+      "[Rud-Alpe](geo:47.20110,10.11660)\n\n[Lech](geo:47.20630,10.14350)",
+    );
+  });
+
+  it("appends to an existing section rather than duplicating the heading", () => {
+    const first = injectPlaces("# T\n\nbody\n", [place("Rud-Alpe", 47.2011, 10.1166)]);
+    const second = injectPlaces(first, [place("Lech", 47.2063, 10.1435)]);
+    expect(second.match(/^## Places$/gm)?.length).toBe(1);
+    // Both survive — re-injection must not silently drop earlier entries.
+    expect(second).toContain("[Rud-Alpe](geo:47.20110,10.11660)");
+    expect(second).toContain("[Lech](geo:47.20630,10.14350)");
+  });
+
+  it("preserves a pre-existing (model-written) ## Places section", () => {
+    const authored = "# T\n\nbody\n\n## Places\n\nWe wandered around Lech all day.\n";
+    const out = injectPlaces(authored, [place("Rud-Alpe", 47.2011, 10.1166)]);
+    expect(out.match(/^## Places$/gm)?.length).toBe(1);
+    expect(out).toContain("We wandered around Lech all day.");
+    expect(out).toContain("[Rud-Alpe](geo:47.20110,10.11660)");
+  });
+
+  it("strips newlines from a place name so it cannot forge a section boundary", () => {
+    const out = injectPlaces("# T\n\nbody\n", [
+      { name: "Evil\n## Transcript\nowned", coords: { lat: 1, lon: 2 } },
+    ]);
+    expect(out).toContain("[Evil ## Transcript owned](geo:1.00000,2.00000)");
+    // Exactly two headings: the H1 and our Places section.
+    expect(out.match(/^#{1,2} /gm)?.length).toBe(2);
+  });
+
+  it("strips brackets from a place name so the link label cannot terminate early", () => {
+    const out = injectPlaces("# T\n\nbody\n", [
+      { name: "Caf[e] Sperl](evil:1)", coords: { lat: 1, lon: 2 } },
+    ]);
+    // The label keeps its parens (harmless) but loses every bracket, so the
+    // result is exactly one well-formed link, not a link plus injected markup.
+    expect(out).toContain("[Cafe Sperl(evil:1)](geo:1.00000,2.00000)");
+    expect(readPlacesLinks(out)).toEqual(["[Cafe Sperl(evil:1)](geo:1.00000,2.00000)"]);
+  });
+
+  it("falls back to the coordinates when a name sanitizes to nothing", () => {
+    const out = injectPlaces("# T\n\nbody\n", [
+      { name: "[[]]", coords: { lat: 47.2011, lon: 10.1166 } },
+    ]);
+    expect(out).toContain("[47.20110,10.11660](geo:47.20110,10.11660)");
+  });
+
+  it("leaves an existing ## Files section intact", () => {
+    const withFiles = injectAttachments("# T\n\nbody\n", [
+      { kind: "file", rel: "../Files/spec.pdf", filename: "spec.pdf" },
+    ]);
+    const out = injectPlaces(withFiles, [place("Lech", 47.2063, 10.1435)]);
+    expect(out).toContain("## Files");
+    expect(out).toContain("[spec.pdf](../Files/spec.pdf)");
+    expect(out).toContain("## Places");
   });
 });
