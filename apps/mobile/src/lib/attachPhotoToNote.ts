@@ -5,12 +5,23 @@
  * Attach a photo to a note that is already saved — the VIEW-mode counterpart to
  * useNoteEditSession's insert handlers, which only run inside an open editor.
  *
- * Mirrors enhanceProse.ts's write spine (baseline → slow step → fresh read →
- * guarded overwrite) and its never-throws contract, for the same reason: the
- * user frames a shot for as long as they like, and the note can be edited in
- * Obsidian or resynced by Syncthing during that window. Appending to a snapshot
- * the caller loaded earlier would silently revert those edits (#133's defect
- * class), so nothing here trusts a caller-supplied body.
+ * Borrows enhanceProse.ts's write spine (fresh read → guarded overwrite) and its
+ * never-throws contract, but NOT its guard window, which is worth being precise
+ * about since the two look alike:
+ *
+ *   - enhanceProse takes its baseline before a model call that can run 120s, so
+ *     its guard covers a genuinely wide edit window.
+ *   - This function is only entered once the shot already exists. The user's
+ *     framing time is spent in the modal, upstream of here, and is NOT inside
+ *     the guarded window. What the baseline actually covers is the short
+ *     write-image → re-read → overwrite span (milliseconds).
+ *
+ * That narrower guard is still worth keeping, but the load-bearing protection
+ * on this path is the fresh `readNote` below, not the mtime check: an edit that
+ * lands while the camera is open is simply picked up by the re-read and gets
+ * appended to, so the photo attaches AND the edit survives. Nothing here trusts
+ * a caller-supplied body — appending to a screen-load snapshot is what would
+ * silently revert such an edit (#133's defect class).
  */
 
 import { writeCapturedVaultImage } from "./vaultImageInsert";
@@ -37,6 +48,9 @@ export async function attachPhotoToNote(input: {
   basename?: string;
 }): Promise<AttachPhotoOutcome> {
   try {
+    // Baseline for the write-image → re-read → overwrite span below. The
+    // camera step already happened upstream, so this does NOT cover the user's
+    // framing time — see the module docstring.
     const baseline = await getModificationTime(input.filepath);
     const { rel } = await writeCapturedVaultImage(
       input.base64,
@@ -44,8 +58,9 @@ export async function attachPhotoToNote(input: {
       input.basename,
     );
 
-    // CURRENT content, deliberately re-read after the write rather than taken
-    // from the caller.
+    // CURRENT content, deliberately re-read rather than taken from the caller.
+    // This is what makes an edit made while the camera was open survive: it is
+    // appended to, not overwritten.
     const source = await readNote(input.filepath);
     const nextBody = `${source.trimEnd()}\n\n![](${rel})\n`;
 
@@ -54,7 +69,7 @@ export async function attachPhotoToNote(input: {
       return {
         kind: "failed",
         reason:
-          "The note changed on disk while the camera was open — your version was kept, the photo was not attached.",
+          "The note was written to from somewhere else just as the photo was being attached — your version was kept. The photo is in Photos/; try attaching it again.",
       };
     }
     return { kind: "attached", rel, nextBody };

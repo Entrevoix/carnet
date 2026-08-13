@@ -37,12 +37,24 @@ function renderModal(overrides?: {
 }) {
   const onCaptured = overrides?.onCaptured ?? vi.fn();
   const onDismiss = overrides?.onDismiss ?? vi.fn();
-  render(
+  const { rerender } = render(
     <PaperProvider theme={carnetLight}>
       <PhotoAttachModal visible onDismiss={onDismiss} onCaptured={onCaptured} />
     </PaperProvider>,
   );
-  return { onCaptured, onDismiss };
+  /** Drive the `visible` prop the way the screen does — the component itself
+   * stays mounted across a close+reopen. */
+  const setVisible = (visible: boolean) =>
+    rerender(
+      <PaperProvider theme={carnetLight}>
+        <PhotoAttachModal
+          visible={visible}
+          onDismiss={onDismiss}
+          onCaptured={onCaptured}
+        />
+      </PaperProvider>,
+    );
+  return { onCaptured, onDismiss, setVisible };
 }
 
 beforeEach(() => {
@@ -117,6 +129,23 @@ describe("PhotoAttachModal", () => {
     await waitFor(() => expect(mockPick).toHaveBeenCalled());
     expect(onCaptured).not.toHaveBeenCalled();
     expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale error when reopened, rather than greeting a fresh open with it", async () => {
+    // The screen keeps this component mounted; only Paper's Modal internals
+    // unmount on close, so error/busy state would otherwise outlive a reopen.
+    takePictureAsync.mockResolvedValue({ uri: "file:///t.jpg" });
+    const { setVisible } = renderModal();
+
+    fireEvent.click(screen.getByText("Capture"));
+    expect(await screen.findByText("No image captured")).toBeTruthy();
+
+    setVisible(false);
+    setVisible(true);
+
+    await waitFor(() => expect(screen.queryByText("No image captured")).toBeNull());
+    // And the shutter is usable again, not left disabled by a latched spinner.
+    expect(screen.getByText("Capture")).toBeTruthy();
   });
 
   it("requests permission from the gate and reports a denial", async () => {

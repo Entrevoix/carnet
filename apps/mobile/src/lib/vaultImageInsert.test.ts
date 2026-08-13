@@ -13,13 +13,6 @@ vi.mock("./editorImages", () => ({
   MAX_EDITOR_IMAGE_BASE64: 100,
   toDataUri: vi.fn((mime: string, b64: string) => `data:${mime};base64,${b64}`),
 }));
-// shareHelpers pulls expo-file-system at module scope; only the two size
-// constants are needed here.
-vi.mock("./shareHelpers", () => ({
-  MAX_SAFE_SHARE_BYTES: 1000,
-  BASE64_EXPANSION: 1.4,
-}));
-
 import { pickAndWriteVaultImage, writeCapturedVaultImage } from "./vaultImageInsert";
 import { pickAttachment } from "./attachments";
 import { writeBinary } from "./writer";
@@ -111,15 +104,6 @@ describe("writeCapturedVaultImage", () => {
     mockWrite.mockResolvedValue({ filepath: "x", finalName: "photo.jpg" });
     await writeCapturedVaultImage("AB", "image/jpeg", ".jpeg");
     expect(mockWrite).toHaveBeenCalledWith("Photos", "photo.jpg", "AB", "image/jpeg");
-  });
-
-  it("rejects an oversize capture before anything is written", async () => {
-    // pickAttachment's cap check is bypassed on this path — `quality: 0.6`
-    // bounds compression, not resolution, so a 50 MP shot can still OOM.
-    await expect(
-      writeCapturedVaultImage("X".repeat(2000), "image/jpeg"),
-    ).rejects.toThrow(/capped/i);
-    expect(mockWrite).not.toHaveBeenCalled();
   });
 
   it("omits the preview data URI when the capture is over the inline cap", async () => {

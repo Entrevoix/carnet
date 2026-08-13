@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
@@ -43,6 +43,16 @@ export function PhotoAttachModal({
   const [permission, requestPermission] = useCameraPermissions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The screen renders this component unconditionally and only Paper's Modal
+  // internals unmount on close, so component state outlives a close+reopen.
+  // Without this a stale "Camera permission denied" (or a latched spinner from
+  // an unmount mid-capture) greets the user on a fresh open.
+  useEffect(() => {
+    if (!visible) return;
+    setError(null);
+    setBusy(false);
+  }, [visible]);
 
   const capture = async (): Promise<void> => {
     if (!cameraRef.current) {

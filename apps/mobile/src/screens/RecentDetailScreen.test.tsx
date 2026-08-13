@@ -341,10 +341,10 @@ describe("RecentDetailScreen", () => {
     expect(await screen.findByText("Photo attached.")).toBeTruthy();
   });
 
-  it("surfaces a refused attach (note changed mid-flight) in the banner slot", async () => {
+  it("surfaces a refused attach in the banner slot", async () => {
     vi.mocked(attachPhotoToNote).mockResolvedValue({
       kind: "failed",
-      reason: "The note changed on disk while the camera was open.",
+      reason: "The note was written to from somewhere else.",
     });
     const { navigation } = renderScreen();
     await screen.findByText(/Hello body text\./);
@@ -360,7 +360,7 @@ describe("RecentDetailScreen", () => {
 
     expect(
       await screen.findByText(
-        /Attach photo failed: The note changed on disk while the camera was open\./,
+        /Attach photo failed: The note was written to from somewhere else\./,
       ),
     ).toBeTruthy();
   });

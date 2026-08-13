@@ -321,7 +321,12 @@ EXPECT: builds. Only needed if a config plugin changes — it should not, since 
 - [ ] Reopen the note: image renders inline (not a broken link)
 - [ ] File exists at `Photos/<name>` in the vault
 - [ ] Frontmatter byte-identical before/after
-- [ ] Edit the note in Obsidian mid-capture → attach is refused, your edit survives
+- [ ] Edit the note in Obsidian mid-capture → **both survive**: the embed is appended
+      to your edited version, not to the stale screen copy. (The attach is NOT refused
+      here — the framing window sits upstream of `attachPhotoToNote`, so the edit is
+      already on disk when the baseline is taken and the fresh `readNote` picks it up.
+      The mtime guard only refuses a write landing inside the much shorter
+      write-image → overwrite span, which is not reproducible by hand.)
 - [ ] Note already in Karakeep → re-export pushes only the new asset
 
 ---

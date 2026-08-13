@@ -70,9 +70,8 @@ describe("attachPhotoToNote", () => {
   // ── The guard ──────────────────────────────────────────────────────────────
 
   it("captures the mtime baseline BEFORE the image write, not after", async () => {
-    // A baseline taken after the slow step would match whatever a mid-flight
-    // edit produced, making the guard useless for exactly the window it exists
-    // to cover.
+    // A baseline taken after the image write would match whatever an
+    // interleaved write produced, collapsing the guarded span to nothing.
     const order: string[] = [];
     mockMtime.mockImplementation(async () => {
       order.push("mtime");
@@ -88,11 +87,13 @@ describe("attachPhotoToNote", () => {
     expect(order).toEqual(["mtime", "write-image"]);
   });
 
-  it("keeps the user's on-disk version when the note is edited mid-flight", async () => {
+  it("keeps the user's on-disk version when a write lands inside the guarded span", async () => {
     // THE test. A simulated disk rather than a canned `{ ok: false }`, so the
-    // whole chain is exercised: baseline → slow step → re-read → guarded write.
-    // The camera step is a wide window for an Obsidian or Syncthing edit to
-    // land; an unguarded write discards it — the #133 defect class.
+    // whole chain is exercised: baseline → image write → re-read → guarded
+    // write. Note the scope: this covers a write that lands in the short
+    // write-image → overwrite span, NOT the user's framing time (which is
+    // upstream of this function — see the mid-camera test above). An unguarded
+    // overwrite discards it: the #133 defect class.
     let disk = NOTE;
     let mtime = 1000;
     const USER_EDIT = "---\ncreated: 2026-08-13\n---\n# Walk\n\nEDITED IN OBSIDIAN.\n";
@@ -118,7 +119,9 @@ describe("attachPhotoToNote", () => {
     const out = await attachPhotoToNote(INPUT);
 
     expect(out.kind).toBe("failed");
-    expect(out).toMatchObject({ reason: expect.stringMatching(/changed on disk/i) });
+    expect(out).toMatchObject({
+      reason: expect.stringMatching(/written to from somewhere else/i),
+    });
     // The user's edit survived byte-for-byte; no embed was spliced in over it.
     expect(disk).toBe(USER_EDIT);
     expect(disk).not.toContain("![](../Photos/photo.jpg)");
@@ -154,6 +157,27 @@ describe("attachPhotoToNote", () => {
 
     const written = mockUpdateNote.mock.calls[0][1];
     expect(written).toContain("EDITED IN OBSIDIAN.");
+  });
+
+  it("keeps BOTH an edit made while the camera was open and the new photo", async () => {
+    // The framing window sits upstream of this function, so such an edit is
+    // never a conflict: it is already on disk when the baseline is taken, the
+    // fresh read picks it up, and the embed is appended to it. Documents the
+    // real behavior — the attach succeeds, nothing is lost either way.
+    let disk = NOTE;
+    const EDITED = "---\ncreated: 2026-08-13\n---\n# Walk\n\nEDITED WHILE FRAMING.\n";
+    disk = EDITED;
+    mockReadNote.mockImplementation(async () => disk);
+    mockUpdateNote.mockImplementation(async (_fp, markdown) => {
+      disk = markdown;
+      return { ok: true };
+    });
+
+    const out = await attachPhotoToNote(INPUT);
+
+    expect(out.kind).toBe("attached");
+    expect(disk).toContain("EDITED WHILE FRAMING.");
+    expect(disk).toContain("![](../Photos/photo.jpg)");
   });
 
   it("re-reads the note AFTER the image write, so late edits are seen", async () => {
