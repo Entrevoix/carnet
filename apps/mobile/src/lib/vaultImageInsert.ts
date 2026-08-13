@@ -49,7 +49,10 @@ export async function pickAndWriteVaultImage(): Promise<VaultImageInsert | null>
 /**
  * Same write→rel step as above, for bytes that are already in hand — a camera
  * capture rather than a picked file. `basename` is slugified (extension
- * stripped) into the filename stem; it defaults to `photo`.
+ * stripped) into the filename stem; it defaults to a timestamped `photo-<ms>`.
+ * The timestamp matters: the only caller passes no basename for camera shots,
+ * so a bare `photo` stem would funnel every capture in a vault through
+ * writeBinary's finite collision-suffix range and eventually wedge shut.
  *
  * Deliberately enforces no size cap of its own, which is worth stating so one
  * is not "restored" later as an oversight:
@@ -68,7 +71,8 @@ export async function writeCapturedVaultImage(
   basename?: string,
 ): Promise<VaultImageInsert> {
   const ext = extFromMime(mime);
-  const base = slugify((basename ?? "photo").replace(/\.[^.]+$/, "")) || "photo";
+  const base =
+    slugify((basename ?? `photo-${Date.now()}`).replace(/\.[^.]+$/, "")) || "photo";
   const { finalName } = await writeBinary("Photos", `${base}.${ext}`, base64, mime);
   const rel = `../Photos/${finalName}`;
   const dataUri =

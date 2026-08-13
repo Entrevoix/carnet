@@ -74,21 +74,43 @@ describe("pickAndWriteVaultImage", () => {
 });
 
 describe("writeCapturedVaultImage", () => {
-  it("writes captured bytes to Photos/ under the default basename", async () => {
-    mockWrite.mockResolvedValue({ filepath: "x", finalName: "photo.jpg" });
+  it("writes captured bytes to Photos/ under a timestamped default basename", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+    mockWrite.mockResolvedValue({ filepath: "x", finalName: "photo-1700000000000.jpg" });
     const out = await writeCapturedVaultImage("AB", "image/jpeg");
-    expect(mockWrite).toHaveBeenCalledWith("Photos", "photo.jpg", "AB", "image/jpeg");
+    expect(mockWrite).toHaveBeenCalledWith(
+      "Photos",
+      "photo-1700000000000.jpg",
+      "AB",
+      "image/jpeg",
+    );
     expect(out).toEqual({
-      rel: "../Photos/photo.jpg",
+      rel: "../Photos/photo-1700000000000.jpg",
       dataUri: "data:image/jpeg;base64,AB",
     });
     // The camera never opens the picker on this path.
     expect(mockPick).not.toHaveBeenCalled();
   });
 
+  it("gives two basename-less captures distinct filenames", async () => {
+    // The only caller passes no basename, so a fixed stem would funnel every
+    // camera shot in a vault through writeBinary's finite suffix range.
+    const now = vi.spyOn(Date, "now");
+    mockWrite.mockResolvedValue({ filepath: "x", finalName: "whatever.jpg" });
+
+    now.mockReturnValue(1700000000000);
+    await writeCapturedVaultImage("AB", "image/jpeg");
+    now.mockReturnValue(1700000009999);
+    await writeCapturedVaultImage("AB", "image/jpeg");
+
+    const [first, second] = mockWrite.mock.calls.map((c) => c[1]);
+    expect(first).not.toBe(second);
+  });
+
   it("returns writeBinary's collision-bumped name, not the requested one", async () => {
-    // A second capture in the same minute must link the file SAF actually
+    // A second capture in the same millisecond must link the file SAF actually
     // created — otherwise the embed points at the first shot.
+    vi.spyOn(Date, "now").mockReturnValue(1700000000000);
     mockWrite.mockResolvedValue({ filepath: "x", finalName: "photo-2.jpg" });
     const out = await writeCapturedVaultImage("AB", "image/jpeg");
     expect(out.rel).toBe("../Photos/photo-2.jpg");
@@ -107,6 +129,7 @@ describe("writeCapturedVaultImage", () => {
   });
 
   it("omits the preview data URI when the capture is over the inline cap", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1700000000000);
     mockWrite.mockResolvedValue({ filepath: "x", finalName: "photo.jpg" });
     const out = await writeCapturedVaultImage("X".repeat(200), "image/jpeg");
     expect(out.rel).toBe("../Photos/photo.jpg");

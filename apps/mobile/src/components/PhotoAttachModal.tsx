@@ -14,6 +14,11 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { pickAttachment } from "../lib/attachments";
 import { useCarnetTheme } from "../lib/theme";
 
+/** Generous headroom over what `quality: 0.6` produces even off a high-megapixel
+ * sensor. Checked here, where the bytes actually exist and a rejection can be
+ * shown as a normal error — not in the vault writer, which is entered too late. */
+const MAX_CAPTURE_BASE64 = 30 * 1024 * 1024;
+
 interface PhotoAttachModalProps {
   visible: boolean;
   onDismiss: () => void;
@@ -43,6 +48,9 @@ export function PhotoAttachModal({
   const [permission, requestPermission] = useCameraPermissions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped on every open so a pick/shot still in flight when the user dismisses
+  // can tell it belongs to a dead session and drop its result.
+  const sessionRef = useRef(0);
 
   // The screen renders this component unconditionally and only Paper's Modal
   // internals unmount on close, so component state outlives a close+reopen.
@@ -52,6 +60,7 @@ export function PhotoAttachModal({
     if (!visible) return;
     setError(null);
     setBusy(false);
+    sessionRef.current += 1;
   }, [visible]);
 
   const capture = async (): Promise<void> => {
@@ -59,6 +68,7 @@ export function PhotoAttachModal({
       setError("Camera not ready — try again in a moment");
       return;
     }
+    const session = sessionRef.current;
     setError(null);
     setBusy(true);
     try {
@@ -66,31 +76,41 @@ export function PhotoAttachModal({
         base64: true,
         quality: 0.6,
       });
+      if (sessionRef.current !== session) return;
       // Undefined when the user backgrounds the app mid-shoot.
       if (!photo?.base64) {
         throw new Error("No image captured");
       }
+      if (photo.base64.length > MAX_CAPTURE_BASE64) {
+        throw new Error("Photo is too large to attach — try a lower resolution.");
+      }
       onCaptured(photo.base64, "image/jpeg", undefined);
       onDismiss();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (sessionRef.current === session) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setBusy(false);
+      if (sessionRef.current === session) setBusy(false);
     }
   };
 
   const fromLibrary = async (): Promise<void> => {
+    const session = sessionRef.current;
     setError(null);
     setBusy(true);
     try {
       const picked = await pickAttachment({ imagesOnly: true });
+      if (sessionRef.current !== session) return;
       if (!picked) return;
       onCaptured(picked.base64, picked.mime, picked.filename);
       onDismiss();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (sessionRef.current === session) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setBusy(false);
+      if (sessionRef.current === session) setBusy(false);
     }
   };
 
@@ -124,44 +144,45 @@ export function PhotoAttachModal({
           <IconButton icon="close" onPress={onDismiss} accessibilityLabel="Close" />
         </View>
 
-        {!permission ? (
-          <View style={styles.body}>
+        {/* Only the camera half is permission-gated — the Library path needs no
+            camera access, so denying it must not lock out the fallback too. */}
+        <View style={styles.body}>
+          {!permission ? (
             <ActivityIndicator />
-          </View>
-        ) : !permission.granted ? (
-          <View style={styles.body}>
-            <Text>Camera permission required.</Text>
-            <Button mode="contained" onPress={() => void grant()}>
-              Allow camera
-            </Button>
-            {error ? (
-              <HelperText type="error" visible>
-                {error}
-              </HelperText>
-            ) : null}
-          </View>
-        ) : (
-          <View style={styles.body}>
-            <CameraView ref={cameraRef} style={styles.camera} facing="back" />
-            <Button
-              mode="contained"
-              icon="camera"
-              onPress={() => void capture()}
-              loading={busy}
-              disabled={busy}
-            >
-              Capture
-            </Button>
-            <Button icon="image-multiple" onPress={() => void fromLibrary()} disabled={busy}>
-              Library
-            </Button>
-            {error ? (
-              <HelperText type="error" visible>
-                {error}
-              </HelperText>
-            ) : null}
-          </View>
-        )}
+          ) : !permission.granted ? (
+            <>
+              <Text>Camera permission required.</Text>
+              <Button mode="contained" onPress={() => void grant()}>
+                Allow camera
+              </Button>
+            </>
+          ) : (
+            <>
+              <CameraView ref={cameraRef} style={styles.camera} facing="back" />
+              <Button
+                mode="contained"
+                icon="camera"
+                onPress={() => void capture()}
+                loading={busy}
+                disabled={busy}
+              >
+                Capture
+              </Button>
+            </>
+          )}
+          <Button
+            icon="image-multiple"
+            onPress={() => void fromLibrary()}
+            disabled={busy || !permission}
+          >
+            Library
+          </Button>
+          {error ? (
+            <HelperText type="error" visible>
+              {error}
+            </HelperText>
+          ) : null}
+        </View>
       </Modal>
     </Portal>
   );

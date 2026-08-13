@@ -148,6 +148,56 @@ describe("PhotoAttachModal", () => {
     expect(screen.getByText("Capture")).toBeTruthy();
   });
 
+  it("drops a shot that resolves after the modal was dismissed", async () => {
+    let resolveShot!: (photo: { base64: string }) => void;
+    takePictureAsync.mockReturnValue(
+      new Promise<{ base64: string }>((r) => {
+        resolveShot = r;
+      }),
+    );
+    const { onCaptured, onDismiss, setVisible } = renderModal();
+
+    fireEvent.click(screen.getByText("Capture"));
+    setVisible(false);
+    setVisible(true);
+    resolveShot({ base64: "AAAA" });
+
+    await waitFor(() => expect(takePictureAsync).toHaveBeenCalled());
+    expect(onCaptured).not.toHaveBeenCalled();
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("rejects a capture whose bytes exceed the attach cap", async () => {
+    takePictureAsync.mockResolvedValue({ base64: "A".repeat(30 * 1024 * 1024 + 1) });
+    const { onCaptured, onDismiss } = renderModal();
+
+    fireEvent.click(screen.getByText("Capture"));
+
+    expect(
+      await screen.findByText("Photo is too large to attach — try a lower resolution."),
+    ).toBeTruthy();
+    expect(onCaptured).not.toHaveBeenCalled();
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Library fallback usable when camera permission is denied", async () => {
+    permission = { granted: false };
+    mockPick.mockResolvedValue({
+      base64: "BBBB",
+      mime: "image/png",
+      filename: "shot.png",
+      kind: "image",
+    });
+    const { onCaptured } = renderModal();
+
+    expect(screen.getByText("Camera permission required.")).toBeTruthy();
+    fireEvent.click(screen.getByText("Library"));
+
+    await waitFor(() =>
+      expect(onCaptured).toHaveBeenCalledWith("BBBB", "image/png", "shot.png"),
+    );
+  });
+
   it("requests permission from the gate and reports a denial", async () => {
     permission = { granted: false };
     requestPermission.mockResolvedValue({ granted: false });
