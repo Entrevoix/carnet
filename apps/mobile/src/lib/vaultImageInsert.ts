@@ -12,6 +12,7 @@
 import { pickAttachment } from "./attachments";
 import { extFromMime, slugify, writeBinary } from "./writer";
 import { MAX_EDITOR_IMAGE_BASE64, toDataUri } from "./editorImages";
+import { BASE64_EXPANSION, MAX_SAFE_SHARE_BYTES } from "./shareHelpers";
 
 export interface VaultImageInsert {
   /** The `../Photos/<finalName>` embed link for the written image. */
@@ -43,5 +44,36 @@ export async function pickAndWriteVaultImage(): Promise<VaultImageInsert | null>
     picked.base64.length <= MAX_EDITOR_IMAGE_BASE64
       ? toDataUri(picked.mime, picked.base64)
       : null;
+  return { rel, dataUri };
+}
+
+/**
+ * Same write→rel step as above, for bytes that are already in hand — a camera
+ * capture rather than a picked file. `basename` is slugified (extension
+ * stripped) into the filename stem; it defaults to `photo`.
+ *
+ * Throws when the capture exceeds the attachment size cap. That check lives in
+ * `pickAttachment` for the picker path and is bypassed entirely here, so it is
+ * re-applied: `quality: 0.6` on expo-camera bounds JPEG compression but NOT
+ * resolution, so a high-megapixel sensor can still produce a payload that
+ * OOM-kills a low-RAM device while writeBinary serializes it.
+ */
+export async function writeCapturedVaultImage(
+  base64: string,
+  mime: string,
+  basename?: string,
+): Promise<VaultImageInsert> {
+  if (base64.length > MAX_SAFE_SHARE_BYTES * BASE64_EXPANSION) {
+    const capMb = MAX_SAFE_SHARE_BYTES / 1024 / 1024;
+    throw new Error(
+      `Photos are capped at ${capMb} MB to avoid running out of memory. Try a lower-resolution capture.`,
+    );
+  }
+  const ext = extFromMime(mime);
+  const base = slugify((basename ?? "photo").replace(/\.[^.]+$/, "")) || "photo";
+  const { finalName } = await writeBinary("Photos", `${base}.${ext}`, base64, mime);
+  const rel = `../Photos/${finalName}`;
+  const dataUri =
+    base64.length <= MAX_EDITOR_IMAGE_BASE64 ? toDataUri(mime, base64) : null;
   return { rel, dataUri };
 }

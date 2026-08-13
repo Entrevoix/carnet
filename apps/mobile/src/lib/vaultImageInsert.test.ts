@@ -13,8 +13,14 @@ vi.mock("./editorImages", () => ({
   MAX_EDITOR_IMAGE_BASE64: 100,
   toDataUri: vi.fn((mime: string, b64: string) => `data:${mime};base64,${b64}`),
 }));
+// shareHelpers pulls expo-file-system at module scope; only the two size
+// constants are needed here.
+vi.mock("./shareHelpers", () => ({
+  MAX_SAFE_SHARE_BYTES: 1000,
+  BASE64_EXPANSION: 1.4,
+}));
 
-import { pickAndWriteVaultImage } from "./vaultImageInsert";
+import { pickAndWriteVaultImage, writeCapturedVaultImage } from "./vaultImageInsert";
 import { pickAttachment } from "./attachments";
 import { writeBinary } from "./writer";
 
@@ -71,5 +77,55 @@ describe("pickAndWriteVaultImage", () => {
     mockWrite.mockResolvedValue({ filepath: "x", finalName: "image.jpg" });
     await pickAndWriteVaultImage();
     expect(mockWrite).toHaveBeenCalledWith("Photos", "image.jpg", "AB", "image/jpeg");
+  });
+});
+
+describe("writeCapturedVaultImage", () => {
+  it("writes captured bytes to Photos/ under the default basename", async () => {
+    mockWrite.mockResolvedValue({ filepath: "x", finalName: "photo.jpg" });
+    const out = await writeCapturedVaultImage("AB", "image/jpeg");
+    expect(mockWrite).toHaveBeenCalledWith("Photos", "photo.jpg", "AB", "image/jpeg");
+    expect(out).toEqual({
+      rel: "../Photos/photo.jpg",
+      dataUri: "data:image/jpeg;base64,AB",
+    });
+    // The camera never opens the picker on this path.
+    expect(mockPick).not.toHaveBeenCalled();
+  });
+
+  it("returns writeBinary's collision-bumped name, not the requested one", async () => {
+    // A second capture in the same minute must link the file SAF actually
+    // created — otherwise the embed points at the first shot.
+    mockWrite.mockResolvedValue({ filepath: "x", finalName: "photo-2.jpg" });
+    const out = await writeCapturedVaultImage("AB", "image/jpeg");
+    expect(out.rel).toBe("../Photos/photo-2.jpg");
+  });
+
+  it("slugifies a supplied basename and strips its extension", async () => {
+    mockWrite.mockResolvedValue({ filepath: "x", finalName: "my-shot.jpg" });
+    await writeCapturedVaultImage("AB", "image/jpeg", "My Shot.jpeg");
+    expect(mockWrite).toHaveBeenCalledWith("Photos", "my-shot.jpg", "AB", "image/jpeg");
+  });
+
+  it("falls back to 'photo' when the basename slugifies to nothing", async () => {
+    mockWrite.mockResolvedValue({ filepath: "x", finalName: "photo.jpg" });
+    await writeCapturedVaultImage("AB", "image/jpeg", ".jpeg");
+    expect(mockWrite).toHaveBeenCalledWith("Photos", "photo.jpg", "AB", "image/jpeg");
+  });
+
+  it("rejects an oversize capture before anything is written", async () => {
+    // pickAttachment's cap check is bypassed on this path — `quality: 0.6`
+    // bounds compression, not resolution, so a 50 MP shot can still OOM.
+    await expect(
+      writeCapturedVaultImage("X".repeat(2000), "image/jpeg"),
+    ).rejects.toThrow(/capped/i);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("omits the preview data URI when the capture is over the inline cap", async () => {
+    mockWrite.mockResolvedValue({ filepath: "x", finalName: "photo.jpg" });
+    const out = await writeCapturedVaultImage("X".repeat(200), "image/jpeg");
+    expect(out.rel).toBe("../Photos/photo.jpg");
+    expect(out.dataUri).toBeNull();
   });
 });
