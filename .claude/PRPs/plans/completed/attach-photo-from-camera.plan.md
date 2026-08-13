@@ -1,6 +1,6 @@
 # Plan: Attach a photo from the camera to a saved note
 
-Status: in-progress
+Status: shipped
 
 ## Summary
 Add an **Attach photo** row to a saved note's `⋮` menu that opens the camera,
