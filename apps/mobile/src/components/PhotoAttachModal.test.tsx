@@ -187,6 +187,27 @@ describe("PhotoAttachModal", () => {
     expect(onDismiss).not.toHaveBeenCalled();
   });
 
+  it("drops a shot when ✕ is tapped, without waiting for a visible re-render", async () => {
+    // The tightest form of the race: dismissal must invalidate the in-flight
+    // shot SYNCHRONOUSLY. Here the parent never flips `visible` (onDismiss is a
+    // spy), so the reset effect never runs at all — if invalidation were left to
+    // that effect, the resolved photo would still attach.
+    let resolveShot!: (photo: { base64: string }) => void;
+    takePictureAsync.mockReturnValue(
+      new Promise<{ base64: string }>((r) => {
+        resolveShot = r;
+      }),
+    );
+    const { onCaptured, onDismiss } = renderModal();
+
+    fireEvent.click(screen.getByText("Capture"));
+    fireEvent.click(screen.getByLabelText("Close"));
+    resolveShot({ base64: "AAAA" });
+
+    await waitFor(() => expect(onDismiss).toHaveBeenCalled());
+    expect(onCaptured).not.toHaveBeenCalled();
+  });
+
   it("rejects a capture whose bytes exceed the attach cap", async () => {
     takePictureAsync.mockResolvedValue({ base64: "A".repeat(30 * 1024 * 1024 + 1) });
     const { onCaptured, onDismiss } = renderModal();

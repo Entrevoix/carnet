@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
   Button,
@@ -57,13 +57,24 @@ export function PhotoAttachModal({
   // Without this a stale "Camera permission denied" (or a latched spinner from
   // an unmount mid-capture) greets the user on a fresh open.
   useEffect(() => {
-    // Bump on BOTH transitions: a dismiss with no reopen is the common case,
-    // and it must invalidate in-flight work too — not just a close+reopen.
+    // Covers REOPEN, which the parent drives via `visible` — there is no
+    // handler inside this component to hook synchronously for that edge.
     sessionRef.current += 1;
     if (!visible) return;
     setError(null);
     setBusy(false);
   }, [visible]);
+
+  /**
+   * Dismissal has to invalidate in-flight work SYNCHRONOUSLY. Leaving it to the
+   * effect above loses a race: the effect runs only after React commits the
+   * re-render, while `takePictureAsync` resolves on a microtask, so a shot
+   * landing in that window would still read the pre-dismiss session and attach.
+   */
+  const handleDismiss = (): void => {
+    sessionRef.current += 1;
+    onDismiss();
+  };
 
   const capture = async (): Promise<void> => {
     if (!cameraRef.current) {
@@ -132,7 +143,7 @@ export function PhotoAttachModal({
     <Portal>
       <Modal
         visible={visible}
-        onDismiss={onDismiss}
+        onDismiss={handleDismiss}
         contentContainerStyle={[
           styles.modal,
           {
@@ -143,12 +154,14 @@ export function PhotoAttachModal({
       >
         <View style={styles.header}>
           <Text variant="titleMedium">Attach photo</Text>
-          <IconButton icon="close" onPress={onDismiss} accessibilityLabel="Close" />
+          <IconButton icon="close" onPress={handleDismiss} accessibilityLabel="Close" />
         </View>
 
-        {/* Only the camera half is permission-gated — the Library path needs no
+        {/* Scrolls so the preview's 3:4 aspect ratio can never push Capture /
+            Library off-screen on a short or tablet-proportioned viewport.
+            Only the camera half is permission-gated — the Library path needs no
             camera access, so denying it must not lock out the fallback too. */}
-        <View style={styles.body}>
+        <ScrollView contentContainerStyle={styles.body}>
           {!permission ? (
             <ActivityIndicator />
           ) : !permission.granted ? (
@@ -184,14 +197,16 @@ export function PhotoAttachModal({
               {error}
             </HelperText>
           ) : null}
-        </View>
+        </ScrollView>
       </Modal>
     </Portal>
   );
 }
 
 const styles = StyleSheet.create({
-  modal: { margin: 16, padding: 0, overflow: "hidden" },
+  // flexShrink is 0 by default in RN, so without it the surface would grow past
+  // the viewport instead of letting the ScrollView inside take over.
+  modal: { margin: 16, padding: 0, overflow: "hidden", flexShrink: 1 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
