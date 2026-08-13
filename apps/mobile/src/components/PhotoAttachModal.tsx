@@ -161,7 +161,7 @@ export function PhotoAttachModal({
             Library off-screen on a short or tablet-proportioned viewport.
             Only the camera half is permission-gated — the Library path needs no
             camera access, so denying it must not lock out the fallback too. */}
-        <ScrollView contentContainerStyle={styles.body}>
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.body}>
           {!permission ? (
             <ActivityIndicator />
           ) : !permission.granted ? (
@@ -207,6 +207,11 @@ const styles = StyleSheet.create({
   // flexShrink is 0 by default in RN, so without it the surface would grow past
   // the viewport instead of letting the ScrollView inside take over.
   modal: { margin: 16, padding: 0, overflow: "hidden", flexShrink: 1 },
+  // Needed on the ScrollView itself, not just the surface above it: a View
+  // defaults to flexShrink 0, so without this it measures to full content
+  // height and the modal's overflow:hidden clips the buttons instead of
+  // letting them scroll into reach.
+  scroll: { flexShrink: 1 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
