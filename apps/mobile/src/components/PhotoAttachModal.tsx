@@ -57,10 +57,12 @@ export function PhotoAttachModal({
   // Without this a stale "Camera permission denied" (or a latched spinner from
   // an unmount mid-capture) greets the user on a fresh open.
   useEffect(() => {
+    // Bump on BOTH transitions: a dismiss with no reopen is the common case,
+    // and it must invalidate in-flight work too — not just a close+reopen.
+    sessionRef.current += 1;
     if (!visible) return;
     setError(null);
     setBusy(false);
-    sessionRef.current += 1;
   }, [visible]);
 
   const capture = async (): Promise<void> => {

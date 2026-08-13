@@ -148,7 +148,7 @@ describe("PhotoAttachModal", () => {
     expect(screen.getByText("Capture")).toBeTruthy();
   });
 
-  it("drops a shot that resolves after the modal was dismissed", async () => {
+  it("drops a shot that resolves after the modal was dismissed then reopened", async () => {
     let resolveShot!: (photo: { base64: string }) => void;
     takePictureAsync.mockReturnValue(
       new Promise<{ base64: string }>((r) => {
@@ -160,6 +160,26 @@ describe("PhotoAttachModal", () => {
     fireEvent.click(screen.getByText("Capture"));
     setVisible(false);
     setVisible(true);
+    resolveShot({ base64: "AAAA" });
+
+    await waitFor(() => expect(takePictureAsync).toHaveBeenCalled());
+    expect(onCaptured).not.toHaveBeenCalled();
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("drops a shot that resolves after the modal was dismissed and never reopened", async () => {
+    // The commoner case: the user taps ✕ and walks away. Nothing reopens to
+    // bump the session, so the invalidation has to happen on close itself.
+    let resolveShot!: (photo: { base64: string }) => void;
+    takePictureAsync.mockReturnValue(
+      new Promise<{ base64: string }>((r) => {
+        resolveShot = r;
+      }),
+    );
+    const { onCaptured, onDismiss, setVisible } = renderModal();
+
+    fireEvent.click(screen.getByText("Capture"));
+    setVisible(false);
     resolveShot({ base64: "AAAA" });
 
     await waitFor(() => expect(takePictureAsync).toHaveBeenCalled());
