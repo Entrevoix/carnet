@@ -34,13 +34,14 @@ export function formatDate(unix: number): string {
   return new Date(unix).toLocaleString();
 }
 
-/** The five failure slots that compete for the screen's one banner. */
+/** The failure slots that compete for the screen's one banner. */
 export interface NoteIssueState {
   editError: string | null;
   karakeepError: string | null;
   transcribeError: string | null;
   reEnrichError: string | null;
   enhanceError: string | null;
+  attachPhotoError: string | null;
 }
 
 /**
@@ -54,6 +55,7 @@ export function activeIssueMessage(state: NoteIssueState): string | null {
   if (state.transcribeError) return `Transcribe failed: ${state.transcribeError}`;
   if (state.reEnrichError) return `Re-enrich failed: ${state.reEnrichError}`;
   if (state.enhanceError) return `Enhance failed: ${state.enhanceError}`;
+  if (state.attachPhotoError) return `Attach photo failed: ${state.attachPhotoError}`;
   return null;
 }
 
@@ -63,6 +65,7 @@ export interface NoteBusyState {
   transcribing: boolean;
   exportingKarakeep: boolean;
   enhancing: boolean;
+  attachingPhoto: boolean;
 }
 
 /** Label for the inline spinner, or null when nothing is in flight. */
@@ -71,13 +74,18 @@ export function busyLabel(state: NoteBusyState): string | null {
   if (state.transcribing) return "Transcribing audio…";
   if (state.exportingKarakeep) return "Sending to Karakeep…";
   if (state.enhancing) return "Enhancing prose…";
+  if (state.attachingPhoto) return "Attaching photo…";
   return null;
 }
 
 /** True while any action is running (gates the FAB + sheet rows). */
 export function isActionsBusy(state: NoteBusyState): boolean {
   return (
-    state.reEnriching || state.transcribing || state.exportingKarakeep || state.enhancing
+    state.reEnriching ||
+    state.transcribing ||
+    state.exportingKarakeep ||
+    state.enhancing ||
+    state.attachingPhoto
   );
 }
 

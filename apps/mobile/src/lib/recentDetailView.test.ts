@@ -17,12 +17,14 @@ const NO_ISSUES = {
   transcribeError: null,
   reEnrichError: null,
   enhanceError: null,
+  attachPhotoError: null,
 };
 const NOT_BUSY = {
   reEnriching: false,
   transcribing: false,
   exportingKarakeep: false,
   enhancing: false,
+  attachingPhoto: false,
 };
 
 describe("formatMode", () => {
@@ -88,6 +90,7 @@ describe("activeIssueMessage", () => {
         transcribeError: "transcribe-reason",
         reEnrichError: "enrich-reason",
         enhanceError: "enhance-reason",
+        attachPhotoError: "attach-reason",
       }),
     ).toBe("Save failed: save-reason");
   });
@@ -100,6 +103,7 @@ describe("activeIssueMessage", () => {
         transcribeError: "transcribe-reason",
         reEnrichError: "enrich-reason",
         enhanceError: "enhance-reason",
+        attachPhotoError: "attach-reason",
       }),
     ).toBe("Karakeep export failed: karakeep-reason");
     expect(
@@ -109,6 +113,7 @@ describe("activeIssueMessage", () => {
         transcribeError: "transcribe-reason",
         reEnrichError: "enrich-reason",
         enhanceError: "enhance-reason",
+        attachPhotoError: "attach-reason",
       }),
     ).toBe("Transcribe failed: transcribe-reason");
     expect(
@@ -118,8 +123,24 @@ describe("activeIssueMessage", () => {
         transcribeError: null,
         reEnrichError: "enrich-reason",
         enhanceError: "enhance-reason",
+        attachPhotoError: "attach-reason",
       }),
     ).toBe("Re-enrich failed: enrich-reason");
+    expect(
+      activeIssueMessage({
+        ...NO_ISSUES,
+        enhanceError: "enhance-reason",
+        attachPhotoError: "attach-reason",
+      }),
+    ).toBe("Enhance failed: enhance-reason");
+  });
+
+  it("reports an attach-photo failure when it is the only issue", () => {
+    // Lowest precedence: a refused attach costs the user a re-shot, never
+    // their own words.
+    expect(
+      activeIssueMessage({ ...NO_ISSUES, attachPhotoError: "note changed" }),
+    ).toBe("Attach photo failed: note changed");
   });
 });
 
@@ -146,6 +167,7 @@ describe("busyLabel", () => {
       transcribing: true,
       exportingKarakeep: true,
       enhancing: true,
+      attachingPhoto: true,
     };
     expect(busyLabel(allBusy)).toBe("Re-running vision enrichment…");
     expect(busyLabel({ ...allBusy, reEnriching: false })).toBe("Transcribing audio…");
@@ -160,6 +182,9 @@ describe("busyLabel", () => {
         exportingKarakeep: false,
       }),
     ).toBe("Enhancing prose…");
+    expect(busyLabel({ ...NOT_BUSY, attachingPhoto: true })).toBe(
+      "Attaching photo…",
+    );
   });
 });
 
@@ -170,6 +195,7 @@ describe("isActionsBusy", () => {
     expect(isActionsBusy({ ...NOT_BUSY, transcribing: true })).toBe(true);
     expect(isActionsBusy({ ...NOT_BUSY, exportingKarakeep: true })).toBe(true);
     expect(isActionsBusy({ ...NOT_BUSY, enhancing: true })).toBe(true);
+    expect(isActionsBusy({ ...NOT_BUSY, attachingPhoto: true })).toBe(true);
   });
 });
 
