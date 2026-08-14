@@ -30,3 +30,7 @@ export const getCurrentPositionAsync = vi.fn(async () => ({
 }));
 
 export const reverseGeocodeAsync = vi.fn(async () => [] as Array<Record<string, string>>);
+
+export const geocodeAsync = vi.fn(
+  async () => [] as Array<{ latitude: number; longitude: number }>,
+);

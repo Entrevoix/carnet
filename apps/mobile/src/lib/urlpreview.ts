@@ -151,7 +151,7 @@ function firstParagraph(html: string): string {
  * than the one the socket actually dials. We parse the authority by hand so
  * the SSRF check operates on the same host the native layer will resolve,
  * and so the behavior is identical on-device and under the Node test URL. */
-function extractHost(rawUrl: string): string | null {
+export function extractHost(rawUrl: string): string | null {
   // WHATWG URL parsing strips ASCII tab / newline / carriage-return from the
   // URL *before* parsing, and the native fetch layer (OkHttp / NSURLSession)
   // does the same before it dials — so we must strip them first, or a byte
@@ -486,7 +486,7 @@ function hostVariants(rawHost: string): string[] {
  *
  * `rawHost` must be an already-extracted host (see {@link extractHost}),
  * not a full URL — no scheme, no port, no brackets required. */
-function isBlockedHost(rawHost: string): boolean {
+export function isBlockedHost(rawHost: string): boolean {
   return hostVariants(rawHost).some(isBlockedHostExact);
 }
 
@@ -526,6 +526,14 @@ const MAX_REDIRECTS = 5;
 /** HTTP status codes that carry a `Location` header we follow manually. */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+/** A completed redirect chain: the final response plus the URL it came from.
+ * `finalUrl` is what callers that resolve short links (mapsLink.ts) need —
+ * `Response.url` is unset under `redirect: "manual"` on RN and in tests. */
+export interface RedirectResult {
+  response: Response;
+  finalUrl: string;
+}
+
 /** Internal: follow redirects MANUALLY (`redirect: "manual"`), re-running the
  * SSRF host guard on every hop.
  *
@@ -534,10 +542,10 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
  * fire the follow-up GET before we could inspect the target — the exact SSRF
  * hole isBlockedHost is meant to close. Following by hand lets us validate the
  * scheme AND host of each redirect target before issuing the next request. */
-async function followWithRedirects(
+export async function followWithRedirects(
   startUrl: string,
   signal: AbortSignal,
-): Promise<Response> {
+): Promise<RedirectResult> {
   let currentUrl = startUrl;
   let redirects = 0;
   for (;;) {
@@ -550,12 +558,14 @@ async function followWithRedirects(
       },
       signal,
     });
-    if (!REDIRECT_STATUSES.has(response.status)) return response;
+    if (!REDIRECT_STATUSES.has(response.status)) {
+      return { response, finalUrl: currentUrl };
+    }
 
     // A 3xx with no Location is malformed — hand it back so the caller's
     // `!response.ok` path collapses it to null rather than looping.
     const location = response.headers.get("location");
-    if (!location) return response;
+    if (!location) return { response, finalUrl: currentUrl };
 
     redirects += 1;
     if (redirects > MAX_REDIRECTS) {
@@ -604,7 +614,7 @@ async function followWithRedirects(
  * RN's fetch does not reject when AbortController.abort() fires during a stuck
  * connect to an unreachable host — a bare AbortController would hang forever.
  * The timeout budget covers the ENTIRE chain, not each hop. */
-async function fetchWithTimeout(url: string): Promise<Response> {
+export async function fetchWithTimeout(url: string): Promise<RedirectResult> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -654,7 +664,7 @@ export async function fetchUrlPreview(url: string): Promise<UrlPreview | null> {
 
   let response: Response;
   try {
-    response = await fetchWithTimeout(url);
+    ({ response } = await fetchWithTimeout(url));
   } catch {
     return null;
   }

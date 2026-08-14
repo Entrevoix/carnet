@@ -26,6 +26,7 @@ interface NoteActionsSheetProps {
   actionsBusy: boolean;
   /** True when the .md is gone from disk — nothing destructive may run. */
   missing: boolean;
+  onAttachPhoto: () => void;
   onReEnrich: () => void;
   onFinishEnrichment: () => void;
   onGeneralReEnrich: () => void;
@@ -73,6 +74,7 @@ export function NoteActionsSheet({
   karakeepConfigured,
   actionsBusy,
   missing,
+  onAttachPhoto,
   onReEnrich,
   onFinishEnrichment,
   onGeneralReEnrich,
@@ -122,6 +124,14 @@ export function NoteActionsSheet({
           style={styles.sheetRow}
         />
       ) : null}
+      <List.Item
+        title="Attach photo"
+        description="Photograph something and add it to this entry"
+        left={(p) => <List.Icon {...p} icon="camera-plus-outline" />}
+        disabled={actionsBusy || missing}
+        onPress={onAttachPhoto}
+        style={styles.sheetRow}
+      />
       {reEnrichRow === "image" ? (
         <List.Item
           title="Re-enrich"

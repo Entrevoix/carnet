@@ -45,3 +45,37 @@ export async function pickAndWriteVaultImage(): Promise<VaultImageInsert | null>
       : null;
   return { rel, dataUri };
 }
+
+/**
+ * Same write→rel step as above, for bytes that are already in hand — a camera
+ * capture rather than a picked file. `basename` is slugified (extension
+ * stripped) into the filename stem; it defaults to a timestamped `photo-<ms>`.
+ * The timestamp matters: the only caller passes no basename for camera shots,
+ * so a bare `photo` stem would funnel every capture in a vault through
+ * writeBinary's finite collision-suffix range and eventually wedge shut.
+ *
+ * Deliberately enforces no size cap of its own, which is worth stating so one
+ * is not "restored" later as an oversight:
+ *   - the library path is already capped inside `pickAttachment`, before the
+ *     bytes ever reach here;
+ *   - the camera path cannot approach that 200 MB ceiling — a `quality: 0.6`
+ *     JPEG is single-digit MB even off a high-megapixel sensor;
+ *   - and a check here could not prevent the one OOM that is actually
+ *     plausible, which would happen earlier, inside `takePictureAsync({ base64:
+ *     true })`, before this function is entered at all.
+ * A cap here would be dead code that overstates the protection it provides.
+ */
+export async function writeCapturedVaultImage(
+  base64: string,
+  mime: string,
+  basename?: string,
+): Promise<VaultImageInsert> {
+  const ext = extFromMime(mime);
+  const base =
+    slugify((basename ?? `photo-${Date.now()}`).replace(/\.[^.]+$/, "")) || "photo";
+  const { finalName } = await writeBinary("Photos", `${base}.${ext}`, base64, mime);
+  const rel = `../Photos/${finalName}`;
+  const dataUri =
+    base64.length <= MAX_EDITOR_IMAGE_BASE64 ? toDataUri(mime, base64) : null;
+  return { rel, dataUri };
+}

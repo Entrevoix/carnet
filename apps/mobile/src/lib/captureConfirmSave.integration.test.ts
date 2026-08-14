@@ -31,6 +31,7 @@ const writePersonMock = vi.fn();
 // `frontmatter` — are pure and stay REAL.
 vi.mock("./writer", () => ({
   injectAttachments: (markdown: string) => markdown,
+  injectPlaces: (markdown: string) => markdown,
   writeIdea: (...args: unknown[]) => writeIdeaMock(...args),
   appendJournal: (...args: unknown[]) => appendJournalMock(...args),
   writePerson: (...args: unknown[]) => writePersonMock(...args),

@@ -49,6 +49,13 @@ vi.mock("../lib/writer", () => ({
   writePerson: vi.fn(),
   writeBinary: vi.fn(),
   injectAttachments: vi.fn((md: string) => md),
+  injectPlaces: vi.fn((md: string, places: { name: string; coords: { lat: number; lon: number } }[]) =>
+    places.length === 0
+      ? md
+      : `${md}\n\n## Places\n\n${places
+          .map((pl) => `[${pl.name}](geo:${pl.coords.lat},${pl.coords.lon})`)
+          .join("\n\n")}\n`,
+  ),
   extFromMime: vi.fn(() => "jpg"),
   // Must honour readNote's real async contract: the saved-screen Re-enrich
   // reads the note for its conflict baseline and chains off the promise.
@@ -76,6 +83,14 @@ vi.mock("../lib/ideaSaveFirst", () => ({
     markdown: "---\n---\n# My Idea\n\nmy idea\n",
   })),
 }));
+
+// Place resolution is network/native-backed; unit-tested in mapsLink.test.ts
+// and location.test.ts. Here we only care that resolved places reach the save.
+vi.mock("../lib/mapsLink", () => ({ resolveMapsLink: vi.fn() }));
+vi.mock("../lib/location", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/location")>();
+  return { ...actual, resolvePlaceName: vi.fn() };
+});
 
 vi.mock("../lib/attachments", () => ({
   pickAttachment: vi.fn(async () => null),
@@ -112,6 +127,8 @@ import { enqueue } from "../lib/queue";
 import { persistAttachments } from "../lib/attachmentPersistence";
 import { clearDraft as clearDraftMock } from "../lib/captureDraft";
 import { upsertNoteInIndex } from "../lib/vault";
+import { appendJournal } from "../lib/writer";
+import { resolvePlaceName } from "../lib/location";
 
 type ScreenProps = Parameters<typeof CaptureScreen>[0];
 
@@ -815,5 +832,81 @@ describe("CaptureScreen — Edit during a multi-await continuation", () => {
       expect(removeFromHistoryByFilepath).toHaveBeenCalledWith("file:///v/Ideas/my-idea.md"),
     );
     await waitFor(() => expect(recordCapture).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("CaptureScreen (journal) — places", () => {
+  // vi.clearAllMocks() keeps implementations, so a mockResolvedValue set here
+  // would outlive the test — put the module default back explicitly.
+  afterEach(() => {
+    vi.mocked(getSettings).mockResolvedValue({
+      previewBeforeSave: false,
+    } as unknown as Awaited<ReturnType<typeof getSettings>>);
+  });
+
+  /** Type a place name into the meta sheet's Places field and press Add. */
+  async function addPlace(name: string, lat: number, lon: number): Promise<void> {
+    vi.mocked(resolvePlaceName).mockResolvedValueOnce({
+      kind: "ok",
+      place: name,
+      coords: { lat, lon },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Rud-Alpe, or https://maps.app.goo.gl/…"), {
+      target: { value: name },
+    });
+    fireEvent.click(screen.getByText("Add"));
+    await waitFor(() => expect(screen.getByText(name)).toBeTruthy());
+  }
+
+  it("shows the Places field for Journal captures only", async () => {
+    renderScreen("journal");
+    await screen.findByPlaceholderText("Transcript — speak or type");
+    fireEvent.click(screen.getByLabelText("Add tags, location, or attachments"));
+    expect(await screen.findByText("Tags & details")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Rud-Alpe, or https://maps.app.goo.gl/…")).toBeTruthy();
+  });
+
+  it("shows no Places field for Idea captures", async () => {
+    renderScreen("idea");
+    await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.click(screen.getByLabelText("Add tags, location, or attachments"));
+    expect(await screen.findByText("Tags & details")).toBeTruthy();
+    expect(
+      screen.queryByPlaceholderText("Rud-Alpe, or https://maps.app.goo.gl/…"),
+    ).toBeNull();
+  });
+
+  it("writes both added places into the saved journal entry body", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      previewBeforeSave: true,
+    } as unknown as Awaited<ReturnType<typeof getSettings>>);
+    vi.mocked(enrichJournal).mockResolvedValue({
+      markdown: "# Travel day\n\nThree stops.\n",
+      model: "test-model",
+    } as unknown as Awaited<ReturnType<typeof enrichJournal>>);
+    vi.mocked(appendJournal).mockResolvedValue({
+      filepath: "file:///v/Journal/2026-08-11.md",
+      markdown: "<day-file>",
+    } as unknown as Awaited<ReturnType<typeof appendJournal>>);
+
+    renderScreen("journal");
+    const transcript = await screen.findByPlaceholderText("Transcript — speak or type");
+    fireEvent.change(transcript, { target: { value: "three stops today" } });
+
+    fireEvent.click(screen.getByLabelText("Add tags, location, or attachments"));
+    await screen.findByText("Tags & details");
+    await addPlace("Rud-Alpe", 47.2011, 10.1166);
+    await addPlace("Lech", 47.2063, 10.1435);
+    fireEvent.click(screen.getByText("Done"));
+
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(screen.getByText("Save")).toBeTruthy());
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => expect(appendJournal).toHaveBeenCalled());
+    const body = vi.mocked(appendJournal).mock.calls[0][1];
+    expect(body).toContain("## Places");
+    expect(body).toContain("[Rud-Alpe](geo:47.2011,10.1166)");
+    expect(body).toContain("[Lech](geo:47.2063,10.1435)");
   });
 });

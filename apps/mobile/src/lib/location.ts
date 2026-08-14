@@ -57,6 +57,43 @@ export async function getCurrentCoords(): Promise<Coords | null> {
   }
 }
 
+/** A place resolved from user input (a typed name or a pasted Maps link):
+ * either a hit, several equally-plausible hits, or a typed failure. Every
+ * resolver collapses its failures into this union and never throws. */
+export type ResolvePlaceOutcome =
+  | { kind: "ok"; place: string; coords: Coords }
+  | { kind: "ambiguous"; candidates: { place: string; coords: Coords }[] }
+  | { kind: "notFound" }
+  | { kind: "invalidLink" }
+  | { kind: "error"; message: string };
+
+/**
+ * Forward-geocode a typed place name to coordinates. Never throws — a
+ * geocoder outage, a missing platform geocoder, or a denied permission all
+ * collapse to `{kind:"error"}`.
+ *
+ * `geocodeAsync` returns coordinates only (no canonical place label), so the
+ * `place` in the outcome is the user's own input echoed back.
+ */
+export async function resolvePlaceName(name: string): Promise<ResolvePlaceOutcome> {
+  const trimmed = name.trim();
+  if (!trimmed) return { kind: "notFound" };
+  try {
+    const results = await Location.geocodeAsync(trimmed);
+    if (results.length === 0) return { kind: "notFound" };
+    const candidates = results.map((r) => ({
+      place: trimmed,
+      coords: { lat: r.latitude, lon: r.longitude },
+    }));
+    if (candidates.length === 1) {
+      return { kind: "ok", place: candidates[0].place, coords: candidates[0].coords };
+    }
+    return { kind: "ambiguous", candidates };
+  } catch (e: unknown) {
+    return { kind: "error", message: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /**
  * Best-effort, display-only reverse geocode of coords to a short place label
  * (e.g. "Washington, DC"). NOT persisted to disk — the note stores only

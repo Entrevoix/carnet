@@ -97,6 +97,26 @@ vi.mock("../lib/dispatcher", () => ({
   FALLBACK_PROVIDER_FIELD: "fallback",
 }));
 vi.mock("../lib/attachments", () => ({ pickAttachment: vi.fn() }));
+vi.mock("../lib/attachPhotoToNote", () => ({ attachPhotoToNote: vi.fn() }));
+// expo-camera is a native module; the modal's own behavior is covered in
+// PhotoAttachModal.test.tsx. Here it is a dispatch stub for the wiring.
+vi.mock("../components/PhotoAttachModal", async () => {
+  const { Button } = await import("react-native-paper");
+  return {
+    PhotoAttachModal: ({
+      visible,
+      onCaptured,
+    }: {
+      visible: boolean;
+      onCaptured: (b: string, m: string, n?: string) => void;
+    }) =>
+      visible ? (
+        <Button onPress={() => onCaptured("AAAA", "image/jpeg", undefined)}>
+          fake-shutter
+        </Button>
+      ) : null,
+  };
+});
 
 // Fully mocked, not importActual: the real module pulls the enrichment chain
 // into a renderer-less environment. The two predicates are trivially restated
@@ -144,6 +164,7 @@ import RecentDetailScreen from "./RecentDetailScreen";
 import { readNote, updateNote } from "../lib/writer";
 import { reEnrichNoteInPlace } from "../lib/finishEnrichment";
 import { removeFromHistory, updateCaptureTitleByFilepath } from "../lib/storage";
+import { attachPhotoToNote } from "../lib/attachPhotoToNote";
 
 type ScreenProps = Parameters<typeof RecentDetailScreen>[0];
 
@@ -317,6 +338,61 @@ describe("RecentDetailScreen", () => {
     fireEvent.click(screen.getByLabelText("More actions"));
     fireEvent.click(await screen.findByText("Delete"));
     expect(await screen.findByText("Move to Archive?")).toBeTruthy();
+  });
+
+  it("Attach photo opens the camera modal and a shot dispatches to attachPhotoToNote", async () => {
+    vi.mocked(attachPhotoToNote).mockResolvedValue({
+      kind: "attached",
+      rel: "../Photos/photo.jpg",
+      nextBody: `${NOTE_MD.trimEnd()}\n\n![](../Photos/photo.jpg)\n`,
+    });
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+
+    const withHeader = navigation.setOptions.mock.calls
+      .map(([opts]) => opts)
+      .filter((o) => typeof o.headerRight === "function")
+      .at(-1);
+    render(<PaperProvider theme={carnetLight}>{withHeader.headerRight()}</PaperProvider>);
+    fireEvent.click(screen.getByLabelText("More actions"));
+
+    fireEvent.click(await screen.findByText("Attach photo"));
+    fireEvent.click(await screen.findByText("fake-shutter"));
+
+    await waitFor(() =>
+      expect(attachPhotoToNote).toHaveBeenCalledWith({
+        filepath: ENTRY.filepath,
+        base64: "AAAA",
+        mime: "image/jpeg",
+        basename: undefined,
+      }),
+    );
+    // The refreshed body comes back from the lib module, not a local splice.
+    expect(await screen.findByText("Photo attached.")).toBeTruthy();
+  });
+
+  it("surfaces a refused attach in the banner slot", async () => {
+    vi.mocked(attachPhotoToNote).mockResolvedValue({
+      kind: "failed",
+      reason: "The note was written to from somewhere else.",
+    });
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+
+    const withHeader = navigation.setOptions.mock.calls
+      .map(([opts]) => opts)
+      .filter((o) => typeof o.headerRight === "function")
+      .at(-1);
+    render(<PaperProvider theme={carnetLight}>{withHeader.headerRight()}</PaperProvider>);
+    fireEvent.click(screen.getByLabelText("More actions"));
+    fireEvent.click(await screen.findByText("Attach photo"));
+    fireEvent.click(await screen.findByText("fake-shutter"));
+
+    expect(
+      await screen.findByText(
+        /Attach photo failed: The note was written to from somewhere else\./,
+      ),
+    ).toBeTruthy();
   });
 
   it("missing file shows the dedicated state and Remove from list works", async () => {

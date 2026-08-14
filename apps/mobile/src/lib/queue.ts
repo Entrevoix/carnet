@@ -44,8 +44,10 @@ import {
   writePerson,
   slugify,
   injectAttachments,
+  injectPlaces,
   updateNoteIfUnchanged,
   type AttachmentRef,
+  type Place,
 } from "./writer";
 import { mergeUserTags } from "./tags";
 import { upsertFrontmatterField } from "./frontmatter";
@@ -98,6 +100,9 @@ export interface JournalPayload {
   tags?: string[];
   /** User-selected `lat,lon`, injected into frontmatter on drain. */
   location?: string;
+  /** Named places for this entry, injected into its body on drain. Journal
+   * only — Idea/Person captures have no places surface. */
+  places?: Place[];
 }
 
 export interface PersonPayload {
@@ -371,9 +376,14 @@ async function processRow(payload: QueuePayload): Promise<void> {
       transcript: payload.transcript,
       notes: payload.notes,
     });
-    const md = injectLocation(
-      mergeUserTags(injectAttachments(result.markdown, payload.attachments ?? []), payload.tags),
-      payload.location,
+    // Same compose order as the online path (confirmSaveJournal): places go in
+    // last, on this entry's own fragment, before appendJournal accumulates it.
+    const md = injectPlaces(
+      injectLocation(
+        mergeUserTags(injectAttachments(result.markdown, payload.attachments ?? []), payload.tags),
+        payload.location,
+      ),
+      payload.places ?? [],
     );
     await appendJournal(payload.date, md);
   } else if (payload.mode === "person") {

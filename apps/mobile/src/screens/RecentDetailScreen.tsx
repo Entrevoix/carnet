@@ -43,6 +43,7 @@ import { ArchiveNoteDialog } from "../components/ArchiveNoteDialog";
 import { DiscardEditsDialog } from "../components/DiscardEditsDialog";
 import { makeImageRule } from "../components/markdownImageRule";
 import { NoteActionsSheet } from "../components/NoteActionsSheet";
+import { PhotoAttachModal } from "../components/PhotoAttachModal";
 import {
   NoteAttachmentsCard,
   type ResolvedAttachment,
@@ -75,6 +76,7 @@ import {
   reEnrichNoteInPlace,
 } from "../lib/finishEnrichment";
 import { enhanceNoteProse } from "../lib/enhanceProse";
+import { attachPhotoToNote } from "../lib/attachPhotoToNote";
 import { FALLBACK_PROVIDER_FIELD } from "../lib/dispatcher";
 import { useCarnetTheme } from "../lib/theme";
 import { useKarakeepExport } from "../lib/useKarakeepExport";
@@ -116,6 +118,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [enhancing, setEnhancing] = useState(false);
   const [enhanceError, setEnhanceError] = useState<string | null>(null);
   const [enhancedWith, setEnhancedWith] = useState<string | null>(null);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [attachingPhoto, setAttachingPhoto] = useState(false);
+  const [attachPhotoError, setAttachPhotoError] = useState<string | null>(null);
+  const [photoAttached, setPhotoAttached] = useState(false);
   // Both read once on mount from the persisted settings: the Karakeep action is
   // gated on a non-blank instance URL, and the rich editor is the default (kept
   // behind a flag so a future gate can flip it off without re-plumbing).
@@ -129,6 +135,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const reEnrichingRef = useRef(false);
   const transcribingRef = useRef(false);
   const enhancingRef = useRef(false);
+  const attachingPhotoRef = useRef(false);
   // Mounted guard — Back-during-write can unmount before the in-flight
   // updateNote resolves; setState after that triggers a React warning. The
   // write itself still lands on disk.
@@ -375,6 +382,28 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     setEnhancing(false);
   }, [body, entry.filepath]);
 
+  const handleAttachPhoto = useCallback(
+    async (base64: string, mime: string, basename?: string) => {
+      if (attachingPhotoRef.current) return;
+      attachingPhotoRef.current = true;
+      setAttachPhotoError(null);
+      setAttachingPhoto(true);
+      const outcome = await attachPhotoToNote({
+        filepath: entry.filepath,
+        base64,
+        mime,
+        basename,
+      });
+      if (outcome.kind === "attached") {
+        setBody(outcome.nextBody);
+        setPhotoAttached(true);
+      } else setAttachPhotoError(outcome.reason);
+      attachingPhotoRef.current = false;
+      setAttachingPhoto(false);
+    },
+    [entry.filepath],
+  );
+
   // ── Attachments (images inline + tappable file rows) ──────────────────────
   // Audio is rendered by the dedicated player, so it's excluded here. The
   // markdown renderer can't resolve relative/SAF URIs, so we resolve each link
@@ -549,6 +578,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     transcribing,
     exportingKarakeep: karakeep.exportingKarakeep,
     enhancing,
+    attachingPhoto,
   };
   const activeIssue = activeIssueMessage({
     editError: edit.editError,
@@ -556,6 +586,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     transcribeError,
     reEnrichError,
     enhanceError,
+    attachPhotoError,
   });
   const inlineBusyLabel = busyLabel(busy);
   const actionsBusy = isActionsBusy(busy);
@@ -730,6 +761,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       </Snackbar>
 
       <Snackbar
+        visible={photoAttached}
+        onDismiss={() => setPhotoAttached(false)}
+        duration={2500}
+      >
+        Photo attached.
+      </Snackbar>
+
+      <Snackbar
         visible={enhancedWith !== null}
         onDismiss={() => setEnhancedWith(null)}
         duration={2500}
@@ -773,6 +812,10 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
             setActionsOpen(false);
             void handleEnhance();
           }}
+          onAttachPhoto={() => {
+            setActionsOpen(false);
+            setAttachOpen(true);
+          }}
           onReEnrich={() => {
             setActionsOpen(false);
             void handleReEnrich();
@@ -793,6 +836,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
             setActionsOpen(false);
             setConfirmVisible(true);
           }}
+        />
+
+        <PhotoAttachModal
+          visible={attachOpen}
+          onDismiss={() => setAttachOpen(false)}
+          onCaptured={(base64, mime, basename) =>
+            void handleAttachPhoto(base64, mime, basename)
+          }
         />
 
         <NoteFileInfoDialog

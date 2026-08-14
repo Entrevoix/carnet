@@ -49,6 +49,7 @@ import { classifyCaptureError } from "../lib/captureErrorDecision";
 import { planSaveFirstOutcome } from "../lib/saveFirstOutcome";
 import { persistAttachments as persistAttachmentsToVault } from "../lib/attachmentPersistence";
 import { confirmSaveIdea, confirmSaveJournal, confirmSavePerson } from "../lib/captureConfirmSave";
+import type { Place } from "../lib/writer";
 import { promoteIdeaOnDisk } from "../lib/promoteIdeaOnDisk";
 import { pickAttachment, type PickedAttachment } from "../lib/attachments";
 import { clearDraft, loadDraft, saveDraft } from "../lib/captureDraft";
@@ -139,6 +140,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const [knownTags, setKnownTags] = useState<string[]>([]);
   // User-selected location as a `lat,lon` string, injected into frontmatter on save.
   const [location, setLocation] = useState<string | null>(null);
+  // Named places for this entry, written into the note BODY (not frontmatter) so
+  // several same-day journal entries each keep their own. Journal only.
+  const [places, setPlaces] = useState<Place[]>([]);
   // Save-first vs. blocking-preview for Idea. Default false = save-first (the raw
   // note is written immediately, enrichment updates it in place). Loaded from
   // settings on mount; Journal/Person never consult it.
@@ -368,6 +372,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setSavedAttachments([]);
       setTags([]);
       setLocation(null);
+      setPlaces([]);
       void clearDraft(mode).catch(() => undefined);
     } catch (qe: unknown) {
       if (superseded()) return;
@@ -700,6 +705,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setSavedAttachments([]);
         setTags([]);
         setLocation(null);
+        setPlaces([]);
         setText("");
         void clearDraft(mode).catch(() => undefined);
         const outcome = await enrichIdeaInPlace({
@@ -748,6 +754,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
             attachments: refs,
             tags,
             location: location ?? undefined,
+            places,
           });
         }, superseded);
       }
@@ -798,6 +805,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setSavedAttachments([]);
         setTags([]);
         setLocation(null);
+        setPlaces([]);
         setSavedFilepath(filepath);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, markdown).catch(() => undefined);
@@ -828,11 +836,13 @@ export default function CaptureScreen({ route, navigation }: Props) {
           refs,
           tags,
           location,
+          places,
         });
         setPending([]);
       setSavedAttachments([]);
         setTags([]);
         setLocation(null);
+        setPlaces([]);
         setSavedFilepath(filepath);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, dayFileMarkdown).catch(() => undefined);
@@ -858,6 +868,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         });
         setTags([]);
         setLocation(null);
+        setPlaces([]);
         setSavedFilepath(filepath);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, markdown).catch(() => undefined);
@@ -973,6 +984,9 @@ export default function CaptureScreen({ route, navigation }: Props) {
             knownTags={knownTags}
             location={location}
             onLocationChange={setLocation}
+            showPlaces={mode === "journal"}
+            places={places}
+            onPlacesChange={setPlaces}
             showAttachments={mode !== "person"}
             pending={pending}
             savedAttachments={savedAttachments}
