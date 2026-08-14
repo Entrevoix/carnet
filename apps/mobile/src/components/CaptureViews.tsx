@@ -33,6 +33,14 @@ interface CaptureMetaSheetProps {
   /** Attachments are Idea/Journal only — hidden for Person captures. */
   showAttachments: boolean;
   pending: PickedAttachment[];
+  /** Attachments already written to disk from an earlier submit in this same
+   * capture (e.g. the user tapped Edit mid-enrichment) — `pending` only ever
+   * holds picker items still awaiting persist, so without this the sheet
+   * showed no attachment at all and a user would reasonably re-attach,
+   * creating a real duplicate. Not removable here: removing one would need
+   * to unlink it from the file already on disk, which this sheet has no way
+   * to do. */
+  savedAttachments?: { filename: string; kind: "image" | "file" }[];
   onAddAttachment: (imagesOnly: boolean) => void;
   onRemoveAttachment: (index: number) => void;
 }
@@ -53,6 +61,7 @@ export function CaptureMetaSheet({
   onPlacesChange,
   showAttachments,
   pending,
+  savedAttachments = [],
   onAddAttachment,
   onRemoveAttachment,
 }: CaptureMetaSheetProps) {
@@ -98,8 +107,13 @@ export function CaptureMetaSheet({
                 File
               </Button>
             </View>
-            {pending.length > 0 && (
+            {(savedAttachments.length > 0 || pending.length > 0) && (
               <View style={styles.chipRow}>
+                {savedAttachments.map((a, i) => (
+                  <Chip key={`saved-${a.filename}-${i}`} icon={a.kind === "image" ? "image" : "file"} compact>
+                    {a.filename} · saved
+                  </Chip>
+                ))}
                 {pending.map((p, i) => (
                   <Chip
                     key={`${p.filename}-${i}`}

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 import {
   parseFrontmatter,
+  preserveFrontmatterFields,
   upsertFrontmatterField,
   getFrontmatterTags,
   setFrontmatterTags,
@@ -253,5 +255,141 @@ describe("re-exported helpers remain importable from ./frontmatter", () => {
     expect(() => rewriteFrontmatterField("---\nkind: idea\n---\n# T\n", "x", "y")).toThrow(
       "not present",
     );
+  });
+});
+
+describe("preserveFrontmatterFields", () => {
+  const original = [
+    "---",
+    "name: Ada Lovelace",
+    "email: ada@example.com",
+    'phone: ""',
+    "empty:",
+    "assistant: Charles",
+    "tags: [person]",
+    "---",
+    "# Ada",
+  ].join("\n");
+
+  it("carries over fields the enriched output does not set", () => {
+    const out = preserveFrontmatterFields("---\nname: Ada Lovelace\n---\n# Ada v2\n", original);
+    expect(out).toContain("email: ada@example.com");
+    expect(out).toContain("assistant: Charles");
+    expect(out).toContain("tags: [person]");
+    expect(out).toContain("# Ada v2");
+  });
+
+  it("lets the enriched output win where it sets a value", () => {
+    const out = preserveFrontmatterFields(
+      "---\nemail: new@example.com\n---\n# Ada\n",
+      original,
+    );
+    expect(out).toContain("email: new@example.com");
+    expect(out).not.toContain("ada@example.com");
+  });
+
+  it("treats an empty or quoted-empty value as absent on both sides", () => {
+    // The person prompt emits `email: ""` for anything it couldn't read.
+    const out = preserveFrontmatterFields('---\nemail: ""\n---\n# Ada\n', original);
+    expect(out).toContain("email: ada@example.com");
+    // `phone: ""` and `empty:` in the ORIGINAL carry nothing worth restoring.
+    expect(out).not.toContain("phone:");
+    expect(out).not.toContain("empty:");
+  });
+
+  it("skips excluded fields entirely", () => {
+    const out = preserveFrontmatterFields("---\nname: Ada\n---\n# Ada\n", original, [
+      "email",
+      "assistant",
+    ]);
+    expect(out).not.toContain("email:");
+    expect(out).not.toContain("assistant:");
+  });
+
+  it("leaves the enriched markdown untouched when the original has no frontmatter", () => {
+    const enriched = "---\nname: Ada\n---\n# Ada\n";
+    expect(preserveFrontmatterFields(enriched, "# just a body\n")).toBe(enriched);
+  });
+
+  it("carries over keys containing spaces or dots (Obsidian Properties allows both)", () => {
+    const spacedOriginal = [
+      "---",
+      "name: Ada Lovelace",
+      "date created: 2026-01-01",
+      "Read status: unread",
+      "pdf.page: 12",
+      "---",
+      "# Ada",
+    ].join("\n");
+    const out = preserveFrontmatterFields("---\nname: Ada Lovelace\n---\n# Ada v2\n", spacedOriginal);
+    expect(out).toContain("date created: 2026-01-01");
+    expect(out).toContain("Read status: unread");
+    expect(out).toContain("pdf.page: 12");
+  });
+});
+
+// ── Strict YAML validity of preserved values ────────────────────────────────
+//
+// carnet's own parser is deliberately tolerant, so it happily reads back a line
+// it just corrupted — these assertions go through a real YAML parser instead.
+// `yaml` resolves from the workspace root (apps/mdcrm depends on it); it is a
+// test-only import and nothing in apps/mobile ships it.
+
+describe("preserveFrontmatterFields — YAML validity", () => {
+  const parseStrict = (markdown: string): Record<string, unknown> => {
+    const { header } = splitFrontmatter(markdown);
+    const inner = header.split("\n").slice(1, -2).join("\n");
+    return parseYaml(inner) as Record<string, unknown>;
+  };
+
+  it("keeps a quoted value containing a colon parseable, and byte-identical", () => {
+    // Re-serializing this as a bare scalar yields `note: Met at 3: the cafe` —
+    // an unescaped `: ` mid-value, which fails the WHOLE block in Obsidian and
+    // empties the note's entire Properties pane.
+    const original = '---\nname: Ada\nnote: "Met at 3: the cafe"\n---\n# Ada\n';
+    const out = preserveFrontmatterFields("---\nname: Ada\n---\n# Ada v2\n", original);
+    expect(out).toContain('note: "Met at 3: the cafe"');
+    expect(parseStrict(out)).toEqual({ name: "Ada", note: "Met at 3: the cafe" });
+  });
+
+  it("keeps a value starting with '#' from being parsed as a comment", () => {
+    const original = '---\nname: Ada\nquip: "#1 fan"\n---\n# Ada\n';
+    const out = preserveFrontmatterFields("---\nname: Ada\n---\n# Ada v2\n", original);
+    expect(parseStrict(out).quip).toBe("#1 fan");
+  });
+
+  it("keeps other indicator-led and multi-word values intact", () => {
+    const original = [
+      "---",
+      "name: Ada",
+      'anchor: "*star"',
+      'ratio: "50% done"',
+      'handle: "@ada"',
+      'brace: "{not a map}"',
+      "---",
+      "# Ada",
+    ].join("\n");
+    const out = preserveFrontmatterFields("---\nname: Ada\n---\n# Ada v2\n", original);
+    expect(parseStrict(out)).toEqual({
+      name: "Ada",
+      anchor: "*star",
+      ratio: "50% done",
+      handle: "@ada",
+      brace: "{not a map}",
+    });
+  });
+
+  it("carries a block-form value across as block form", () => {
+    // Obsidian writes `aliases` and `cssclasses` this way by default.
+    const original = "---\nname: Ada\naliases:\n  - Countess\n  - A.L.\n---\n# Ada\n";
+    const out = preserveFrontmatterFields("---\nname: Ada\n---\n# Ada v2\n", original);
+    expect(parseStrict(out).aliases).toEqual(["Countess", "A.L."]);
+  });
+
+  it("replaces an empty enriched field rather than duplicating the key", () => {
+    const original = "---\nemail: ada@example.com\n---\n# Ada\n";
+    const out = preserveFrontmatterFields('---\nemail: ""\n---\n# Ada v2\n', original);
+    expect(out.match(/^email:/gm)).toHaveLength(1);
+    expect(parseStrict(out).email).toBe("ada@example.com");
   });
 });

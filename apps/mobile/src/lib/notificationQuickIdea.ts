@@ -74,10 +74,15 @@ export async function handleQuickIdeaCapture(rawText: string): Promise<QuickIdea
   // enrichment is attempted. A failure here means nothing was saved.
   let filepath: string;
   let mtime: number | null;
+  // The exact bytes just written. On SAF vaults (the normal Android/Syncthing
+  // setup) `mtime` is always null, so this snapshot is the ONLY baseline the
+  // conflict guard can compare — see writer.ts's updateNoteIfUnchanged.
+  let rawMarkdown: string;
   try {
     const res = await writeRawIdea(ctx);
     filepath = res.filepath;
     mtime = res.mtime;
+    rawMarkdown = res.markdown;
   } catch (e: unknown) {
     return { kind: "write-failed", reason: e instanceof Error ? e.message : String(e) };
   }
@@ -102,12 +107,13 @@ export async function handleQuickIdeaCapture(rawText: string): Promise<QuickIdea
   const outcome = await enrichIdeaInPlace({
     filepath,
     expectedMtime: mtime,
+    expectedContent: rawMarkdown,
     text: ctx.text,
     tags: ctx.tags,
     location: ctx.location,
     attachments: ctx.attachments,
   });
-  return finishQuickIdea(outcome, ctx, filepath, mtime);
+  return finishQuickIdea(outcome, ctx, filepath, mtime, rawMarkdown);
 }
 
 /**
@@ -121,6 +127,9 @@ async function finishQuickIdea(
   ctx: RawIdeaInput,
   filepath: string,
   mtime: number | null,
+  /** The raw note's bytes at the `mtime` baseline. Has to survive into the queue
+   * row: the drain can run hours later, and on SAF it is the only guard there. */
+  baselineContent: string,
 ): Promise<QuickIdeaResult> {
   if (outcome.kind === "updated") return { kind: "enriched" };
   if (outcome.kind === "conflict") return { kind: "conflict" };
@@ -137,6 +146,7 @@ async function finishQuickIdea(
         // writing a duplicate.
         filepath,
         baselineMtime: mtime,
+        baselineContent,
       });
       return { kind: "queued" };
     } catch {

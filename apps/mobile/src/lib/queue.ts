@@ -85,6 +85,9 @@ export interface IdeaPayload {
   /** mtime baseline captured at the raw write, guarding the in-place overwrite
    * so a synced/user edit during the queue window isn't clobbered. */
   baselineMtime?: number | null;
+  /** The raw note's exact bytes at that same write. SAF vaults report no mtime,
+   * so this is what carries the guard there — see updateNoteIfUnchanged. */
+  baselineContent?: string | null;
 }
 
 export interface JournalPayload {
@@ -357,7 +360,12 @@ async function processRow(payload: QueuePayload): Promise<void> {
       // guarded so a synced/user edit during the queue window is kept rather
       // than clobbered. A skipped write (conflict) still counts as processed;
       // the raw note stays and the user's edit wins.
-      await updateNoteIfUnchanged(payload.filepath, md, payload.baselineMtime ?? null);
+      await updateNoteIfUnchanged(
+        payload.filepath,
+        md,
+        payload.baselineMtime ?? null,
+        payload.baselineContent ?? null,
+      );
     } else {
       const title = deriveTitle(result.markdown);
       const slug = slugify(title) || "untitled";

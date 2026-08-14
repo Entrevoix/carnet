@@ -138,10 +138,12 @@ import {
   deriveRawIdeaSlug,
   enrichIdeaInPlace,
   PENDING_ENRICH_STATUS,
+  rewriteRawIdea,
   usesSaveFirst,
   writeRawIdea,
 } from "./ideaSaveFirst";
 import { getModificationTime, updateNoteIfUnchanged, readNote } from "./writer";
+import { extractFrontmatterField } from "./frontmatter";
 
 function clearFiles(): void {
   _files.clear();
@@ -297,11 +299,66 @@ describe("updateNoteIfUnchanged (mtime guard)", () => {
     expect(await readNote(filepath)).toBe("# Theirs\n");
   });
 
-  it("proceeds when the baseline is null (guard cannot fire, e.g. SAF)", async () => {
+  it("proceeds when the baseline is null and no content snapshot was given", async () => {
     const { filepath } = await writeRawIdea({ text: "no baseline", tags: [] });
     const res = await updateNoteIfUnchanged(filepath, "# Forced\n", null);
     expect(res.ok).toBe(true);
     expect(await readNote(filepath)).toBe("# Forced\n");
+  });
+
+  it("falls back to comparing content when there is no mtime baseline", async () => {
+    const { filepath, markdown } = await writeRawIdea({ text: "saf note", tags: [] });
+    const res = await updateNoteIfUnchanged(filepath, "# Enriched\n", null, markdown);
+    expect(res.ok).toBe(true);
+    expect(await readNote(filepath)).toBe("# Enriched\n");
+  });
+
+  it("reports conflict on a content mismatch with no mtime baseline", async () => {
+    const { filepath, markdown } = await writeRawIdea({ text: "saf note", tags: [] });
+    // A workstation edit lands during the enrich window. On SAF there is no
+    // mtime to notice it — only these bytes.
+    _files.set(filepath, { content: "# Workstation edit\n", mtime: 1 });
+    const res = await updateNoteIfUnchanged(filepath, "# Enriched\n", null, markdown);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("conflict");
+    expect(await readNote(filepath)).toBe("# Workstation edit\n");
+  });
+});
+
+// ── applyEnrichedIdea over a mtime-less (SAF) vault ──────────────────────────
+
+describe("applyEnrichedIdea (content guard, no mtime)", () => {
+  it("keeps the user's version when the note changed during enrichment", async () => {
+    // The save-first invariant on the vault people actually run: SAF reports no
+    // mtime, so before the content baseline existed this overwrote the edit.
+    const { filepath, markdown } = await writeRawIdea({ text: "Race me", tags: [] });
+    _files.set(filepath, { content: "# Workstation edit\n", mtime: 1 });
+
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: null,
+      expectedContent: markdown,
+      enrichedMarkdown: "# Enriched clobber\n",
+      tags: [],
+    });
+
+    expect(status).toBe("conflict");
+    expect(_files.get(filepath)!.content).toBe("# Workstation edit\n");
+  });
+
+  it("still applies the enrichment when the note is untouched", async () => {
+    const { filepath, markdown } = await writeRawIdea({ text: "Race me", tags: [] });
+
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: null,
+      expectedContent: markdown,
+      enrichedMarkdown: "# Enriched\n\nStructured.\n",
+      tags: [],
+    });
+
+    expect(status).toBe("updated");
+    expect(_files.get(filepath)!.content).toContain("# Enriched");
   });
 });
 
@@ -371,5 +428,164 @@ describe("enrichIdeaInPlace", () => {
     });
     expect(outcome.kind).toBe("conflict");
     expect(_files.get(filepath)!.content).toBe("# Theirs\n");
+  });
+});
+
+// ── rewriteRawIdea (edit-then-resubmit during the enrich window) ──────────────
+
+describe("rewriteRawIdea", () => {
+  it("overwrites the SAME file rather than creating a collision-suffixed twin", async () => {
+    const first = await writeRawIdea({ text: "Build a kite", tags: [] });
+    const before = [..._files.keys()].filter((u) => u.endsWith(".md"));
+    expect(before).toHaveLength(1);
+
+    const out = await rewriteRawIdea({
+      filepath: first.filepath,
+      text: "Build a kite that actually flies",
+      tags: [],
+    });
+
+    expect(out.filepath).toBe(first.filepath);
+    const after = [..._files.keys()].filter((u) => u.endsWith(".md"));
+    expect(after).toEqual(before);
+    expect(_files.get(first.filepath)!.content).toContain("Build a kite that actually flies");
+  });
+
+  it("returns a bumped mtime so the follow-up enrich guard uses a fresh baseline", async () => {
+    const first = await writeRawIdea({ text: "baseline", tags: [] });
+    const out = await rewriteRawIdea({ filepath: first.filepath, text: "edited", tags: [] });
+    expect(out.mtime).not.toBeNull();
+    expect(out.mtime!).toBeGreaterThan(first.mtime!);
+    expect(await getModificationTime(first.filepath)).toBe(out.mtime);
+  });
+
+  it("keeps the pending-enrich stamp and re-merges tags/location on the edit", async () => {
+    const first = await writeRawIdea({ text: "trip notes", tags: ["travel"] });
+    const out = await rewriteRawIdea({
+      filepath: first.filepath,
+      text: "trip notes, revised",
+      tags: ["travel", "alps"],
+      location: "47.20114,10.11660",
+    });
+    expect(out.markdown).toContain(`status: ${PENDING_ENRICH_STATUS}`);
+    expect(out.markdown).toContain("alps");
+    expect(out.markdown).toContain("location: 47.20114,10.11660");
+    expect(await readNote(first.filepath)).toBe(out.markdown);
+  });
+
+  it("ignores the slug the edited text would have produced", async () => {
+    // A slug-derived rewrite would land in a totally different filename here.
+    const first = await writeRawIdea({ text: "Alpha", tags: [] });
+    await rewriteRawIdea({ filepath: first.filepath, text: "Omega", tags: [] });
+    expect([..._files.keys()].filter((u) => u.endsWith(".md"))).toEqual([first.filepath]);
+    expect(first.filepath).toContain("alpha");
+  });
+});
+
+// ── rev — the raw note's revision token ──────────────────────────────────────
+
+describe("rev (raw revision token)", () => {
+  const NOW = new Date("2026-07-04T12:00:00.000Z");
+
+  it("changes on every build, even for byte-identical input", () => {
+    const input = { text: "Build a kite", tags: [] };
+    const a = buildRawIdeaMarkdown(input, NOW);
+    const b = buildRawIdeaMarkdown(input, NOW);
+    expect(extractFrontmatterField(a, "rev")).not.toBeNull();
+    expect(extractFrontmatterField(a, "rev")).not.toBe(extractFrontmatterField(b, "rev"));
+    expect(a).not.toBe(b);
+  });
+
+  it("is the ONLY thing that differs when the draft is unchanged", () => {
+    const input = { text: "Build a kite", tags: ["hobby"] };
+    const a = buildRawIdeaMarkdown(input, NOW, "rev-a");
+    const b = buildRawIdeaMarkdown(input, NOW, "rev-b");
+    expect(a.replace("rev-a", "X")).toBe(b.replace("rev-b", "X"));
+  });
+
+  it("Edit on an UNEDITED draft still invalidates the in-flight enrichment on a SAF vault", async () => {
+    // SAF vaults report no mtime, so updateNoteIfUnchanged falls back to
+    // comparing raw bytes — and before `rev`, re-writing the same unedited
+    // draft produced byte-identical content, so the enrichment the user walked
+    // away from saw no conflict and landed anyway.
+    const { filepath, markdown } = await writeRawIdea({ text: "Build a kite", tags: [] }, NOW);
+
+    // Edit tapped with nothing typed yet: same text, same pinned `created`.
+    await rewriteRawIdea({ filepath, text: "Build a kite", tags: [] }, NOW);
+
+    // The abandoned enrichment finishes and tries to write with its pre-Edit
+    // baseline. `expectedMtime: null` is what SAF always reports.
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: null,
+      expectedContent: markdown,
+      enrichedMarkdown: "---\nstatus: seedling\n---\n# Polished Kite\n\nEnriched.\n",
+      tags: [],
+    });
+
+    expect(status).toBe("conflict");
+    const onDisk = await readNote(filepath);
+    expect(onDisk).not.toContain("# Polished Kite");
+    expect(onDisk).toContain(`status: ${PENDING_ENRICH_STATUS}`);
+  });
+
+  it("does not survive a successful enrichment", async () => {
+    const { filepath, mtime } = await writeRawIdea({ text: "Kite idea", tags: [] });
+    expect(_files.get(filepath)!.content).toContain("rev: ");
+
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: mtime,
+      enrichedMarkdown: "---\ncreated: 2026-07-04\nstatus: seedling\n---\n# Kite\n",
+      tags: [],
+    });
+
+    expect(status).toBe("updated");
+    // The model's frontmatter replaces the raw block wholesale — no cleanup
+    // step is needed for `rev`, exactly as with `status: pending-enrich`.
+    const content = _files.get(filepath)!.content;
+    expect(content).not.toContain("rev: ");
+    expect(content).not.toContain(PENDING_ENRICH_STATUS);
+  });
+
+  it("is never carried onto an enriched note by frontmatter preservation", async () => {
+    // The re-enrich path preserves the source note's own fields; `rev` and
+    // `status` are the two that must NOT come along.
+    const { filepath, mtime, markdown } = await writeRawIdea({ text: "Kite idea", tags: [] });
+    const { status } = await applyEnrichedIdea({
+      filepath,
+      expectedMtime: mtime,
+      preserveFrontmatterFrom: markdown,
+      enrichedMarkdown: "---\ncreated: 2026-07-04\nstatus: seedling\n---\n# Kite\n",
+      tags: [],
+    });
+    expect(status).toBe("updated");
+    const content = _files.get(filepath)!.content;
+    expect(content).not.toContain("rev: ");
+    expect(content).not.toContain(PENDING_ENRICH_STATUS);
+  });
+});
+
+// ── Generic frontmatter preservation on the Idea re-enrich path ───────────────
+
+describe("applyEnrichedIdea — frontmatter preservation", () => {
+  it("keeps a hand-added field the model's output knows nothing about", async () => {
+    const { filepath, mtime } = await writeRawIdea({ text: "Kite idea", tags: [] });
+    const savedNote =
+      "---\ncreated: 2026-07-04\nstatus: seedling\nproject: kites\ntags: [idea]\n---\n# Kite\n";
+
+    await applyEnrichedIdea({
+      filepath,
+      expectedMtime: mtime,
+      preserveFrontmatterFrom: savedNote,
+      enrichedMarkdown: "---\ncreated: 2026-07-05\nstatus: seedling\ntags: [idea]\n---\n# Kite v2\n",
+      tags: [],
+    });
+
+    const content = _files.get(filepath)!.content;
+    expect(content).toContain("project: kites");
+    expect(content).toContain("# Kite v2");
+    // The model's own values still win.
+    expect(content).toContain("created: 2026-07-05");
   });
 });

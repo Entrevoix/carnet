@@ -39,6 +39,9 @@ describe("promoteIdeaOnDisk", () => {
       "file:///v/Ideas/x.md",
       "---\nstatus: seedling\n---\n# Idea\n\n<status:developing>",
       42,
+      // The just-read content doubles as the SAF conflict baseline — there is
+      // no mtime to compare on a content:// vault.
+      "---\nstatus: seedling\n---\n# Idea\n",
     );
     expect(result).toEqual({ conflict: false });
   });

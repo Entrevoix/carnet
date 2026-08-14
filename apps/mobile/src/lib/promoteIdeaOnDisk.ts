@@ -38,7 +38,10 @@ export async function promoteIdeaOnDisk(
   try {
     const existing = await readNote(filepath);
     const patched = rewriteFrontmatterField(existing, "status", next);
-    const res = await updateNoteIfUnchanged(filepath, patched, baseline);
+    // `existing` doubles as the content baseline: on SAF there is no mtime, so
+    // it is the only thing that can catch a write landing between this read and
+    // the overwrite.
+    const res = await updateNoteIfUnchanged(filepath, patched, baseline, existing);
     return { conflict: !res.ok };
   } catch {
     const res = await updateNoteIfUnchanged(filepath, fallbackMarkdown, baseline);

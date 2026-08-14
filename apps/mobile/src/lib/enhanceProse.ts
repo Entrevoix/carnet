@@ -227,8 +227,12 @@ export async function enhanceNoteProse(input: {
     // was in flight. The unguarded write would have discarded those edits.
     const baseline = await getModificationTime(input.filepath);
     let source = input.body;
+    // Only a disk read is a valid content baseline for the SAF guard (there is
+    // no mtime there); the caller's copy may already be stale.
+    let expectedContent: string | null = null;
     try {
       source = await readNote(input.filepath);
+      expectedContent = source;
     } catch {
       // Unreadable (SAF quirk, moved file) — fall back to the caller's copy,
       // exactly as promoteIdeaOnDisk falls back to its passed markdown. The
@@ -277,7 +281,12 @@ export async function enhanceNoteProse(input: {
       `${header}${title}${attachBlock}${cleaned}${linkBlock}\n`,
       outcome,
     );
-    const written = await updateNoteIfUnchanged(input.filepath, next, baseline);
+    const written = await updateNoteIfUnchanged(
+      input.filepath,
+      next,
+      baseline,
+      expectedContent,
+    );
     if (!written.ok) {
       // The note moved under us. Keep the user's version — an enhancement is
       // regenerable, their edit is not.

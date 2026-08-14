@@ -89,3 +89,24 @@ export async function updateCaptureTitle(
   next[idx] = { ...next[idx], title };
   await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next));
 }
+
+/**
+ * Retitle the history entry pointing at `filepath`. The by-filepath counterpart
+ * to `updateCaptureTitle`, for the same reason `removeFromHistoryByFilepath`
+ * exists: a note opened from the tag browser or search carries a SYNTHESIZED id
+ * that matches no stored row, so an id-keyed update silently no-ops and the
+ * recents card keeps the pre-enrichment title. Skips the write when nothing
+ * matched or the title is already current.
+ */
+export async function updateCaptureTitleByFilepath(
+  filepath: string,
+  title: string,
+): Promise<void> {
+  const existing = await getRecentCaptures();
+  const idx = existing.findIndex((e) => e.filepath === filepath);
+  if (idx === -1) return;
+  if (existing[idx].title === title) return;
+  const next = [...existing];
+  next[idx] = { ...next[idx], title };
+  await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+}

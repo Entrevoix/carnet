@@ -30,6 +30,7 @@ vi.mock("../lib/settings", () => ({
 
 vi.mock("../lib/storage", () => ({
   recordCapture: vi.fn(async () => {}),
+  removeFromHistoryByFilepath: vi.fn(async () => {}),
 }));
 
 vi.mock("../lib/dispatcher", () => ({
@@ -56,7 +57,9 @@ vi.mock("../lib/writer", () => ({
           .join("\n\n")}\n`,
   ),
   extFromMime: vi.fn(() => "jpg"),
-  readNote: vi.fn(),
+  // Must honour readNote's real async contract: the saved-screen Re-enrich
+  // reads the note for its conflict baseline and chains off the promise.
+  readNote: vi.fn(async () => "---\nstatus: pending-enrich\n---\nmy idea\n"),
   updateNoteIfUnchanged: vi.fn(),
   getModificationTime: vi.fn(async () => 1),
   rewriteFrontmatterField: vi.fn((md: string) => md),
@@ -69,6 +72,11 @@ vi.mock("../lib/ideaSaveFirst", () => ({
     slug: "my-idea",
     mtime: 111,
     markdown: "---\nstatus: pending-enrich\n---\nmy idea\n",
+  })),
+  rewriteRawIdea: vi.fn(async () => ({
+    filepath: "file:///v/Ideas/my-idea.md",
+    mtime: 222,
+    markdown: "---\nstatus: pending-enrich\n---\nmy edited idea\n",
   })),
   enrichIdeaInPlace: vi.fn(async () => ({
     kind: "updated",
@@ -86,6 +94,10 @@ vi.mock("../lib/location", async (importOriginal) => {
 
 vi.mock("../lib/attachments", () => ({
   pickAttachment: vi.fn(async () => null),
+}));
+
+vi.mock("../lib/attachmentPersistence", () => ({
+  persistAttachments: vi.fn(async () => []),
 }));
 
 vi.mock("../lib/captureDraft", () => ({
@@ -107,12 +119,14 @@ vi.mock("../lib/vault", () => ({
 
 import CaptureScreen from "./CaptureScreen";
 import { loadDraft, saveDraft, clearDraft } from "../lib/captureDraft";
-import { writeRawIdea, enrichIdeaInPlace } from "../lib/ideaSaveFirst";
+import { writeRawIdea, rewriteRawIdea, enrichIdeaInPlace } from "../lib/ideaSaveFirst";
 import { getSettings } from "../lib/settings";
-import { enrichIdea } from "../lib/dispatcher";
-import { recordCapture } from "../lib/storage";
+import { enrichIdea, enrichJournal, enrichPerson } from "../lib/dispatcher";
+import { recordCapture, removeFromHistoryByFilepath } from "../lib/storage";
+import { enqueue } from "../lib/queue";
+import { persistAttachments } from "../lib/attachmentPersistence";
+import { clearDraft as clearDraftMock } from "../lib/captureDraft";
 import { upsertNoteInIndex } from "../lib/vault";
-import { enrichJournal } from "../lib/dispatcher";
 import { appendJournal } from "../lib/writer";
 import { resolvePlaceName } from "../lib/location";
 
@@ -206,6 +220,7 @@ describe("CaptureScreen (idea)", () => {
     await waitFor(() => expect(navigation.goBack).toHaveBeenCalled());
     expect(writeRawIdea).toHaveBeenCalledWith(
       expect.objectContaining({ text: "my idea" }),
+      expect.anything(),
     );
     expect(recordCapture).toHaveBeenCalledWith(
       expect.objectContaining({ filepath: "file:///v/Ideas/my-idea.md" }),
@@ -264,6 +279,559 @@ describe("CaptureScreen (idea)", () => {
     expect(screen.queryByText("OmniRoute is structuring the note…")).toBeNull();
 
     resolveEnrich({ markdown: "# My Idea\n\nbody\n", model: "local-model" });
+  });
+});
+
+// ── Edit during "submitting" — the non-blocking escape hatch ──────────────────
+
+/** A promise the test resolves by hand, so the enrichment can be held in
+ * flight while the Edit affordance is exercised. */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+describe("CaptureScreen — Edit during enrichment", () => {
+  it("idea: restores the draft and ignores the enrichment that lands afterwards", async () => {
+    const enrich = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace).mockReturnValueOnce(
+      enrich.promise as ReturnType<typeof enrichIdeaInPlace>,
+    );
+
+    const { navigation } = renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    // The raw note is already on disk; the input was cleared by save-first.
+    await waitFor(() => expect(writeRawIdea).toHaveBeenCalled());
+    fireEvent.click(await screen.findByText("Edit"));
+
+    // Back to an editable draft carrying the user's original text.
+    expect(await screen.findByDisplayValue("my idea")).toBeTruthy();
+
+    // The abandoned call lands late — it must not steer the screen.
+    enrich.resolve({ kind: "updated", markdown: "# Enriched\n" });
+    await waitFor(() => expect(screen.getByDisplayValue("my idea")).toBeTruthy());
+    expect(navigation.goBack).not.toHaveBeenCalled();
+    expect(screen.queryByText("Saved to vault")).toBeNull();
+  });
+
+  it("idea: resubmitting after Edit overwrites the same file instead of writing a twin", async () => {
+    const enrich = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace).mockReturnValueOnce(
+      enrich.promise as ReturnType<typeof enrichIdeaInPlace>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(writeRawIdea).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByText("Edit"));
+
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() => expect(rewriteRawIdea).toHaveBeenCalled());
+    expect(rewriteRawIdea).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "my edited idea",
+        filepath: "file:///v/Ideas/my-idea.md",
+      }),
+      expect.anything(),
+    );
+    // The whole point: no second raw write, so no orphaned -2.md.
+    expect(writeRawIdea).toHaveBeenCalledTimes(1);
+  });
+
+  it("idea: a resubmit after Edit keeps the attachments the first submit already wrote", async () => {
+    // `pending` is cleared the moment the raw note lands, so the resubmit's
+    // persistAttachments() has nothing to return — without the preserved refs
+    // the rewritten note drops its embeds and orphans the binaries on disk.
+    const ref = { kind: "image" as const, rel: "../Photos/sketch.png", filename: "sketch.png" };
+    vi.mocked(persistAttachments).mockResolvedValueOnce([ref]).mockResolvedValue([]);
+    const enrich = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace).mockReturnValueOnce(
+      enrich.promise as ReturnType<typeof enrichIdeaInPlace>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(writeRawIdea).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(writeRawIdea).mock.calls[0][0].attachments).toEqual([ref]);
+
+    fireEvent.click(await screen.findByText("Edit"));
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() =>
+      expect(rewriteRawIdea).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "my edited idea" }),
+        expect.anything(),
+      ),
+    );
+    const resubmit = vi
+      .mocked(rewriteRawIdea)
+      .mock.calls.find((c) => c[0].text === "my edited idea");
+    expect(resubmit?.[0].attachments).toEqual([ref]);
+  });
+
+  it("idea: Edit bumps the raw note's mtime so the in-flight enrichment can't land", async () => {
+    // Edit itself touches no file, so the enrichment fired before it would find
+    // a matching mtime and write the result the user walked away from. Writing
+    // the same raw draft back invalidates that call's baseline instead.
+    const enrich = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace).mockReturnValueOnce(
+      enrich.promise as ReturnType<typeof enrichIdeaInPlace>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(enrichIdeaInPlace).toHaveBeenCalled());
+    expect(rewriteRawIdea).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByText("Edit"));
+
+    // Same file, same content — the write exists only to move the mtime, and it
+    // has to happen while the enrichment is still in flight to be of any use.
+    await waitFor(() =>
+      expect(rewriteRawIdea).toHaveBeenCalledWith(
+        expect.objectContaining({ filepath: "file:///v/Ideas/my-idea.md", text: "my idea" }),
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("idea: Edit during a saved-screen Re-enrich does NOT rewrite the note", async () => {
+    // Re-enrich publishes a SYNTHETIC rawWriteRef (no write happens — it only
+    // hands Edit the already-known filepath) and a draft holding the ORIGINAL
+    // raw text. Bumping the mtime there would overwrite whatever is on disk
+    // now — the enriched note, or a newer Syncthing-synced one — with a raw
+    // stub. Real data loss, so the bump must be skipped in this path.
+    vi.mocked(enrichIdeaInPlace).mockResolvedValueOnce({
+      kind: "failed",
+      transient: false,
+      reason: "no api key",
+    });
+    const reEnrich = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace).mockReturnValueOnce(
+      reEnrich.promise as ReturnType<typeof enrichIdeaInPlace>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    // A permanent failure keeps the raw note and offers Re-enrich.
+    fireEvent.click(await screen.findByText("Re-enrich"));
+    fireEvent.click(await screen.findByText("Edit"));
+    await screen.findByDisplayValue("my idea");
+
+    expect(rewriteRawIdea).not.toHaveBeenCalled();
+  });
+
+  it("idea: an Edit-and-resubmit cycle keeps the note's original created time", async () => {
+    // buildRawIdeaMarkdown defaults `now` to new Date(), so any rewrite that
+    // doesn't pass one restamps `created` — the capture moment did not change
+    // just because the text was edited.
+    const enrich = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace).mockReturnValueOnce(
+      enrich.promise as ReturnType<typeof enrichIdeaInPlace>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(writeRawIdea).toHaveBeenCalledTimes(1));
+    const created = vi.mocked(writeRawIdea).mock.calls[0][1];
+    expect(created).toBeInstanceOf(Date);
+
+    fireEvent.click(await screen.findByText("Edit"));
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() =>
+      expect(rewriteRawIdea).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "my edited idea" }),
+        expect.anything(),
+      ),
+    );
+    // Every rewrite in the cycle — the Edit-time mtime bump and the resubmit —
+    // carries the first write's timestamp.
+    for (const call of vi.mocked(rewriteRawIdea).mock.calls) {
+      expect(call[1]).toBe(created);
+    }
+  });
+
+  it("idea: an attachment still staged at Edit is embedded once, not twice", async () => {
+    // persistAttachments memoizes by PickedAttachment identity, so a resubmit
+    // can legitimately return the same ref the first submit preserved — the
+    // merge has to collapse them or the note gets a doubled embed.
+    const ref = { kind: "image" as const, rel: "../Photos/sketch.png", filename: "sketch.png" };
+    vi.mocked(persistAttachments).mockResolvedValue([ref]);
+    const enrich = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace).mockReturnValueOnce(
+      enrich.promise as ReturnType<typeof enrichIdeaInPlace>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(writeRawIdea).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByText("Edit"));
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() =>
+      expect(rewriteRawIdea).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "my edited idea" }),
+        expect.anything(),
+      ),
+    );
+    const resubmit = vi
+      .mocked(rewriteRawIdea)
+      .mock.calls.find((c) => c[0].text === "my edited idea");
+    expect(resubmit?.[0].attachments).toEqual([ref]);
+  });
+
+  it("journal: keeps the transcript and ignores the late enrichment", async () => {
+    const enrich = deferred<{ markdown: string; model: string }>();
+    vi.mocked(enrichJournal).mockReturnValueOnce(enrich.promise);
+
+    renderScreen("journal");
+    const input = await screen.findByPlaceholderText("Transcript — speak or type");
+    fireEvent.change(input, { target: { value: "walked the dog" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    fireEvent.click(await screen.findByText("Edit"));
+    expect(await screen.findByDisplayValue("walked the dog")).toBeTruthy();
+
+    enrich.resolve({ markdown: "# Journal\n", model: "m" });
+    await waitFor(() => expect(screen.getByDisplayValue("walked the dog")).toBeTruthy());
+    // No preview card — the abandoned result never reached the UI.
+    expect(screen.queryByText("Save")).toBeNull();
+  });
+
+  it("person: keeps the card text and ignores the late enrichment", async () => {
+    const enrich = deferred<{ markdown: string; model: string }>();
+    vi.mocked(enrichPerson).mockReturnValueOnce(enrich.promise);
+
+    renderScreen("person");
+    const input = await screen.findByPlaceholderText("Card text — scan or type");
+    fireEvent.change(input, { target: { value: "Ada Lovelace" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    fireEvent.click(await screen.findByText("Edit"));
+    expect(await screen.findByDisplayValue("Ada Lovelace")).toBeTruthy();
+
+    enrich.resolve({ markdown: "# Ada\n", model: "m" });
+    await waitFor(() => expect(screen.getByDisplayValue("Ada Lovelace")).toBeTruthy());
+    expect(screen.queryByText("Save")).toBeNull();
+  });
+
+  it("journal: a late enrichment FAILURE is also swallowed after Edit", async () => {
+    // Without the guard, handleCaptureError would queue the capture and wipe
+    // the transcript the user just returned to editing.
+    let reject!: (e: Error) => void;
+    vi.mocked(enrichJournal).mockReturnValueOnce(
+      new Promise((_res, rej) => {
+        reject = rej;
+      }),
+    );
+
+    renderScreen("journal");
+    const input = await screen.findByPlaceholderText("Transcript — speak or type");
+    fireEvent.change(input, { target: { value: "walked the dog" } });
+    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(await screen.findByText("Edit"));
+
+    reject(new Error("network down"));
+    await waitFor(() => expect(screen.getByDisplayValue("walked the dog")).toBeTruthy());
+    expect(screen.queryByText("Offline — capture queued.")).toBeNull();
+  });
+});
+
+describe("CaptureScreen — Edit race conditions", () => {
+  it("a stale enrichment from the FIRST submit cannot drive the screen after a resubmit", async () => {
+    // The bug a boolean abort flag has: the second submit clears the flag, which
+    // un-cancels call #1, whose late resolution then closed the screen.
+    const first = deferred<{ kind: "updated"; markdown: string }>();
+    const second = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace)
+      .mockReturnValueOnce(first.promise as ReturnType<typeof enrichIdeaInPlace>)
+      .mockReturnValueOnce(second.promise as ReturnType<typeof enrichIdeaInPlace>);
+
+    const { navigation } = renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(writeRawIdea).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByText("Edit"));
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(rewriteRawIdea).toHaveBeenCalled());
+
+    // Submit #1's abandoned call finally lands, while #2 is still in flight.
+    first.resolve({ kind: "updated", markdown: "# Stale\n" });
+    await waitFor(() => expect(screen.getByText(/structuring the note/)).toBeTruthy());
+    expect(navigation.goBack).not.toHaveBeenCalled();
+
+    // Submit #2 still owns the screen and completes normally.
+    second.resolve({ kind: "updated", markdown: "# Fresh\n" });
+    await waitFor(() => expect(navigation.goBack).toHaveBeenCalledTimes(1));
+  });
+
+  it("Edit tapped BEFORE the raw write resolves still routes the resubmit to rewriteRawIdea", async () => {
+    // editingFilepath comes from the write's own result, so Edit has to wait for
+    // it — otherwise the resubmit writes a second file and orphans the first.
+    const write = deferred<{
+      filepath: string;
+      slug: string;
+      mtime: number;
+      markdown: string;
+    }>();
+    vi.mocked(writeRawIdea).mockReturnValueOnce(
+      write.promise as ReturnType<typeof writeRawIdea>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    // Tap Edit while the write is still in flight.
+    fireEvent.click(await screen.findByText("Edit"));
+    write.resolve({
+      filepath: "file:///v/Ideas/my-idea.md",
+      slug: "my-idea",
+      mtime: 111,
+      markdown: "---\nstatus: pending-enrich\n---\nmy idea\n",
+    });
+
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() => expect(rewriteRawIdea).toHaveBeenCalled());
+    expect(rewriteRawIdea).toHaveBeenCalledWith(
+      expect.objectContaining({ filepath: "file:///v/Ideas/my-idea.md" }),
+      expect.anything(),
+    );
+    expect(writeRawIdea).toHaveBeenCalledTimes(1);
+  });
+
+  it("the interrupted write's own continuation does not clear the restored draft", async () => {
+    const write = deferred<{
+      filepath: string;
+      slug: string;
+      mtime: number;
+      markdown: string;
+    }>();
+    vi.mocked(writeRawIdea).mockReturnValueOnce(
+      write.promise as ReturnType<typeof writeRawIdea>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(await screen.findByText("Edit"));
+
+    write.resolve({
+      filepath: "file:///v/Ideas/my-idea.md",
+      slug: "my-idea",
+      mtime: 111,
+      markdown: "---\nstatus: pending-enrich\n---\nmy idea\n",
+    });
+
+    // The superseded write must not run its post-write bookkeeping.
+    expect(await screen.findByDisplayValue("my idea")).toBeTruthy();
+    await waitFor(() => expect(recordCapture).not.toHaveBeenCalled());
+  });
+});
+
+describe("CaptureScreen — Edit during a multi-await continuation", () => {
+  it("Edit landing between the raw write and recordCapture still routes the resubmit to rewriteRawIdea", async () => {
+    // recordCapture resolves AFTER the Edit tap: the continuation resumes and
+    // would clear editingFilepath, undoing the tap and orphaning a duplicate.
+    const record = deferred<void>();
+    vi.mocked(recordCapture).mockReturnValueOnce(record.promise);
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(recordCapture).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByText("Edit"));
+    await screen.findByDisplayValue("my idea");
+    record.resolve();
+
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() => expect(rewriteRawIdea).toHaveBeenCalled());
+    expect(rewriteRawIdea).toHaveBeenCalledWith(
+      expect.objectContaining({ filepath: "file:///v/Ideas/my-idea.md" }),
+      expect.anything(),
+    );
+    expect(writeRawIdea).toHaveBeenCalledTimes(1);
+  });
+
+  it("Edit landing mid-handleCaptureError does not wipe the restored draft or the saved draft file", async () => {
+    // handleCaptureError runs with the Edit button still on screen and clears
+    // every input once the enqueue lands — including the draft the user just
+    // went back to editing, while the un-edited capture stays queued.
+    const queued = deferred<void>();
+    vi.mocked(enrichJournal).mockRejectedValueOnce(new Error("network down"));
+    vi.mocked(enqueue).mockReturnValueOnce(queued.promise);
+
+    renderScreen("journal");
+    const input = await screen.findByPlaceholderText("Transcript — speak or type");
+    fireEvent.change(input, { target: { value: "walked the dog" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(enqueue).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByText("Edit"));
+    queued.resolve();
+
+    await waitFor(() => expect(screen.getByDisplayValue("walked the dog")).toBeTruthy());
+    expect(screen.queryByText("Offline — capture queued.")).toBeNull();
+    expect(clearDraftMock).not.toHaveBeenCalled();
+  });
+
+  it("Edit landing during persistAttachments writes no note at all, so the resubmit writes exactly one", async () => {
+    // The earliest await in the save-first path, upstream of rawWriteRef being
+    // published: an unguarded resume here writes note A anyway, and the
+    // resubmit then writes note B — two files for one capture.
+    const persisted = deferred<never[]>();
+    vi.mocked(persistAttachments).mockReturnValueOnce(
+      persisted.promise as ReturnType<typeof persistAttachments>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(persistAttachments).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByText("Edit"));
+    persisted.resolve([]);
+
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    await waitFor(() => expect(writeRawIdea).toHaveBeenCalled());
+    // Nothing reached disk before the Edit, so this is a fresh capture — one
+    // write total, and no rewrite of a file that was never created.
+    expect(writeRawIdea).toHaveBeenCalledTimes(1);
+    expect(writeRawIdea).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "my edited idea" }),
+      expect.anything(),
+    );
+    expect(rewriteRawIdea).not.toHaveBeenCalled();
+  });
+
+  it("double-tapping Edit runs the handler once, so a stale copy can't revert a newer submit", async () => {
+    // Both taps land while the raw write is still in flight, so without an
+    // in-flight guard BOTH continue past their awaits: two mtime-bump rewrites,
+    // and the second handler's trailing setPhase("input") can fire after the
+    // resubmit the first one enabled — quietly dropping a capture out of its
+    // in-flight state.
+    const write = deferred<{
+      filepath: string;
+      slug: string;
+      mtime: number;
+      markdown: string;
+    }>();
+    vi.mocked(writeRawIdea).mockReturnValueOnce(
+      write.promise as ReturnType<typeof writeRawIdea>,
+    );
+    const enrich = deferred<{ kind: "updated"; markdown: string }>();
+    vi.mocked(enrichIdeaInPlace).mockReturnValue(
+      enrich.promise as ReturnType<typeof enrichIdeaInPlace>,
+    );
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    const editButton = await screen.findByText("Edit");
+    fireEvent.click(editButton);
+    fireEvent.click(editButton);
+
+    write.resolve({
+      filepath: "file:///v/Ideas/my-idea.md",
+      slug: "my-idea",
+      mtime: 111,
+      markdown: "---\nstatus: pending-enrich\n---\nmy idea\n",
+    });
+
+    const reopened = await screen.findByDisplayValue("my idea");
+    await waitFor(() => expect(rewriteRawIdea).toHaveBeenCalledTimes(1));
+
+    // The resubmit owns the screen from here; no stale Edit may pull it back.
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(screen.getByText(/structuring the note/)).toBeTruthy());
+    await Promise.resolve();
+    expect(screen.getByText(/structuring the note/)).toBeTruthy();
+  });
+
+  it("a resumed submit waits for the interrupted recordCapture before rewriting history", async () => {
+    // recordCapture and removeFromHistoryByFilepath are both read-modify-write
+    // cycles over one AsyncStorage array. Interleaved, one side's write is lost:
+    // either a duplicate row or the stale-titled one resurrected.
+    const record = deferred<void>();
+    vi.mocked(recordCapture).mockReturnValueOnce(record.promise);
+
+    renderScreen();
+    const input = await screen.findByPlaceholderText("What's on your mind?");
+    fireEvent.change(input, { target: { value: "my idea" } });
+    fireEvent.click(screen.getByText("Send"));
+    await waitFor(() => expect(recordCapture).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByText("Edit"));
+    const reopened = await screen.findByDisplayValue("my idea");
+    fireEvent.change(reopened, { target: { value: "my edited idea" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    // The resubmit has already rewritten the note on disk, so it is past the
+    // point where the unguarded version reached the history.
+    await waitFor(() =>
+      expect(rewriteRawIdea).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "my edited idea" }),
+        expect.anything(),
+      ),
+    );
+    expect(removeFromHistoryByFilepath).not.toHaveBeenCalled();
+
+    record.resolve();
+    await waitFor(() =>
+      expect(removeFromHistoryByFilepath).toHaveBeenCalledWith("file:///v/Ideas/my-idea.md"),
+    );
+    await waitFor(() => expect(recordCapture).toHaveBeenCalledTimes(2));
   });
 });
 
