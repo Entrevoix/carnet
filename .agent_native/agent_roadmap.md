@@ -7,10 +7,10 @@ roadmap targets the remaining gaps.
 
 Ranked by **Human-Attention-Saved per Unit of Effort** (HAS/E) — highest leverage first.
 
-**Status (2026-07-10 update):** Items 1, 2, 3, and 4 done — see notes inline below.
-Item 5 (plan-lifecycle status markers) remains untouched: it requires a human judgment
-call on each existing plan's actual shipped/draft state before adding status markers, so
-it's left for a human or a dedicated follow-up session.
+**Status (2026-08-14 update):** All 5 top-5 items done. Item 5 (plan-lifecycle status
+markers) shipped via PR #92/#118 as `scripts/check-stale-plans.sh`, now CI-enforced (see
+CLAUDE.md) — the item's own acceptance criterion (an agent runs one command and gets
+"these plans are marked shipped but still in plans/ — move to completed/") is met.
 
 ---
 
