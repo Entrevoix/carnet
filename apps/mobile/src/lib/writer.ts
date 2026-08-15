@@ -481,29 +481,45 @@ export function stripPairedBinaryLinks(
 }
 
 /**
- * Lowercase ASCII slug with hyphens. Transliterates common French accents
- * so "Mémoire" → "memoire". Non-ASCII non-accent chars are dropped.
- * Unicode-aware slugifier tracked in TODO.md for later.
+ * Letters that Unicode decomposition alone won't fold. NFD splits a
+ * precomposed letter into base + combining mark, but ligatures (ß, æ, œ) and
+ * stroke/bar letters (ø, ł, đ) are atomic — they have no combining form, so
+ * stripping marks leaves them intact and the ASCII filter then drops them.
+ * Everything decomposition *does* handle is deliberately absent here.
+ */
+const SPECIAL_FOLDS: Record<string, string> = {
+  ß: "ss",
+  æ: "ae", Æ: "ae", œ: "oe", Œ: "oe",
+  ø: "o", Ø: "o",
+  ł: "l", Ł: "l",
+  đ: "d", Đ: "d", ð: "d", Ð: "d",
+  þ: "th", Þ: "th",
+  ħ: "h", Ħ: "h",
+  ı: "i",
+};
+
+/**
+ * Lowercase ASCII slug with hyphens. Folds Latin-script diacritics via NFD
+ * decomposition, so "Mémoire" → "memoire" and "Dvořák" → "dvorak" — any
+ * Latin diacritic, not a hand-listed set (this replaced a French-only accent
+ * map, which silently dropped Polish/Czech/Vietnamese/Turkish letters).
+ *
+ * Non-Latin scripts (Cyrillic, CJK, Arabic…) still yield "" and callers fall
+ * back to a generic stem ("idea"/"image"/"attachment"). That is deliberate,
+ * not a gap: preserving those characters would change on-disk filename
+ * encoding, which touches Syncthing's NFC/NFD normalization across platforms,
+ * Obsidian link resolution, and exFAT-formatted cards. Revisit as a vault
+ * decision, not a slug tweak.
  */
 export function slugify(input: string): string {
-  const accentMap: Record<string, string> = {
-    à: "a", â: "a", ä: "a", á: "a", ã: "a",
-    è: "e", é: "e", ê: "e", ë: "e",
-    î: "i", ï: "i", ì: "i", í: "i",
-    ô: "o", ö: "o", ò: "o", ó: "o", õ: "o",
-    ù: "u", û: "u", ü: "u", ú: "u",
-    ç: "c", ñ: "n", ß: "ss",
-    À: "a", Â: "a", Ä: "a", Á: "a", Ã: "a",
-    È: "e", É: "e", Ê: "e", Ë: "e",
-    Î: "i", Ï: "i", Ì: "i", Í: "i",
-    Ô: "o", Ö: "o", Ò: "o", Ó: "o", Õ: "o",
-    Ù: "u", Û: "u", Ü: "u", Ú: "u",
-    Ç: "c", Ñ: "n",
-  };
-
   const folded = input
+    // NFD splits "é" into "e" + U+0301; dropping the combining-mark range then
+    // leaves plain ASCII. Also normalizes the precomposed/decomposed forms
+    // Syncthing and macOS can each deliver for the same filename.
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .split("")
-    .map((c) => accentMap[c] ?? c)
+    .map((c) => SPECIAL_FOLDS[c] ?? c)
     .join("");
 
   let out = "";
