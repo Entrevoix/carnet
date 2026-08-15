@@ -47,30 +47,36 @@ files exist outside inline test strings).
   reproduces at least the 4 historical bug classes named above from a fixture, no device
   needed.
 
-### 2. Split the four largest screen files into UI + extracted `lib/` logic — DONE (2026-07-10)
-Implemented across three PRs (#101, #102, #103), each behavior-preserving and
-independently code-reviewed with no CRITICAL/HIGH findings surviving:
-- **CaptureScreen.tsx** (PR #101): 1175→798 lines. New: `lib/captureErrorDecision.ts`,
-  `lib/saveFirstOutcome.ts`, `lib/attachmentPersistence.ts`, `lib/promoteIdeaOnDisk.ts`,
-  plus presentational split-outs `components/CaptureModeInput.tsx` and
-  `components/CaptureViews.tsx`.
-- **RecentDetailScreen.tsx** (PR #102): 1599→1416 lines. New: `lib/karakeepNoteExport.ts`
-  (the ~120-line Karakeep export decision logic — title/tag derivation, update-vs-create,
-  404-recovery, asset sync, frontmatter stamping), `lib/noteReprocess.ts` (re-enrich +
-  transcribe orchestration), `lib/wysiwygSave.ts` (frontmatter-reattach + tag-change +
-  no-write-if-unchanged decisions), `lib/vaultImageInsert.ts`. Deliberately left over the
-  800-line target — the remainder is presentational JSX/styles with no testability gain
-  from further extraction; forcing it would have been the "arbitrary line-count target
-  achieved by shuffling code" anti-pattern this item originally warned against.
-- **SettingsScreen.tsx** (PR #103): 849→794 lines. New: `lib/modelBrowser.ts`
-  (filter/recommend split), `lib/settingsForm.ts` (save-composition + API-key-preserving
-  logic — the highest-risk line in the file, verified byte-for-byte behavior-preserving
-  in review). Smallest of the three by design: most of this file is legitimate form UI,
-  not hidden business logic, and the extraction only pulled out the two genuinely
-  untested decision points rather than forcing a line-count target.
+### 2. Split the four largest screen files into UI + extracted `lib/` logic — DONE (2026-07-10, completed 2026-07-31)
+Implemented in two rounds, six PRs total (#101, #102, #103, then #112, #113, #116), each
+behavior-preserving and independently code-reviewed with no CRITICAL/HIGH findings
+surviving:
+- **CaptureScreen.tsx** — round 1 (PR #101): 1175→798 lines, extracting
+  `lib/captureErrorDecision.ts`, `lib/saveFirstOutcome.ts`, `lib/attachmentPersistence.ts`,
+  `lib/promoteIdeaOnDisk.ts`, plus presentational split-outs `components/CaptureModeInput.tsx`
+  and `components/CaptureViews.tsx`. Round 2 (PR #112): 815→777, extracting
+  `lib/captureConfirmSave.ts` and `lib/captureDisplay.ts`.
+- **RecentDetailScreen.tsx** — round 1 (PR #102) left it deliberately over the 800-line
+  target (1599→1416) to avoid the "arbitrary line-count target achieved by shuffling
+  code" anti-pattern this item originally warned against. Round 2 (PR #116) revisited
+  that call and found more real extraction value: 1614→716, pulling both `lib/` logic
+  (`recentDetailView`, `karakeepExportUi`, `markdownStyle`, `useNoteAudioPlayer`,
+  `useKarakeepExport`, `useNoteEditSession`) and 12 presentational components out of the
+  screen.
+- **SettingsScreen.tsx** — round 1 (PR #103): 849→794, extracting `lib/modelBrowser.ts`
+  and `lib/settingsForm.ts` (the API-key-preserving save-composition logic, verified
+  byte-for-byte behavior-preserving in review). Round 2 (PR #113) extracted further.
 
-10 new `lib/*.ts` modules total, each with a co-located `.test.ts`. Original text below
-kept for context on why this was prioritized.
+**Line counts drift with new feature work** — both CaptureScreen and RecentDetailScreen
+have grown back over 800 lines since (new features add UI + wiring to already-decomposed
+screens; that's expected, not a regression of this item). Treat this item as "the
+extraction pattern and its `lib/` modules exist and are the norm to follow," not as a
+static current-line-count claim — `wc -l` the files or `git log` the relevant PRs for
+today's actual state rather than trusting a number written here.
+
+10 new `lib/*.ts` modules from round 1, more from round 2 (see each PR's own extraction
+list above) — each with a co-located `.test.ts`. Original text below kept for context on
+why this was prioritized.
 
 **HAS/E: high.** `CaptureScreen.tsx` (1039 lines), `RecentDetailScreen.tsx` (1458 lines),
 `SettingsScreen.tsx` (934 lines) all blow past this project's own 800-line/50-line-function
