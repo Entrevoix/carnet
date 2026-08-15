@@ -2,10 +2,11 @@
 
 Tracking deferred v0.3 scope and known issues.
 
-**Last reconciled against git history: 2026-07-28.** This file had drifted — two items
-below were listed as deferred after they had already shipped. When planning from it,
-re-verify anything you're about to act on (`git log --oneline --all | grep -i <topic>`,
-or look for the module it names); a stale "deferred" entry is worse than no entry.
+**Last reconciled against git history: 2026-08-15.** This file had drifted before (see
+prior reconciliation history in git blame) — items were listed as deferred after they had
+already shipped. When planning from it, re-verify anything you're about to act on (`git
+log --oneline --all | grep -i <topic>`, or look for the module it names); a stale
+"deferred" entry is worse than no entry.
 
 ## Resolved in v0.2
 
@@ -118,15 +119,29 @@ branches shipped (B2 folded via `visionModel`, gate passed 2026-07-12).
   and it is a separate app with its own repo (`~/Documents/vibe-code/relais`) that can be
   updated independently. Skip the workstation Ollama variant regardless: it re-introduces
   the daemon dependency v0.2 deliberately removed.
-- [ ] **Encrypt offline queue payloads at rest** — Currently `queue.ts` stores `payload_json` (raw user idea text, voice transcripts, OCR'd business-card PII including names/emails/phones) as plaintext in AsyncStorage (a JSON array under a single key — the queue moved off expo-sqlite entirely per this repo's no-SQLite constraint; `payload_json` is just a legacy field name, not an actual SQLite column). AsyncStorage on Android is unencrypted by default. The realistic threat is a rooted / debug-enabled device, an adb pull, or a malicious app with `INSTALL_PACKAGES` privilege. For carnet's single-developer threat model this is defense-in-depth, not a blocker — but it should land before any non-developer dogfooding. Approach: encrypt `payload_json` with a key kept in `expo-secure-store` (AES-GCM via `expo-crypto`) before the AsyncStorage write. (A SQLite-backed encryption path like `op-sqlite`/`expo-sqlite-encrypted` is off the table — see CLAUDE.md's no-SQLite constraint.)
+- [x] **Encrypt offline queue payloads at rest** (PR #111) — `carnet:queue:v1` and
+  capture drafts (`captureDraft.ts`, found in review to carry the same PII classes and
+  brought into scope) are now sealed with AES-256-CBC + encrypt-then-MAC (HMAC-SHA256,
+  verified before decrypt), keyed from `expo-secure-store` (Android Keystore). Deviates
+  from the original AES-GCM-via-`expo-crypto` sketch: `expo-crypto` ships no cipher at
+  all, only digests/random bytes — `crypto-js` supplies the cipher (no native AES-GCM
+  available), `expo-crypto` supplies entropy (Hermes exposes no `globalThis.crypto`).
 
 ## Deferred (carry-over from v0.1)
 
 - [ ] **Person camera capture pipeline** — `CardScannerModal` (opened from `CaptureModeInput`) wires up `expo-camera` → `ocrCardViaVision()` (in `lib/omniroute.ts`; the standalone `lib/ocr.ts` `/ocr` client was retired in B2). The button is present; the full pipeline needs integration testing on device.
-- [ ] **Slugify Unicode edge cases** — ASCII-only slugifier drops non-Latin characters. For French accents this is fine; for non-Latin titles you get "untitled". Consider a Unicode-aware slugifier if this comes up in practice.
-- [ ] **Settings: live connection test — OmniRoute side only.** Half of this shipped with
-  the local-LLM backend: `healthCheck()` in `lib/localLlm.ts` is wired to a test button in
-  `SettingsScreen.tsx` (`testLocalLlmConnection`), reporting reachable/unreachable. There
-  is no equivalent for OmniRoute — `lib/omniroute.ts` has no health/ping export. Mirroring
-  it there is the remaining work; latency/auth-status reporting was never built for either.
+- [x] **Slugify Unicode edge cases** (PR #145) — `slugify()` now NFD-decomposes and
+  strips the combining-mark range, folding any Latin-script diacritic (Polish, Czech,
+  Vietnamese, Turkish, not just the old hand-listed French set), plus a small
+  `SPECIAL_FOLDS` map for ligatures/stroke-letters decomposition can't reach (`ß`, `æ`,
+  `ø`, `ł`...). Non-Latin scripts (Cyrillic, CJK, Arabic) still yield `""` and fall back
+  to the generic stem — deliberate, since preserving those characters would change
+  on-disk filename encoding (Syncthing NFC/NFD, Obsidian links, exFAT).
+- [x] **Settings: live connection test — OmniRoute side only** (PR #138) — was actually a
+  regression, not a gap: `healthCheck` probed `GET /health` with no auth header for every
+  provider, but only Relais serves `/health`; OmniRoute-style gateways serve only `/v1/*`,
+  so Test Connection reported "Unreachable" while real enrich/enhance calls succeeded
+  fine. Fixed by probing `GET /v1/models` with the Bearer key instead — the same request
+  `listModels` already makes, so it validates the key too, not just the host, and adds a
+  distinct `unauthorized` result for a rejected key.
 - [x] **Promote-idea race condition** — Closed by the B4 mtime conflict guard (`writer.ts` `getModificationTime` + `updateNoteIfUnchanged`). Promote now records the file's `modificationTime` before its read-modify-write and re-checks it before the overwrite; a Syncthing/workstation edit that landed in between is kept (write skipped) and a conflict message is surfaced in `CaptureScreen`. The same guard backs the save-first Idea enriched overwrite and the offline-drain in-place update.

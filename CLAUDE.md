@@ -134,23 +134,27 @@ A fixtures/repro harness exists (agent_roadmap item #1, built 2026-07-08):
 `test/fixtures/repro.test.ts` against real vault fixtures in
 `apps/mobile/test/fixtures/vault/`. Reproduce capture-flow bugs by adding a fixture +
 case there, or a targeted vitest against the relevant `lib/*.ts` module (`writer.ts`,
-`omniroute.ts`, `queue.ts`, `frontmatter.ts` are the usual suspects) — not by running the
+`llmClient.ts`, `queue.ts`, `frontmatter.ts` are the usual suspects) — not by running the
 full Expo/Android stack. `docs/smoke-test.md` is the manual, device-based checklist for
 anything that can't be reproduced this way (voice/OCR/native share-sheet/Syncthing).
 
 ## Structural notes for agents
 - `apps/mobile/src/lib/**` is well-factored: small, single-purpose modules, each with a
-  co-located `*.test.ts` (~600 tests total across the repo). Follow this pattern for new
-  logic.
-- Several screen files in `apps/mobile/src/screens/` carry business logic inline and exceed
-  this project's file-size norms — `RecentDetailScreen.tsx` (~1614 lines) is the last one
-  still over, after `CaptureScreen.tsx` (→777, #88) and `SettingsScreen.tsx` (→750, #90)
-  were brought under 800; `lib/writer.ts` (~1148) / `lib/omniroute.ts` (~710) are large too. **Seven screens have `*.test.tsx` coverage** today (CaptureScreen,
-  HomeScreen, RecentDetailScreen, SearchScreen, SettingsScreen, ShareReceiveScreen,
-  TagBrowserScreen) — jsdom + @testing-library/react smoke tests rendering the real
-  component tree under `PaperProvider` (pattern: see `TagBrowserScreen.test.tsx`). This is
-  smoke-level coverage (happy paths plus a handful of regression guards), not exhaustive
-  per-branch testing, and several screens still have none. When touching these files,
+  co-located `*.test.ts` (~1850 tests across the repo). Follow this pattern for new logic.
+- Several files exceed this project's 800-line norm. **These numbers go stale fast** —
+  decomposition PRs pull them down, then new features push them back up, so `wc -l` the
+  file rather than trusting a count written here. As of 2026-08-15 the over-800 set is
+  `voice/VoiceButton.tsx` (~1534), `lib/writer.ts` (~1156), `screens/CaptureScreen.tsx`
+  (~1057), `screens/RecentDetailScreen.tsx` (~893), `lib/llmClient.ts` (~857),
+  `components/LlmProviderSection.tsx` (~808). Note both screens were previously brought
+  *under* 800 by the #88/#89/#90 decomposition work and have since grown back with new
+  features — that is the expected cycle, not a regression to revert; the point is the
+  extraction pattern, not the number. **Seven of 9 screens have `*.test.tsx` coverage**
+  today (CaptureScreen, HomeScreen, RecentDetailScreen, SearchScreen, SettingsScreen,
+  ShareReceiveScreen, TagBrowserScreen) — jsdom + @testing-library/react smoke tests
+  rendering the real component tree under `PaperProvider` (pattern: see
+  `TagBrowserScreen.test.tsx`). This is smoke-level coverage (happy paths plus a handful
+  of regression guards), not exhaustive per-branch testing. When touching these files,
   prefer extracting the non-UI logic into a new `lib/*.ts` module with its own tests (as
   `lib/ideaSaveFirst.ts` and `lib/journalTagIndex.ts` already do) over adding more inline
   logic — screen-level tests are for wiring/rendering, not a substitute for unit-testing the
