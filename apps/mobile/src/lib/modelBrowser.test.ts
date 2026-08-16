@@ -100,6 +100,23 @@ describe("filterAndSplitModels", () => {
     expect(new Set(others).size).toBe(others.length);
   });
 
+  // The query from the original bug report. "mini" is a substring of ge-MINI-ni,
+  // so it drags in the whole gemini/* family — which is exactly where every
+  // duplicated id lives. Searching "mini" hit all 4 of them at once; searching
+  // "gpt" hits none and never flickered. Pinned so a future filter change can't
+  // quietly reintroduce the reported symptom.
+  it("keeps keys unique for the reported 'mini' query, which matches ge-mini-ni", () => {
+    const models = [
+      "ddgw/gpt-5.4-mini",
+      "gemini/gemini-3.1-flash-live-preview",
+      "gemini/gemini-3.1-flash-live-preview",
+      "openai/gpt-4o-mini",
+    ];
+    const { others } = filterAndSplitModels(models, "mini", RECOMMENDED);
+    expect(others).toContain("gemini/gemini-3.1-flash-live-preview");
+    expect(new Set(others).size).toBe(others.length);
+  });
+
   it("de-duplicates a recommended model repeated in the catalog", () => {
     const models = [
       "gemini/gemini-2.5-flash",
