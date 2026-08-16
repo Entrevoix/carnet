@@ -33,6 +33,14 @@ export interface SplitModels {
  * Filter `models` by `filter` (case-insensitive substring, trimmed) and split
  * the matches into recommended vs the rest. A null catalog (not yet fetched)
  * yields empty partitions. A blank/whitespace-only filter matches everything.
+ *
+ * Repeated catalog ids are collapsed to their first occurrence. This is not
+ * tidiness: the browser renders `others` in a FlatList keyed on the model id
+ * (components/ModelBrowserModal.tsx), so a repeated id is a duplicate React key
+ * and the list remounts cells and pulses instead of settling. Real gateways do
+ * serve repeats — llm.grepon.cc returned 4 on 2026-08-16 — and filtering is
+ * what surfaces it, by collapsing the catalog until both copies of a pair sit
+ * in one viewport.
  */
 export function filterAndSplitModels(
   models: readonly string[] | null,
@@ -41,9 +49,8 @@ export function filterAndSplitModels(
 ): SplitModels {
   if (!models) return { recommended: [], others: [] };
   const q = filter.trim().toLowerCase();
-  const matches = q
-    ? models.filter((m) => m.toLowerCase().includes(q))
-    : models;
+  const matched = q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
+  const matches = [...new Set<string>(matched)];
   const recSet = new Set<string>(recommended);
   const rec = recommended.filter((m) => matches.includes(m));
   const rest = matches.filter((m) => !recSet.has(m));

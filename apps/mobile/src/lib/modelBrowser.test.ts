@@ -78,6 +78,39 @@ describe("filterAndSplitModels", () => {
     expect(others).not.toContain("claude/claude-sonnet-4-6");
   });
 
+  // The browser renders `others` through a FlatList keyed on the model id
+  // (components/ModelBrowserModal.tsx), so a duplicate id is a duplicate React
+  // key: the list remounts cells and visibly pulses instead of settling.
+  // llm.grepon.cc really does serve repeated ids (4 of them as of 2026-08-16,
+  // e.g. gemini/gemini-3.1-flash-live-preview twice), and filtering is what
+  // makes it visible — it collapses the catalog until both copies of a pair
+  // land in the same viewport.
+  it("de-duplicates repeated catalog ids so the list keys stay unique", () => {
+    const models = [
+      "gemini/gemini-3.1-flash-live-preview",
+      "gemini/gemini-3.1-flash-live-preview",
+      "gemini/gemini-2.5-flash-native-audio-latest",
+      "gemini/gemini-2.5-flash-native-audio-latest",
+    ];
+    const { others } = filterAndSplitModels(models, "flash", RECOMMENDED);
+    expect(others).toEqual([
+      "gemini/gemini-3.1-flash-live-preview",
+      "gemini/gemini-2.5-flash-native-audio-latest",
+    ]);
+    expect(new Set(others).size).toBe(others.length);
+  });
+
+  it("de-duplicates a recommended model repeated in the catalog", () => {
+    const models = [
+      "gemini/gemini-2.5-flash",
+      "gemini/gemini-2.5-flash",
+      "openai/gpt-4o-mini",
+    ];
+    const { recommended, others } = filterAndSplitModels(models, "", RECOMMENDED);
+    expect(recommended.filter((m) => m === "gemini/gemini-2.5-flash")).toHaveLength(1);
+    expect(new Set(others).size).toBe(others.length);
+  });
+
   it("returns an empty match set when nothing matches the filter", () => {
     const models = ["openai/gpt-4o-mini"];
     expect(filterAndSplitModels(models, "zzz", RECOMMENDED)).toEqual({
