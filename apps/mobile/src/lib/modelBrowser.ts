@@ -38,9 +38,17 @@ export interface SplitModels {
  * tidiness: the browser renders `others` in a FlatList keyed on the model id
  * (components/ModelBrowserModal.tsx), so a repeated id is a duplicate React key
  * and the list remounts cells and pulses instead of settling. Real gateways do
- * serve repeats — llm.grepon.cc returned 4 on 2026-08-16 — and filtering is
- * what surfaces it, by collapsing the catalog until both copies of a pair sit
- * in one viewport.
+ * serve repeats (llm.grepon.cc has, in practice), and filtering is what
+ * surfaces it, by collapsing the catalog until both copies of a pair sit in one
+ * viewport.
+ *
+ * Collapsing is safe because the id is the ENTIRE identity carried downstream:
+ * applyPickedModel stores just this string and llmClient sends it verbatim as
+ * `model`, so two catalog rows sharing an id are indistinguishable to carnet no
+ * matter how their other fields (capabilities, context_length, owned_by) differ
+ * — the gateway, not us, resolves which backend serves it. If the browser ever
+ * surfaces per-model metadata, revisit: first-occurrence-wins stops being free
+ * the moment we render anything but the id.
  */
 export function filterAndSplitModels(
   models: readonly string[] | null,
@@ -51,8 +59,9 @@ export function filterAndSplitModels(
   const q = filter.trim().toLowerCase();
   const matched = q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
   const matches = [...new Set<string>(matched)];
+  const matchSet = new Set<string>(matches);
   const recSet = new Set<string>(recommended);
-  const rec = recommended.filter((m) => matches.includes(m));
+  const rec = recommended.filter((m) => matchSet.has(m));
   const rest = matches.filter((m) => !recSet.has(m));
   return { recommended: [...rec], others: [...rest] };
 }

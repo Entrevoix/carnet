@@ -81,10 +81,10 @@ describe("filterAndSplitModels", () => {
   // The browser renders `others` through a FlatList keyed on the model id
   // (components/ModelBrowserModal.tsx), so a duplicate id is a duplicate React
   // key: the list remounts cells and visibly pulses instead of settling.
-  // llm.grepon.cc really does serve repeated ids (4 of them as of 2026-08-16,
-  // e.g. gemini/gemini-3.1-flash-live-preview twice), and filtering is what
-  // makes it visible — it collapses the catalog until both copies of a pair
-  // land in the same viewport.
+  // llm.grepon.cc really does serve repeated ids (e.g.
+  // gemini/gemini-3.1-flash-live-preview twice), and filtering is what makes it
+  // visible — it collapses the catalog until both copies of a pair land in the
+  // same viewport.
   it("de-duplicates repeated catalog ids so the list keys stay unique", () => {
     const models = [
       "gemini/gemini-3.1-flash-live-preview",
@@ -117,7 +117,11 @@ describe("filterAndSplitModels", () => {
     expect(new Set(others).size).toBe(others.length);
   });
 
-  it("de-duplicates a recommended model repeated in the catalog", () => {
+  // Named for what it actually checks: `recommended` is built by filtering the
+  // RECOMMENDED constant (which has no repeats), so it cannot duplicate whatever
+  // the catalog does — the property worth pinning is that a repeated recommended
+  // model neither leaks into `others` nor doubles up.
+  it("keeps a repeated recommended model out of others and single in recommended", () => {
     const models = [
       "gemini/gemini-2.5-flash",
       "gemini/gemini-2.5-flash",
@@ -125,7 +129,19 @@ describe("filterAndSplitModels", () => {
     ];
     const { recommended, others } = filterAndSplitModels(models, "", RECOMMENDED);
     expect(recommended.filter((m) => m === "gemini/gemini-2.5-flash")).toHaveLength(1);
+    expect(others).not.toContain("gemini/gemini-2.5-flash");
     expect(new Set(others).size).toBe(others.length);
+  });
+
+  // WHICH copy survives a collapse is load-bearing, and this is its only guard.
+  // Verified by mutation: rewriting the dedupe to keep the LAST occurrence
+  // instead of the first fails this test and passes all 14 others, because
+  // every other catalog fixture here is already duplicate-free. (An
+  // order-destroying sort is caught more widely; keep-the-other-copy is not.)
+  it("preserves first-occurrence catalog order in others when collapsing repeats", () => {
+    const models = ["zeta", "alpha", "zeta", "mid", "alpha"];
+    const { others } = filterAndSplitModels(models, "", []);
+    expect(others).toEqual(["zeta", "alpha", "mid"]);
   });
 
   it("returns an empty match set when nothing matches the filter", () => {
