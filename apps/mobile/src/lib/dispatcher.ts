@@ -54,6 +54,7 @@ import {
 import * as providerKeys from "./providerKeys";
 import * as llmClient from "./llmClient";
 import type { EnrichResult, ProviderConfig } from "./llmClient";
+import { isLocalNetworkUrl } from "./netAllowlist";
 import { upsertFrontmatterField } from "./frontmatter";
 import {
   readNote,
@@ -74,7 +75,12 @@ import type { IdeaStatus } from "@carnet/shared";
 // explicit URL (form.omniRouteUrl), so the blank-URL-default path was
 // already unreachable from that call site, and no test asserts on the
 // message branding.
-export { isPermanentError, isNotConfiguredError, listModels } from "./llmClient";
+export {
+  isPermanentError,
+  isNotConfiguredError,
+  isInsecureTransportError,
+  listModels,
+} from "./llmClient";
 export type { EnrichResult } from "./llmClient";
 
 /**
@@ -349,7 +355,43 @@ export async function promoteIdea(
 export async function probeVisionReadiness(): Promise<void> {
   const settings = await getSettings();
   const config = await buildConfig(settings, resolveVisionProviderId(settings));
-  llmClient.assertVisionReady(config);
+  const { url } = llmClient.assertVisionReady(config);
+  assertVisionCredentialPresent(config, url);
+}
+
+/**
+ * PROBE-ONLY credential check. A remote provider with a vision model, a URL,
+ * and no API key passes every assert in `assertVisionReady` — `ocrCardViaVision`
+ * simply omits the Authorization header — and then 401s after the user has
+ * already framed and shot the card. That is exactly the late failure the
+ * preflight banner exists to prevent, so the probe warns up front.
+ *
+ * Deliberately NOT part of `assertVisionReady` or `ocrCardViaVision`: a
+ * genuinely keyless remote endpoint works today and must keep working, so the
+ * real capture path still attempts the call and lets a 401 classify itself as
+ * permanent. Moving this check into the shared asserts would break those setups
+ * — keep it here.
+ *
+ * "Requires a key" is derived from the URL rather than a provider flag: a
+ * loopback/LAN endpoint (Relais on 127.0.0.1, a self-hosted box at 192.168.x)
+ * legitimately needs none, and a custom cloud entry is otherwise
+ * indistinguishable from a custom LAN one by shape alone.
+ *
+ * The URL heuristic is deliberately narrow (loopback + dotted-quad RFC1918),
+ * so a keyless https endpoint that is *privately* reachable — a Tailscale
+ * 100.64/10 address, a `.local` name, `[::1]` — trips this banner too. That
+ * is acceptable only because the banner is advisory (capture and OCR still
+ * run), which is why the message is hedged with "usually" rather than
+ * asserting the key is required.
+ */
+function assertVisionCredentialPresent(config: ProviderConfig, url: string): void {
+  if (config.apiKey.trim()) return;
+  if (isLocalNetworkUrl(url)) return;
+  throw new llmClient.LlmClientError(
+    `${config.label} has no API key — remote providers usually require one. Add it in Settings`,
+    0,
+    { notConfigured: true },
+  );
 }
 
 /** What {@link enhanceProse} hands back: the raw result plus the fallback

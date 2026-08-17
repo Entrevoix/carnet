@@ -57,6 +57,7 @@ import {
   LlmClientError,
   isPermanentError,
   isNotConfiguredError,
+  isInsecureTransportError,
   assertBase64UnderLimit,
   assertVisionReady,
   MAX_SHARED_IMAGE_BYTES,
@@ -1174,6 +1175,31 @@ describe("assertVisionReady", () => {
       caught = e;
     }
     expect(isNotConfiguredError(caught)).toBe(true);
+  });
+
+  it("flags a plain-http remote url as insecure transport, NOT as not-configured", () => {
+    // The two flags must stay distinct: dispatcher's shouldRetryWithFallback
+    // keys off isNotConfiguredError, and an insecure primary has to keep
+    // falling back to a working secondary.
+    let caught: unknown;
+    try {
+      assertVisionReady({ ...ready, baseUrl: "http://llm.example.com" });
+    } catch (e: unknown) {
+      caught = e;
+    }
+    expect(isInsecureTransportError(caught)).toBe(true);
+    expect(isNotConfiguredError(caught)).toBe(false);
+    expect(isPermanentError(caught)).toBe(false);
+  });
+
+  it("leaves insecureTransport false on the not-configured errors", () => {
+    let caught: unknown;
+    try {
+      assertVisionReady({ ...ready, baseUrl: "" });
+    } catch (e: unknown) {
+      caught = e;
+    }
+    expect(isInsecureTransportError(caught)).toBe(false);
   });
 
   it("reports the vision model first when everything is blank", () => {

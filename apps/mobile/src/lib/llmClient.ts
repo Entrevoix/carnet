@@ -134,7 +134,7 @@ export class LlmClientError extends HttpError {
   constructor(
     message: string,
     status: number,
-    opts?: { notConfigured?: boolean },
+    opts?: { notConfigured?: boolean; insecureTransport?: boolean },
   ) {
     super(message, status, opts);
     this.name = "LlmClientError";
@@ -156,6 +156,17 @@ export function isPermanentError(err: unknown): boolean {
  * the caller should surface this instead. */
 export function isNotConfiguredError(err: unknown): boolean {
   return err instanceof HttpError && err.notConfigured;
+}
+
+/** True when the request was refused because credentials would have travelled
+ * over cleartext to a non-local host ({@link assertVisionReady}'s transport
+ * check). Like not-configured, only a Settings change can fix it — but it is
+ * deliberately NOT the same flag: `isNotConfiguredError` suppresses the
+ * provider fallback chain, and an insecure primary must keep falling back to a
+ * working secondary. Callers that only need "is retrying pointless?" (card-scan
+ * outcome copy) consult this; the fallback chain does not. */
+export function isInsecureTransportError(err: unknown): boolean {
+  return err instanceof HttpError && err.insecureTransport;
 }
 
 // Hard ceiling on any single request. Kept short because an unreachable host
@@ -243,6 +254,10 @@ function assertHttpsOrLocal(trimmed: string, label: string): void {
   throw new LlmClientError(
     `${label} URL must use https:// (or be a loopback/LAN address) to protect the API key`,
     0,
+    // NOT `notConfigured` — that flag also disables the provider fallback
+    // chain, and an insecure primary must still fall back to a working
+    // secondary. See isInsecureTransportError.
+    { insecureTransport: true },
   );
 }
 

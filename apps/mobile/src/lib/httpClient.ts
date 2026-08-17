@@ -28,15 +28,23 @@ export class HttpError extends Error {
    * will NEVER succeed by retrying — the caller must surface it so the user
    * fixes Settings. */
   readonly notConfigured: boolean;
+  /** True when the failure is a refusal to send credentials over an insecure
+   * transport (plain `http://` to a non-local host). Like `notConfigured` this
+   * can never succeed by retrying — only Settings can fix it — but it is a
+   * SEPARATE flag on purpose: `notConfigured` also suppresses the provider
+   * fallback chain (dispatcher.ts `shouldRetryWithFallback`), and an insecure
+   * primary must still be allowed to fall back to a working secondary. */
+  readonly insecureTransport: boolean;
   constructor(
     message: string,
     status: number,
-    opts?: { notConfigured?: boolean },
+    opts?: { notConfigured?: boolean; insecureTransport?: boolean },
   ) {
     super(message);
     this.name = "HttpError";
     this.status = status;
     this.notConfigured = opts?.notConfigured ?? false;
+    this.insecureTransport = opts?.insecureTransport ?? false;
   }
 }
 

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { isAllowedPlaintextHost, isCredentialSafeUrl } from "./netAllowlist";
+import {
+  isAllowedPlaintextHost,
+  isCredentialSafeUrl,
+  isLocalNetworkUrl,
+} from "./netAllowlist";
 
 // M3 — HTTPS enforcement regex-bypass fix. The old right-unanchored prefix
 // regex (/^http:\/\/(localhost|127\.0\.0\.1|10\.)/) matched attacker hosts
@@ -85,5 +89,27 @@ describe("172.16/12 (RFC1918)", () => {
   it("carries through isCredentialSafeUrl", () => {
     expect(isCredentialSafeUrl("http://172.20.0.1:8080")).toBe(true);
     expect(isCredentialSafeUrl("http://172.32.0.1:8080")).toBe(false);
+  });
+});
+
+// The card-scan credential preflight (dispatcher.probeVisionReadiness) asks a
+// different question than the cleartext guard does — "is this endpoint on my
+// own network, so a missing API key is expected?" — but must answer it with the
+// exact same host classification, including for https:// LAN endpoints.
+describe("isLocalNetworkUrl", () => {
+  it("accepts loopback and RFC1918 hosts on either scheme", () => {
+    expect(isLocalNetworkUrl("http://127.0.0.1:8080")).toBe(true);
+    expect(isLocalNetworkUrl("http://localhost:8080")).toBe(true);
+    expect(isLocalNetworkUrl("http://192.168.1.20:4000")).toBe(true);
+    expect(isLocalNetworkUrl("https://10.0.0.5")).toBe(true);
+    expect(isLocalNetworkUrl("https://172.20.0.1")).toBe(true);
+  });
+
+  it("rejects remote hosts, including the near-miss lookalikes", () => {
+    expect(isLocalNetworkUrl("https://llm.example.com")).toBe(false);
+    expect(isLocalNetworkUrl("http://10.evil.com")).toBe(false);
+    expect(isLocalNetworkUrl("http://localhost.attacker.com")).toBe(false);
+    expect(isLocalNetworkUrl("https://172.32.0.1")).toBe(false);
+    expect(isLocalNetworkUrl("not a url")).toBe(false);
   });
 });

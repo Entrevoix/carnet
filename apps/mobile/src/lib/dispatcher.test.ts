@@ -93,6 +93,9 @@ globalThis.fetch = fetchMock as unknown as typeof fetch;
 import {
   enrichIdea,
   enhanceProse,
+  ocrCardViaVision,
+  probeVisionReadiness,
+  isInsecureTransportError,
   enrichJournal,
   enrichPerson,
   enrichSharedImage,
@@ -1008,6 +1011,145 @@ describe("vision routing (Phase 3)", () => {
     await expect(
       enrichSharedImage({ base64: "abc", mimeType: "image/jpeg", context: "" }),
     ).rejects.toSatisfy((e: unknown) => isNotConfiguredError(e));
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+  });
+});
+
+// ── Issue #129: a keyless CLOUD provider passed every readiness assert and
+// then 401'd after the user had already framed and shot the card. The
+// credential check is PROBE-ONLY on purpose — a genuinely keyless remote
+// endpoint still works on the real capture path.
+
+describe("probeVisionReadiness credential preflight", () => {
+  /** A remote, vision-capable custom entry. providerKeys' mock returns "" for
+   * any id it doesn't know, so this provider is keyless by construction. */
+  const KEYLESS_REMOTE = {
+    id: "custom-1",
+    label: "My Cloud",
+    baseUrl: "https://vision.example.com",
+    model: "m",
+    visionModel: "vm",
+    preset: "custom",
+  };
+
+  function settingsWith(provider: typeof KEYLESS_REMOTE) {
+    return {
+      ...BASE_SETTINGS,
+      llmProviders: [...BASE_SETTINGS.llmProviders, provider],
+      activeProviderId: provider.id,
+    };
+  }
+
+  it("rejects a keyless remote provider so the banner shows before the user shoots", async () => {
+    vi.mocked(getSettings).mockResolvedValue(settingsWith(KEYLESS_REMOTE));
+
+    await expect(probeVisionReadiness()).rejects.toSatisfy(
+      (e: unknown) => isNotConfiguredError(e),
+    );
+    await expect(probeVisionReadiness()).rejects.toThrow(/My Cloud has no API key/);
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+  });
+
+  it("passes a keyless LOOPBACK provider — relais legitimately needs no key", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ...BASE_SETTINGS,
+      activeProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais" ? { ...p, model: "local-vision" } : p,
+      ),
+    });
+
+    await expect(probeVisionReadiness()).resolves.toBeUndefined();
+  });
+
+  it("passes a keyless LAN provider — a self-hosted box at 192.168.x needs no key either", async () => {
+    vi.mocked(getSettings).mockResolvedValue(
+      settingsWith({ ...KEYLESS_REMOTE, baseUrl: "http://192.168.1.20:4000" }),
+    );
+
+    await expect(probeVisionReadiness()).resolves.toBeUndefined();
+  });
+
+  it("passes a remote provider that HAS a key", async () => {
+    // omniroute's key comes from the providerKeys mock ("test-key").
+    vi.mocked(getSettings).mockResolvedValue(BASE_SETTINGS);
+
+    await expect(probeVisionReadiness()).resolves.toBeUndefined();
+  });
+
+  it("still reports the missing vision model first — the probe adds a rung, it does not reorder", async () => {
+    vi.mocked(getSettings).mockResolvedValue(
+      settingsWith({ ...KEYLESS_REMOTE, visionModel: "" }),
+    );
+
+    await expect(probeVisionReadiness()).rejects.toThrow(/model not configured/i);
+  });
+
+  it("does NOT block the real capture path — a keyless remote call still goes out", async () => {
+    // The whole point of keeping this check probe-only: a genuinely keyless
+    // remote endpoint works today, and a 401 from one is already classified
+    // permanent. Moving the check into assertVisionReady/ocrCardViaVision
+    // would break those setups before a single byte left the device.
+    vi.mocked(getSettings).mockResolvedValue(settingsWith(KEYLESS_REMOTE));
+    fetchMock.mockResolvedValueOnce(makeOkResponse("Ada Lovelace"));
+
+    await ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://vision.example.com/v1/chat/completions");
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+});
+
+describe("insecure-transport errors and the fallback chain", () => {
+  const INSECURE_REMOTE = {
+    id: "custom-insecure",
+    label: "Insecure Cloud",
+    baseUrl: "http://vision.example.com",
+    model: "m",
+    visionModel: "vm",
+    preset: "custom",
+  };
+
+  it("still falls back to a working secondary — the flag must not gate fallback", async () => {
+    // The load-bearing invariant of issue #129's fix: flagging
+    // assertHttpsOrLocal as `notConfigured` would have been a one-liner, and
+    // would have silently disabled the fallback chain for EVERY misconfigured
+    // primary. `insecureTransport` is a separate flag precisely so this keeps
+    // working.
+    vi.mocked(getSettings).mockResolvedValue({
+      ...BASE_SETTINGS,
+      llmProviders: [
+        ...BASE_SETTINGS.llmProviders.map((p) =>
+          p.id === "relais" ? { ...p, model: "local-small" } : p,
+        ),
+        INSECURE_REMOTE,
+      ],
+      activeProviderId: INSECURE_REMOTE.id,
+      fallbackProviderId: "relais",
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("# from the fallback\n"));
+
+    const result = await enrichIdea("insecure primary");
+
+    // The primary never reached the network; the fallback served the call.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8080/v1/chat/completions");
+    expect(result.markdown).toContain("from the fallback");
+  });
+
+  it("propagates the insecure error unchanged when no fallback is configured", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ...BASE_SETTINGS,
+      llmProviders: [...BASE_SETTINGS.llmProviders, INSECURE_REMOTE],
+      activeProviderId: INSECURE_REMOTE.id,
+    });
+
+    await expect(enrichIdea("insecure primary")).rejects.toSatisfy(
+      (e: unknown) => isInsecureTransportError(e) && !isNotConfiguredError(e),
+    );
     expect(fetchMock).toHaveBeenCalledTimes(0);
   });
 });
