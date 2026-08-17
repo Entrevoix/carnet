@@ -10,21 +10,28 @@
  *
  * Storage paths come in two flavors — `file://...` (expo-file-system legacy)
  * and `content://...tree/...` (Storage Access Framework). The per-backend
- * branching lives behind the `VaultFs` seam in ./vaultFs; this module selects
- * a backend ONCE in resolveRoot (or fsForUri for a caller-supplied URI) and
- * calls its primitives, so the public API (writeIdea, appendJournal,
- * writePerson, readNote, updateNote) stays the same shape callers depend on.
+ * branching lives behind the `VaultFs` seam in ./vaultFs; a backend is selected
+ * ONCE by resolveRoot in ./vaultRoot (or by fsForUri for a caller-supplied
+ * URI) and this module calls its primitives, so the public API (writeIdea,
+ * appendJournal, writePerson, readNote, updateNote) stays the same shape
+ * callers depend on.
+ *
+ * This module owns file IO: collision-free naming, the note writers, the
+ * guarded overwrite, note enumeration, and archiving. Logic that sits beside
+ * it was extracted into focused siblings and is RE-EXPORTED from here, so the
+ * `./writer` import path stays valid for every existing caller:
+ *   ./vaultRoot       — root resolution / backend selection
+ *   ./writerMarkdown  — pure markdown section + injection helpers
+ *   ./pairedBinaries  — the `../{Photos|Audio|Files}/{name}` convention
+ *   ./noteNaming      — slug / person-filename / title extraction
  */
 
 import * as FileSystem from "expo-file-system/legacy";
-import { getSettings } from "./settings";
-import { fsForUri, safLastSegment, vaultFsFor, type VaultFs } from "./vaultFs";
+import { fsForUri, safLastSegment, type VaultFs } from "./vaultFs";
+import { resolveRoot } from "./vaultRoot";
 // Pure predicate only — syncConflicts.ts stays filesystem-free, so this import
 // cannot form a cycle (its NoteFileRef import back is type-only).
 import { isSyncConflictName } from "./syncConflicts";
-// Pure formatting helper + its type; location.ts imports only expo-location, so
-// this cannot form a cycle back into writer.ts.
-import { formatCoords, type Coords } from "./location";
 // Pure frontmatter helpers used internally; the full set is re-exported below.
 import {
   extractFrontmatterField,
@@ -33,76 +40,16 @@ import {
   stripFrontmatter,
   upsertFrontmatterField,
 } from "./frontmatter";
+// Helpers used internally by the writers below; both modules' public surfaces
+// are re-exported at the bottom of this file.
+import { listPairedBinaries, mimeFromFilename } from "./pairedBinaries";
+import { extractH1, personFilename } from "./noteNaming";
+
 
 /** Upper bound on collision-bumped filename variants ({stem}-2.md … {stem}-99.md).
  * If 99 variants are taken, the user has a real cleanup problem and we throw
  * rather than silently overwriting. Same ceiling for ideas / people / binaries. */
 const MAX_COLLISION_VARIANTS = 100;
-
-interface Root {
-  /** Either a `file://` URI or a `content://...tree/...` SAF tree URI. */
-  uri: string;
-  /** The filesystem backend selected for `uri` (SAF vs file://). */
-  fs: VaultFs;
-}
-
-/**
- * Resolve the root folder URI from settings.
- *   - empty / default → app sandbox carnet/
- *   - content://...tree/... → SAF tree URI as-is
- *   - anything else → treat as a file:// URI (legacy raw Android path)
- */
-async function resolveRoot(): Promise<Root> {
-  const { captureFolderPath } = await getSettings();
-  const trimmed = captureFolderPath.trim();
-  if (!trimmed) {
-    const base = FileSystem.documentDirectory ?? "file:///data/user/0/carnet/files/";
-    return { uri: `${base.replace(/\/$/, "")}/carnet`, fs: vaultFsFor(false) };
-  }
-  if (trimmed.startsWith("content://")) {
-    return { uri: trimmed, fs: vaultFsFor(true) };
-  }
-  // Best-effort: file:// or raw path. Ensure file:// prefix for FileSystem API.
-  const uri = trimmed.startsWith("file://") ? trimmed : `file://${trimmed}`;
-  return { uri, fs: vaultFsFor(false) };
-}
-
-/** Map a MIME type to a sensible file extension for binary writes. Covers
- * the image types we accept on share intent + a few common audio/document
- * types we'll grow into. Falls back to `bin` rather than guessing wrong. */
-export function extFromMime(mime?: string): string {
-  if (!mime) return "bin";
-  const m = mime.toLowerCase();
-  if (m === "image/jpeg" || m === "image/jpg") return "jpg";
-  if (m === "image/png") return "png";
-  if (m === "image/webp") return "webp";
-  if (m === "image/gif") return "gif";
-  if (m === "image/heic") return "heic";
-  if (m === "image/heif") return "heif";
-  if (m === "audio/mpeg" || m === "audio/mp3") return "mp3";
-  if (m === "audio/wav" || m === "audio/x-wav") return "wav";
-  if (m === "audio/mp4" || m === "audio/m4a") return "m4a";
-  if (m === "application/pdf") return "pdf";
-  // Common document/archive types shared into carnet. Without these the
-  // generic subtype fallback below produces monsters like
-  // `report.vnd.openxmlformats-officedocument.wordprocessingml.document` —
-  // and SAF's createFileAsync then RENAMES the file by appending the
-  // mime-canonical extension (`.docx`), which used to desync the on-disk
-  // name from the note's ../Files/ link (broken pairing: attachments
-  // silently skipped Karakeep export and were orphaned on archive).
-  if (m === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return "docx";
-  if (m === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return "xlsx";
-  if (m === "application/vnd.openxmlformats-officedocument.presentationml.presentation") return "pptx";
-  if (m === "application/msword") return "doc";
-  if (m === "application/vnd.ms-excel") return "xls";
-  if (m === "text/plain") return "txt";
-  if (m === "text/markdown") return "md";
-  if (m === "text/csv") return "csv";
-  if (m === "application/zip") return "zip";
-  if (m === "application/json") return "json";
-  const slash = m.indexOf("/");
-  return slash >= 0 ? m.slice(slash + 1) : "bin";
-}
 
 // safLastSegment (SAF URI → filename decoder) now lives in ./vaultFs alongside
 // the backends that use it; re-exported below so importers of ./writer are
@@ -168,422 +115,6 @@ async function writeBinaryBytes(
   const fileUri = await fs.createFile(parentUri, filename, "application/octet-stream");
   await fs.writeBinaryBytes(fileUri, base64);
   return fileUri;
-}
-
-/**
- * Inject a markdown image embed `![](relPath)` immediately under the first
- * H1 line of `markdown`. If there is no H1, prepend the embed at the top.
- *
- * The earlier inline `/^(#\s+.+\n)/m` regex silently no-op'd when the H1
- * had no trailing newline (e.g. last line of a model response), dropping
- * the embed. This helper handles `\n` and end-of-string equally.
- */
-/**
- * Idempotently insert-or-replace an H2 section in a markdown body.
- *
- *   - If `## {heading}` exists, replace everything from that line through
- *     the next `## ` / `# ` line (or end-of-file) with the new content.
- *   - If it doesn't exist, append a new section at the end with one blank
- *     line of separation from the prior content.
- *
- * Heading match is exact-line and case-sensitive (`## Transcript` matches;
- * `## Transcript ` with trailing space does not, neither does `##  Foo`
- * with double space). This is deliberate: Obsidian's heading parser is
- * strict, and exact-match means re-runs always find their own section
- * back without surprises from whitespace drift.
- *
- * Section boundary stops at H1 and H2 only. H3+ subheadings are treated as
- * part of the current section's body, so a transcript can include
- * `### Speakers` without being truncated.
- *
- * Pure function — no I/O. Caller wires `updateNote` to persist the result.
- */
-export function upsertSection(
-  markdown: string,
-  heading: string,
-  body: string,
-): string {
-  // Heading with a newline would break exact-line match (findIndex misses)
-  // AND emit a malformed heading on append. Defensive — current caller
-  // passes the literal "Transcript" but the helper is exported as general
-  // utility.
-  if (heading.includes("\n") || heading.includes("\r")) {
-    throw new Error("upsertSection: heading cannot contain newlines");
-  }
-
-  const headingLine = `## ${heading}`;
-  const lines = markdown.split("\n");
-  const startIdx = lines.findIndex((l) => l === headingLine);
-
-  if (startIdx === -1) {
-    // Append. Normalize trailing newlines so output always ends with
-    // exactly one newline after the appended body. Skip the leading "\n\n"
-    // separator entirely when markdown is empty so the output doesn't start
-    // with phantom blank lines.
-    const trimmed = markdown.replace(/\n+$/, "");
-    const separator = trimmed.length === 0 ? "" : "\n\n";
-    return `${trimmed}${separator}${headingLine}\n\n${body}\n`;
-  }
-
-  let endIdx = lines.length;
-  for (let i = startIdx + 1; i < lines.length; i++) {
-    if (lines[i].startsWith("## ") || lines[i].startsWith("# ")) {
-      endIdx = i;
-      break;
-    }
-  }
-
-  const before = lines.slice(0, startIdx);
-  const after = lines.slice(endIdx);
-  const replacement = [headingLine, "", body];
-  // Preserve a blank line between the new section and whatever follows.
-  // If `after` is empty (section was at EOF), no separator needed.
-  if (after.length > 0 && after[0] !== "") replacement.push("");
-  return [...before, ...replacement, ...after].join("\n");
-}
-
-export function injectImageEmbed(markdown: string, relPath: string): string {
-  const embed = `![](${relPath})`;
-  // Match the H1 line and capture its trailing newline (if any).
-  const match = markdown.match(/^(#\s+.+?)(\r?\n|$)/m);
-  if (!match) return `${embed}\n\n${markdown}`;
-  const idx = match.index ?? 0;
-  const before = markdown.slice(0, idx + match[1].length);
-  const after = markdown.slice(idx + match[0].length);
-  return `${before}\n\n${embed}\n${after}`;
-}
-
-/** The relative-link convention every binary writer emits: `../{subdir}/{name}`.
- * The filename class `[^/\s)]+` rejects `/` so a crafted `[x](../Photos/../..)`
- * link can't traverse out of the recognized subdir. */
-const PAIRED_BINARY_LINK = /\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/g;
-
-type PairedSubdir = "Photos" | "Audio" | "Files";
-
-/** A binary attachment carried alongside a capture: the storage subdir, the
- * collision-bumped on-disk filename, and the `../{subdir}/{name}` relative link
- * used to embed it in the markdown body. Distinct from a freshly-picked
- * attachment (which still holds base64) — this is the post-write reference that
- * survives in the offline queue and the note body. */
-export interface AttachmentRef {
-  kind: "image" | "file";
-  /** `../Photos/sketch.jpg` or `../Files/spec.pdf` */
-  rel: string;
-  /** Display label + collision-bumped final name on disk. */
-  filename: string;
-}
-
-/**
- * Fold attachment references into an enriched markdown body. Images become
- * `![](rel)` embeds under the H1 (order preserved); non-image files are
- * collected into a single `## Files` section as a markdown link list.
- *
- * Pure function — the caller writes the binaries to disk first (so `rel`
- * resolves) and persists the returned markdown. Shared by the online capture
- * path (CaptureScreen.confirmSave) and the offline drain (queue.processRow) so
- * both produce byte-identical bodies.
- */
-export function injectAttachments(
-  markdown: string,
-  attachments: readonly AttachmentRef[],
-): string {
-  let md = markdown;
-  // Inject images in reverse: injectImageEmbed inserts each embed immediately
-  // under the H1, so reversing keeps the first attachment visually first.
-  const images = attachments.filter((a) => a.kind === "image");
-  for (let i = images.length - 1; i >= 0; i--) {
-    md = injectImageEmbed(md, images[i].rel);
-  }
-  const files = attachments.filter((a) => a.kind === "file");
-  if (files.length > 0) {
-    // Blank line between links so adjacent ones don't soft-break onto a single
-    // line in raw markdown (Obsidian); each still strips cleanly for display.
-    const body = files.map((f) => `[${f.filename}](${f.rel})`).join("\n\n");
-    md = upsertSection(md, "Files", body);
-  }
-  return md;
-}
-
-/** A named place attached to a capture: a display name plus the coordinates it
- * resolved to (from a Maps link or forward geocoding). Distinct from the
- * `location` frontmatter field, which is one day-file-scoped GPS scalar —
- * places are entry-scoped and there can be several per entry. */
-export interface Place {
-  name: string;
-  coords: Coords;
-}
-
-/** Read back the body of a `## {heading}` section, or null when absent. Uses
- * the same exact-line match and H1/H2 boundary rule as {@link upsertSection},
- * so what this returns is exactly what an upsert would replace. */
-function readSection(markdown: string, heading: string): string | null {
-  const headingLine = `## ${heading}`;
-  const lines = markdown.split("\n");
-  const startIdx = lines.findIndex((l) => l === headingLine);
-  if (startIdx === -1) return null;
-
-  let endIdx = lines.length;
-  for (let i = startIdx + 1; i < lines.length; i++) {
-    if (lines[i].startsWith("## ") || lines[i].startsWith("# ")) {
-      endIdx = i;
-      break;
-    }
-  }
-  return lines.slice(startIdx + 1, endIdx).join("\n").trim();
-}
-
-/** Make a place name safe to sit inside a markdown link label.
- *
- * Names reach here from two untrusted-ish sources: percent-decoded bytes out of
- * a pasted Maps URL, and whatever the user typed. A raw newline would break the
- * link AND — if the next line happened to start with `## ` — invent a section
- * boundary that upsertSection would later honor, silently restructuring the
- * note. Brackets would terminate the link label early. */
-function sanitizePlaceName(name: string): string {
-  return name
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/[[\]]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * Fold named places into an entry's markdown body as a `## Places` section of
- * `[name](geo:lat,lon)` links.
- *
- * Body injection, NOT frontmatter, and deliberately so: a journal day file has
- * one frontmatter block shared by every same-day capture (see appendJournal),
- * so a frontmatter list would let the second entry of the day clobber the
- * first's places. Injected into the entry's own fragment before appendJournal
- * appends it, each entry keeps its own `## Places` — a sibling of that entry's
- * `## HH:MM` heading, exactly as `## Files` already is.
- *
- * Existing `## Places` content is APPENDED to, never replaced: the enriching
- * model writes the prose for these entries and may well emit its own Places
- * heading for a travel day, and silently deleting that is worse than a slightly
- * redundant section.
- *
- * Pure function, same contract as injectAttachments.
- */
-export function injectPlaces(markdown: string, places: readonly Place[]): string {
-  if (places.length === 0) return markdown;
-  // Blank line between links so adjacent ones don't soft-break onto a single
-  // line in raw markdown (Obsidian) — same rationale as the Files section.
-  const links = places
-    .map((p) => {
-      const name = sanitizePlaceName(p.name);
-      const coords = formatCoords(p.coords);
-      return `[${name || coords}](geo:${coords})`;
-    })
-    .join("\n\n");
-  const existing = readSection(markdown, "Places");
-  const body = existing ? `${existing}\n\n${links}` : links;
-  return upsertSection(markdown, "Places", body);
-}
-
-export interface PairedBinary {
-  subdir: PairedSubdir;
-  filename: string;
-  /** `../{subdir}/{filename}` — the exact link text found in the body. */
-  rel: string;
-}
-
-/**
- * List every paired binary referenced by a note body (`../{Photos|Audio|Files}/
- * {name}`), de-duplicated by relative path. Replaces the single-`.match()`
- * lookups so a capture with several attachments archives/renders all of them.
- */
-export function listPairedBinaries(body: string): PairedBinary[] {
-  const out: PairedBinary[] = [];
-  const seen = new Set<string>();
-  for (const m of body.matchAll(PAIRED_BINARY_LINK)) {
-    const rel = `../${m[1]}/${m[2]}`;
-    if (seen.has(rel)) continue;
-    seen.add(rel);
-    out.push({ subdir: m[1] as PairedSubdir, filename: m[2], rel });
-  }
-  return out;
-}
-
-/**
- * Resolve a paired binary's storage URI + inferred MIME without reading bytes.
- * Returns null when the file isn't on disk (a broken link from an external
- * rename/move). Factored out of readPairedBinaryUri so RecentDetail's
- * Attachments card can resolve many links, while the single-match callers keep
- * their friendly throw-on-missing contract.
- */
-export async function resolvePairedUri(
-  subdir: string,
-  filename: string,
-): Promise<{ uri: string; mime: string } | null> {
-  const root = await resolveRoot();
-  const subdirUri = await root.fs.findSubdir(root.uri, subdir);
-  if (!subdirUri) return null; // subdir absent — broken link, don't create it
-  const binaryUri = await root.fs.findChild(subdirUri, filename);
-  if (!binaryUri) return null;
-  return { uri: binaryUri, mime: mimeFromFilename(filename) };
-}
-
-/**
- * Strip paired-binary embeds/links from a body for display. RecentDetail now
- * renders attachments in a dedicated card (images inline, files as tappable
- * rows), so the raw `![](../Photos/x)` / `[name](../Files/x)` markdown — which
- * the renderer can't resolve anyway — is removed to keep the prose clean.
- *
- * Only whole-line embeds/links are removed (an inline `[see this](../Files/x)`
- * mid-sentence is left intact). A `## File` / `## Files` heading whose only
- * content was the stripped link is dropped too, so no empty heading is left
- * behind. Display-only — callers keep the original body for playback,
- * transcription, re-enrich, and edit.
- */
-export function stripPairedBinaryLinks(
-  body: string,
-  opts?: { keepImages?: boolean },
-): string {
-  // With `keepImages`, leave `../Photos/` image embeds in the prose so the
-  // detail view can render them INLINE (a custom markdown image rule resolves
-  // each to a device URI); only Audio (dedicated player) and Files (tappable
-  // rows) are pulled out. Default — no opts — strips all three, as before.
-  const subdirs = opts?.keepImages ? "Audio|Files" : "Photos|Audio|Files";
-  const pairedLinkLine = new RegExp(
-    `^!?\\[[^\\]]*\\]\\(\\.\\.\\/(?:${subdirs})\\/[^)]+\\)$`,
-  );
-  const lineIsPairedLink = (line: string): boolean =>
-    pairedLinkLine.test(line.trim());
-
-  // Pass 1: drop standalone embed/link lines.
-  const kept = body.split("\n").filter((l) => !lineIsPairedLink(l));
-
-  // Pass 2: drop a "## File"/"## Files" heading left with no body content.
-  const out: string[] = [];
-  for (let i = 0; i < kept.length; i++) {
-    const trimmed = kept[i].trim();
-    if (trimmed === "## File" || trimmed === "## Files") {
-      let hasContent = false;
-      for (let j = i + 1; j < kept.length; j++) {
-        const next = kept[j].trim();
-        if (next === "") continue;
-        if (next.startsWith("# ") || next.startsWith("## ")) break;
-        hasContent = true;
-        break;
-      }
-      if (!hasContent) continue;
-    }
-    out.push(kept[i]);
-  }
-
-  // Collapse the blank-line runs left by removals; keep a single trailing \n.
-  return out
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/^\n+/, "")
-    .replace(/\n+$/, "\n");
-}
-
-/**
- * Letters that Unicode decomposition alone won't fold. NFD splits a
- * precomposed letter into base + combining mark, but ligatures (ß, æ, œ) and
- * stroke/bar letters (ø, ł, đ) are atomic — they have no combining form, so
- * stripping marks leaves them intact and the ASCII filter then drops them.
- * Everything decomposition *does* handle is deliberately absent here.
- */
-const SPECIAL_FOLDS: Record<string, string> = {
-  ß: "ss",
-  æ: "ae", Æ: "ae", œ: "oe", Œ: "oe",
-  ø: "o", Ø: "o",
-  ł: "l", Ł: "l",
-  đ: "d", Đ: "d", ð: "d", Ð: "d",
-  þ: "th", Þ: "th",
-  ħ: "h", Ħ: "h",
-  ı: "i",
-};
-
-/**
- * Lowercase ASCII slug with hyphens. Folds Latin-script diacritics via NFD
- * decomposition, so "Mémoire" → "memoire" and "Dvořák" → "dvorak" — any
- * Latin diacritic, not a hand-listed set (this replaced a French-only accent
- * map, which silently dropped Polish/Czech/Vietnamese/Turkish letters).
- *
- * Non-Latin scripts (Cyrillic, CJK, Arabic…) still yield "" and callers fall
- * back to a generic stem ("idea"/"image"/"attachment"). That is deliberate,
- * not a gap: preserving those characters would change on-disk filename
- * encoding, which touches Syncthing's NFC/NFD normalization across platforms,
- * Obsidian link resolution, and exFAT-formatted cards. Revisit as a vault
- * decision, not a slug tweak.
- */
-export function slugify(input: string): string {
-  const folded = input
-    // NFD splits "é" into "e" + U+0301; dropping the combining-mark range then
-    // leaves plain ASCII. Also normalizes the precomposed/decomposed forms
-    // Syncthing and macOS can each deliver for the same filename.
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .split("")
-    .map((c) => SPECIAL_FOLDS[c] ?? c)
-    .join("");
-
-  let out = "";
-  let prevDash = true;
-  for (const c of folded) {
-    if (/[a-zA-Z0-9]/.test(c)) {
-      out += c.toLowerCase();
-      prevDash = false;
-    } else if (!prevDash) {
-      out += "-";
-      prevDash = true;
-    }
-  }
-  return out.replace(/^-+|-+$/g, "");
-}
-
-/**
- * Derive filename stem for a person note: "Firstname-Lastname" (preserving
- * case, hyphenating spaces, stripping special chars except hyphens/apostrophes).
- * Strict allowlist — defense in depth against an LLM-controlled name field
- * (which could in theory contain path separators if a prompt injection
- * survived the delimiter guard). Returns "" on bad input; callers fall back.
- */
-export function personFilename(name: string): string {
-  const cleaned = name
-    .split("")
-    .filter((c) => /[a-zA-Z0-9\s\-']/.test(c))
-    .join("");
-  const parts = cleaned.split(/\s+/).filter(Boolean);
-  const stem = parts.join("-");
-  // Allowlist assert: only letters / digits / hyphens / apostrophes survive.
-  // ".." or "/" can't appear, but the regex makes the invariant explicit.
-  if (!/^[A-Za-z0-9'\-]+$/.test(stem)) return "";
-  return stem;
-}
-
-/**
- * Extract first/last name from a person markdown note. Tries `name:`
- * frontmatter first, then the H1. Used by CaptureScreen to derive a
- * filename stem before calling writePerson.
- */
-export function extractNameFromMarkdown(
-  markdown: string,
-): { firstName: string; lastName: string } {
-  const fromField = extractFrontmatterField(markdown, "name");
-  const fromH1 = extractH1(markdown);
-  const raw = fromField ?? fromH1;
-  if (!raw) return { firstName: "", lastName: "" };
-  const parts = raw.split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return { firstName: "", lastName: "" };
-  if (parts.length === 1) return { firstName: parts[0], lastName: "" };
-  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
-}
-
-/** Extract the first H1 title from markdown. */
-function extractH1(markdown: string): string | null {
-  for (const line of markdown.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("# ")) {
-      const title = trimmed.slice(2).trim();
-      if (title) return title;
-    }
-  }
-  return null;
 }
 
 // Frontmatter parse/serialize logic lives in ./frontmatter — a pure, native-free
@@ -1050,107 +581,31 @@ export async function moveToArchive(
   };
 }
 
-/** Best-effort inverse of `extFromMime` for the file extensions we actually
- * write into the vault. Returns "application/octet-stream" for unknowns so
- * downstream code (e.g. `enrichSharedImage`) gets to surface its own error
- * about an unsupported type, rather than us guessing wrong. */
-export function mimeFromFilename(filename: string): string {
-  const dot = filename.lastIndexOf(".");
-  if (dot < 0) return "application/octet-stream";
-  const ext = filename.slice(dot + 1).toLowerCase();
-  const map: Record<string, string> = {
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    webp: "image/webp",
-    gif: "image/gif",
-    heic: "image/heic",
-    heif: "image/heif",
-    mp3: "audio/mpeg",
-    wav: "audio/wav",
-    m4a: "audio/mp4",
-    pdf: "application/pdf",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    doc: "application/msword",
-    xls: "application/vnd.ms-excel",
-    txt: "text/plain",
-    md: "text/markdown",
-    csv: "text/csv",
-    zip: "application/zip",
-    json: "application/json",
-  };
-  return map[ext] ?? "application/octet-stream";
-}
+// The markdown-body helpers (section upsert, image/attachment/place injection)
+// live in ./writerMarkdown — pure string transforms, no filesystem. Re-exported
+// so importers of ./writer keep their import path unchanged.
+export {
+  upsertSection,
+  injectImageEmbed,
+  injectAttachments,
+  injectPlaces,
+  type AttachmentRef,
+  type Place,
+} from "./writerMarkdown";
 
-/**
- * Locate the paired binary referenced by a note's body and return its URI
- * + filename + inferred MIME — WITHOUT reading the bytes. Used by the
- * RecentDetail audio player which streams the file via expo-av's
- * Audio.Sound (it accepts a URI directly). Cheaper than
- * readPairedBinaryFromNote for the playback path — no base64 round-trip
- * through JS heap for a 10MB audio file just to hand it to the player.
- *
- * Returned URI is the raw storage URI (file:// or content://) — Audio.Sound
- * handles file:// directly on Android. For content:// SAF URIs the
- * caller may need to first copy to a cache file (expo-av's SAF support is
- * version-dependent); cross that bridge when a SAF user reports playback
- * failing.
- *
- * Same error-message contract as readPairedBinaryFromNote — friendly text
- * for the two failure modes (no link found / target file missing).
- */
-export async function readPairedBinaryUri(
-  body: string,
-): Promise<{ uri: string; mime: string; filename: string }> {
-  const linkMatch = body.match(/\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/);
-  if (!linkMatch) {
-    throw new Error("No paired binary link found in note.");
-  }
-  const subdir = linkMatch[1];
-  const filename = linkMatch[2];
-  const resolved = await resolvePairedUri(subdir, filename);
-  if (!resolved) {
-    throw new Error(`Paired binary not found: ${subdir}/${filename}`);
-  }
-  return { uri: resolved.uri, mime: resolved.mime, filename };
-}
+// The paired-binary convention (`../{Photos|Audio|Files}/{name}` links and the
+// readers/resolvers that follow them) lives in ./pairedBinaries. Re-exported
+// for the same reason.
+export {
+  extFromMime,
+  mimeFromFilename,
+  listPairedBinaries,
+  resolvePairedUri,
+  stripPairedBinaryLinks,
+  readPairedBinaryUri,
+  readPairedBinaryFromNote,
+  type PairedBinary,
+} from "./pairedBinaries";
 
-/**
- * Locate and read the paired binary referenced by a note's body (e.g. the
- * JPEG behind a photo/shared-image .md), returning the base64 payload and
- * the inferred MIME type. Used by RecentDetail's retro-enrich flow when the
- * raw image needs to be re-sent to the vision model days after capture.
- *
- * Resolves the first `../{Photos|Audio|Files}/<name>` link in `body`,
- * looks the file up in that subdir of the active vault root, and reads it
- * as base64. Path-traversal characters in the captured filename are
- * rejected by the regex (matches `moveToArchive`).
- *
- * Throws with a friendly message when:
- *   - the body contains no recognized paired-binary link
- *   - the link target doesn't exist on disk (e.g. user moved or renamed
- *     the binary in Obsidian)
- *
- * Callers should surface the error in a banner — never overwrite the
- * existing note when this fails.
- */
-export async function readPairedBinaryFromNote(
-  body: string,
-): Promise<{ base64: string; mime: string }> {
-  const linkMatch = body.match(/\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/);
-  if (!linkMatch) {
-    throw new Error("No paired binary link found in note.");
-  }
-  const subdir = linkMatch[1];
-  const filename = linkMatch[2];
-  const resolved = await resolvePairedUri(subdir, filename);
-  if (!resolved) {
-    throw new Error(`Paired binary not found: ${subdir}/${filename}`);
-  }
-  // The resolved URI's scheme is the same discriminator resolveRoot uses, so
-  // pick the backend from the URI directly — this reader doesn't need the Root.
-  const base64 = await fsForUri(resolved.uri).readBinary(resolved.uri);
-  return { base64, mime: resolved.mime };
-}
+// Slug / person-filename / title extraction lives in ./noteNaming.
+export { slugify, personFilename, extractNameFromMarkdown } from "./noteNaming";
