@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  countDuplicateIds,
   filterAndSplitModels,
   resolveBrowseApiKey,
   RECOMMENDED_MODELS as RECOMMENDED,
@@ -150,6 +151,32 @@ describe("filterAndSplitModels", () => {
       recommended: [],
       others: [],
     });
+  });
+});
+
+describe("countDuplicateIds", () => {
+  it("reports no duplicates for a clean catalog", () => {
+    expect(countDuplicateIds(["a", "b", "c"])).toBe(0);
+  });
+
+  it("counts every copy beyond the first, not the number of repeated ids", () => {
+    expect(countDuplicateIds(["a", "a", "a", "b"])).toBe(2);
+  });
+
+  it("sums duplicates across several repeated ids", () => {
+    expect(countDuplicateIds(["a", "b", "a", "c", "b"])).toBe(2);
+  });
+
+  it("treats a null or empty catalog as duplicate-free", () => {
+    expect(countDuplicateIds(null)).toBe(0);
+    expect(countDuplicateIds([])).toBe(0);
+  });
+
+  // The catalog ids are matched verbatim downstream (llmClient sends the string
+  // as `model`), so ids differing only in case are DIFFERENT models, not
+  // duplicates — filterAndSplitModels lowercases only for filtering.
+  it("does not treat case variants as duplicates", () => {
+    expect(countDuplicateIds(["Gpt-4o", "gpt-4o"])).toBe(0);
   });
 });
 

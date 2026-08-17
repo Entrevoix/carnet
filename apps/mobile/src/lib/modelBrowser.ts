@@ -67,6 +67,24 @@ export function filterAndSplitModels(
 }
 
 /**
+ * How many catalog entries are repeats of an id already seen — i.e. how many
+ * rows `filterAndSplitModels` will silently collapse.
+ *
+ * This exists because that collapse removed the only signal a gateway serves
+ * duplicate ids: the FlatList duplicate-key flicker is how the bug was
+ * reported in the first place (#148). Callers log the count once per catalog
+ * fetch, so the diagnostic survives the fix without running per keystroke.
+ *
+ * Comparison is exact, matching how ids are treated everywhere downstream
+ * (llmClient sends the string verbatim as `model`) — ids differing only in
+ * case are distinct models, not duplicates.
+ */
+export function countDuplicateIds(ids: readonly string[] | null): number {
+  if (!ids) return 0;
+  return ids.length - new Set(ids).size;
+}
+
+/**
  * Which API key to use for the model-browser catalog fetch: a freshly-typed,
  * not-yet-saved `pendingKey` takes priority over the stored one, so Browse
  * reflects a key the user just typed without requiring a Save first.
