@@ -37,6 +37,7 @@ import {
   enrichPerson,
   isPermanentError,
   isNotConfiguredError,
+  isInsecureTransportError,
 } from "./dispatcher";
 import {
   writeIdea,
@@ -329,7 +330,12 @@ export async function drainQueue(): Promise<void> {
         // Stop the pass and leave all rows intact — do NOT burn retry attempts
         // (which would eventually mark genuine captures permanently failed).
         // They'll drain on the next open once the user sets a URL.
-        if (isNotConfiguredError(e)) break;
+        //
+        // A plain-http remote URL is the same shape of problem: the request is
+        // rejected before it leaves the device and no number of drains will
+        // change that until Settings do, so it takes the same break rather
+        // than burning attempts down to a permanent failure.
+        if (isNotConfiguredError(e) || isInsecureTransportError(e)) break;
         const raw = e instanceof Error ? e.message : String(e);
         const msg = sanitizeError(raw);
         // 4xx → mark as permanent failure immediately. Retrying a 401 ten

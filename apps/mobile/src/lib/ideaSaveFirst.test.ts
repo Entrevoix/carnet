@@ -115,11 +115,13 @@ vi.mock("expo-file-system/legacy", () => ({
 const enrichIdeaMock = vi.fn();
 const isPermanentErrorMock = vi.fn().mockReturnValue(false);
 const isNotConfiguredErrorMock = vi.fn().mockReturnValue(false);
+const isInsecureTransportErrorMock = vi.fn().mockReturnValue(false);
 
 vi.mock("./llmClient", () => ({
   enrichIdea: (...args: unknown[]) => enrichIdeaMock(...args),
   isPermanentError: (...args: unknown[]) => isPermanentErrorMock(...args),
   isNotConfiguredError: (...args: unknown[]) => isNotConfiguredErrorMock(...args),
+  isInsecureTransportError: (...args: unknown[]) => isInsecureTransportErrorMock(...args),
   enrichJournal: vi.fn(),
   enrichPerson: vi.fn(),
   enrichSharedImage: vi.fn(),
@@ -155,6 +157,7 @@ beforeEach(() => {
   enrichIdeaMock.mockReset();
   isPermanentErrorMock.mockReturnValue(false);
   isNotConfiguredErrorMock.mockReturnValue(false);
+  isInsecureTransportErrorMock.mockReturnValue(false);
 });
 
 // ── usesSaveFirst (drives the CaptureScreen branch) ──────────────────────────
@@ -411,6 +414,27 @@ describe("enrichIdeaInPlace", () => {
       tags: [],
     });
     expect(outcome).toEqual({ kind: "failed", transient: false, reason: "HTTP 400" });
+  });
+
+  it("classifies an insecure-transport failure as non-transient (Settings, not a queued retry)", async () => {
+    const { filepath, mtime } = await writeRawIdea({ text: "insecure", tags: [] });
+    enrichIdeaMock.mockRejectedValue(new Error("Insecure URL: use https:// for remote hosts"));
+    // Neither permanent (no HTTP status) nor not-configured — only the new
+    // predicate separates it from a plain network blip.
+    isInsecureTransportErrorMock.mockReturnValue(true);
+    const outcome = await enrichIdeaInPlace({
+      filepath,
+      expectedMtime: mtime,
+      text: "insecure",
+      tags: [],
+    });
+    expect(outcome).toEqual({
+      kind: "failed",
+      transient: false,
+      reason: "Insecure URL: use https:// for remote hosts",
+    });
+    // Save-first contract: the raw note is still on disk, still pending-enrich.
+    expect(_files.get(filepath)!.content).toContain(`status: ${PENDING_ENRICH_STATUS}`);
   });
 
   it("reports conflict (keeps user version) when the note changed during enrichment", async () => {
