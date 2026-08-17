@@ -60,6 +60,70 @@ export const FETCH_TIMEOUT_MS = 20_000;
 export const ENHANCE_TIMEOUT_MS = 120_000;
 
 /**
+ * Shared network/timeout plumbing for every fetch this client makes:
+ * timeout via {@link withTimeout}, a caught fetch-level failure re-thrown as
+ * a status-0 `${label} network error — ...` LlmClientError (with the raw
+ * message passed through {@link sanitizeErrorMessage}), and a non-2xx
+ * response re-thrown as a `${label} error — ...` LlmClientError carrying
+ * the real status via {@link parseErrorBody}.
+ *
+ * `parseResponse` runs INSIDE the same timeout-guarded callback as the
+ * fetch — not after `guardedFetch` returns — so a connection that succeeds
+ * but whose body never closes (e.g. a LiteLLM SSE response `response.json()`
+ * never resolves for) still times out instead of hanging forever. Any error
+ * `parseResponse` throws (a malformed-response LlmClientError, say) is not
+ * caught here and propagates as-is, exactly as it did when each call site
+ * inlined this same try/catch.
+ *
+ * Used by {@link executeChat}, `listModels`, and `ocrCardViaVision`
+ * (./llmClient) — all three POST/GET to this client's endpoints and need
+ * identical classification of network failures and non-2xx responses.
+ * `healthCheck` (./llmClient) is deliberately NOT routed through this: it
+ * never throws — a network failure or non-2xx there resolves to a
+ * `HealthResult` string ("unreachable"/"unauthorized"/etc.) so the Settings
+ * screen's "Test Connection" button never crashes on an unsafe URL or a
+ * downed server. That control-flow shape (return-a-status vs. throw) is a
+ * real difference in what the call sites need, not incidental duplication,
+ * so it stays a separate implementation rather than being forced through
+ * this helper.
+ */
+export async function guardedFetch<T>(
+  url: string,
+  init: RequestInit,
+  label: string,
+  timeoutMs: number,
+  parseResponse: (response: Response) => Promise<T>,
+): Promise<T> {
+  return await withTimeout(
+    timeoutMs,
+    (ms) => timeoutError(label, ms),
+    async (signal) => {
+      let response: Response;
+      try {
+        response = await fetch(url, { ...init, signal });
+      } catch (e: unknown) {
+        // Timeout already arrives as a shaped LlmClientError — don't double-wrap.
+        if (e instanceof LlmClientError) throw e;
+        const raw = e instanceof Error ? e.message : String(e);
+        const msg = sanitizeErrorMessage(raw);
+        throw new LlmClientError(`${label} network error — ${msg}`, 0);
+      }
+
+      // Body reads run INSIDE the timeout — a never-closing body hangs here
+      // just like a stuck connect would.
+      if (!response.ok) {
+        throw new LlmClientError(
+          `${label} error — ${await parseErrorBody(response)}`,
+          response.status,
+        );
+      }
+
+      return await parseResponse(response);
+    },
+  );
+}
+
+/**
  * Low-level POST to /v1/chat/completions. Sends arbitrary OpenAI-compatible
  * messages — text or multimodal. Used both for the text-only modes
  * (idea/journal/person) and for vision-enabled share-target enrichment.
@@ -85,38 +149,19 @@ export async function executeChat(
   const url = `${trimmedUrl}/v1/chat/completions`;
   const body = JSON.stringify({ model, messages, stream: false });
 
-  return await withTimeout(
+  return await guardedFetch(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body,
+    },
+    label,
     timeoutMs,
-    (ms) => timeoutError(label, ms),
-    async (signal) => {
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-          },
-          body,
-          signal,
-        });
-      } catch (e: unknown) {
-        // Timeout already arrives as a shaped LlmClientError — don't double-wrap.
-        if (e instanceof LlmClientError) throw e;
-        const raw = e instanceof Error ? e.message : String(e);
-        const msg = sanitizeErrorMessage(raw);
-        throw new LlmClientError(`${label} network error — ${msg}`, 0);
-      }
-
-      // Body reads run INSIDE the timeout — a never-closing body hangs here
-      // just like a stuck connect would.
-      if (!response.ok) {
-        throw new LlmClientError(
-          `${label} error — ${await parseErrorBody(response)}`,
-          response.status,
-        );
-      }
-
+    async (response) => {
       const json = (await response.json()) as OpenAIResponse;
       const content = json.choices?.[0]?.message?.content;
       if (typeof content !== "string" || !content.trim().length) {

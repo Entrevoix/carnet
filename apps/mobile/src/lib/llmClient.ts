@@ -29,14 +29,16 @@
  *   ./llmErrors — LlmClientError and its status-classification predicates
  *   ./llmGuards — config-precondition asserts (blank URL/model/vision-model,
  *                 image size, HTTPS-or-local transport)
- *   ./llmHttp   — the OpenAI wire types and the executeChat/chatCompletion
- *                 fetch primitives
+ *   ./llmHttp   — the OpenAI wire types, the executeChat/chatCompletion
+ *                 fetch primitives, and guardedFetch (the shared
+ *                 timeout/network-error/non-2xx plumbing that listModels
+ *                 and ocrCardViaVision below also use — see guardedFetch's
+ *                 own doc comment for why healthCheck does NOT)
  *
- * `assertVisionReady` in ./llmGuards takes a structural
- * `{ visionModel, baseUrl, label }` shape rather than importing
- * `ProviderConfig` from here, to avoid an import cycle (this module imports
- * ./llmGuards) — `ProviderConfig` satisfies that shape structurally, so
- * callers are unaffected.
+ * `assertVisionReady` in ./llmGuards takes a `VisionReadyConfig` shape
+ * defined there rather than importing `ProviderConfig` from here, to avoid
+ * an import cycle (this module imports ./llmGuards) — `ProviderConfig`
+ * extends `VisionReadyConfig`, so callers are unaffected.
  */
 
 import {
@@ -50,7 +52,7 @@ import {
   type PromptPair,
 } from "./prompts";
 import { isCredentialSafeUrl } from "./netAllowlist";
-import { parseErrorBody, sanitizeErrorMessage, withTimeout } from "./httpClient";
+import { withTimeout } from "./httpClient";
 import { fetchUrlPreview, type UrlPreview } from "./urlpreview";
 import type { IdeaStatus } from "@carnet/shared";
 import { LlmClientError, timeoutError } from "./llmErrors";
@@ -65,6 +67,7 @@ import {
 import {
   chatCompletion,
   executeChat,
+  guardedFetch,
   FETCH_TIMEOUT_MS,
   ENHANCE_TIMEOUT_MS,
   type OpenAIMessage,
@@ -150,35 +153,17 @@ export async function listModels(
 
   const url = `${trimmed}/v1/models`;
 
-  return await withTimeout(
+  return await guardedFetch(
+    url,
+    {
+      method: "GET",
+      headers: {
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+    },
+    "LLM provider",
     FETCH_TIMEOUT_MS,
-    (ms) => timeoutError("LLM provider", ms),
-    async (signal) => {
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method: "GET",
-          headers: {
-            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-          },
-          signal,
-        });
-      } catch (e: unknown) {
-        if (e instanceof LlmClientError) throw e;
-        const raw = e instanceof Error ? e.message : String(e);
-        throw new LlmClientError(
-          `LLM provider network error — ${sanitizeErrorMessage(raw)}`,
-          0,
-        );
-      }
-
-      if (!response.ok) {
-        throw new LlmClientError(
-          `LLM provider error — ${await parseErrorBody(response)}`,
-          response.status,
-        );
-      }
-
+    async (response) => {
       const json = (await response.json()) as { data?: Array<{ id?: string }> };
       const ids = (json.data ?? [])
         .map((m) => m.id)
@@ -395,37 +380,19 @@ export async function ocrCardViaVision(
   // raw text rather than a sanitized note.
   const body = JSON.stringify({ model, messages, stream: false, temperature: 0 });
 
-  return await withTimeout(
+  return await guardedFetch(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+      },
+      body,
+    },
+    config.label,
     FETCH_TIMEOUT_MS,
-    (ms) => timeoutError(config.label, ms),
-    async (signal) => {
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
-          },
-          body,
-          signal,
-        });
-      } catch (e: unknown) {
-        if (e instanceof LlmClientError) throw e;
-        const raw = e instanceof Error ? e.message : String(e);
-        throw new LlmClientError(
-          `${config.label} network error — ${sanitizeErrorMessage(raw)}`,
-          0,
-        );
-      }
-
-      if (!response.ok) {
-        throw new LlmClientError(
-          `${config.label} error — ${await parseErrorBody(response)}`,
-          response.status,
-        );
-      }
-
+    async (response) => {
       const json = (await response.json()) as OpenAIResponse;
       const content = json.choices?.[0]?.message?.content;
       const text = typeof content === "string" ? content : "";
