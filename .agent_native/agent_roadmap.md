@@ -209,10 +209,12 @@ of a human re-deriving state each session.
 - **Screen files carry business logic inline**, in violation of this repo's own coding-style
   rules (800-line file / 50-line function caps from the user's global CLAUDE.md rules):
   `RecentDetailScreen.tsx` (1458 lines), `CaptureScreen.tsx` (1039), `SettingsScreen.tsx`
-  (934), plus `writer.ts` (1148) and `omniroute.ts` (710) in the lib layer itself already
-  near/over the cap. The `lib/` layer's smaller, single-purpose modules (e.g.
-  `netAllowlist.ts`, `frontmatter.ts`, `ideaSaveFirst.ts`) are the target pattern — screens
-  and the two large lib files should be decomposed toward it (item #2).
+  (934), plus `omniroute.ts` (710) in the lib layer itself already near/over the cap.
+  (`writer.ts` was decomposed into a facade over `writerMarkdown.ts`, `pairedBinaries.ts`,
+  `mimeTypes.ts`, and `noteNaming.ts` — now 611 lines — no longer a structural obstacle.)
+  The `lib/` layer's smaller, single-purpose modules (e.g. `netAllowlist.ts`,
+  `frontmatter.ts`, `ideaSaveFirst.ts`) are the target pattern — screens and the remaining
+  large lib files should be decomposed toward it (item #2).
 - **`apps/desktop` is an intentional stub** (per `TODO.md`, "Desktop app fate... decide
   rebuild or deprecate after v0.2 mobile dogfooding") — not a structural problem to fix now,
   but an agent should know not to invest effort there without checking `TODO.md` first.
