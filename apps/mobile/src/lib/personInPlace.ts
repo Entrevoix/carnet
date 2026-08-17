@@ -17,7 +17,12 @@
  * this whole-file overwrite — see finishEnrichment.ts's isReEnrichableMode.
  */
 
-import { enrichPerson, isNotConfiguredError, isPermanentError } from "./dispatcher";
+import {
+  enrichPerson,
+  isInsecureTransportError,
+  isNotConfiguredError,
+  isPermanentError,
+} from "./dispatcher";
 import { preserveFrontmatterFields, upsertFrontmatterField } from "./frontmatter";
 import { mergeUserTags } from "./tags";
 import { injectAttachments, updateNoteIfUnchanged, type AttachmentRef } from "./writer";
@@ -72,7 +77,16 @@ export async function enrichPersonInPlace(
     const reason = e instanceof Error ? e.message : String(e);
     // Not-configured + 4xx are permanent (no retry helps); everything else
     // (network / timeout / 5xx) is transient and safe to queue for a drain.
-    const transient = !isNotConfiguredError(e) && !isPermanentError(e);
+    // Insecure transport (a plain-http remote URL) joins the non-transient set:
+    // it looks like a connection error but only a Settings change can fix it,
+    // so queueing it would burn retries on a request that can never succeed.
+    // Consistency-hardening here rather than a live fix: this function's only
+    // caller (finishEnrichment's mapInPlaceOutcome) already collapses every
+    // failure to one shape and never reads `transient`. The capture paths that
+    // DO act on it classify through captureErrorDecision.ts, which carries the
+    // same rule — keeping the two in step is the point.
+    const transient =
+      !isNotConfiguredError(e) && !isPermanentError(e) && !isInsecureTransportError(e);
     return { kind: "failed", transient, reason };
   }
 

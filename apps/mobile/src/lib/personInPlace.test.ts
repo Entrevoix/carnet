@@ -19,16 +19,23 @@ vi.mock("./dispatcher", () => ({
   enrichPerson: vi.fn(),
   isNotConfiguredError: vi.fn(() => false),
   isPermanentError: vi.fn(() => false),
+  isInsecureTransportError: vi.fn(() => false),
 }));
 
 import { enrichPersonInPlace } from "./personInPlace";
 import { updateNoteIfUnchanged } from "./writer";
-import { enrichPerson, isNotConfiguredError, isPermanentError } from "./dispatcher";
+import {
+  enrichPerson,
+  isInsecureTransportError,
+  isNotConfiguredError,
+  isPermanentError,
+} from "./dispatcher";
 
 const mockUpdate = vi.mocked(updateNoteIfUnchanged);
 const mockPerson = vi.mocked(enrichPerson);
 const mockNotConfigured = vi.mocked(isNotConfiguredError);
 const mockPermanent = vi.mocked(isPermanentError);
+const mockInsecure = vi.mocked(isInsecureTransportError);
 
 /** What the model returns: its own frontmatter, no knowledge of the user's
  * tags/location/attachments. */
@@ -39,6 +46,7 @@ beforeEach(() => {
   mockUpdate.mockResolvedValue({ ok: true });
   mockNotConfigured.mockReturnValue(false);
   mockPermanent.mockReturnValue(false);
+  mockInsecure.mockReturnValue(false);
   mockPerson.mockResolvedValue({ markdown: MODEL_OUTPUT, model: "test" });
 });
 
@@ -172,6 +180,25 @@ describe("enrichPersonInPlace", () => {
       tags: [],
     });
     expect(out).toEqual({ kind: "failed", transient: false, reason: "HTTP 400" });
+  });
+
+  it("classifies an insecure-transport failure as non-transient (Settings, not a queued retry)", async () => {
+    mockPerson.mockRejectedValue(new Error("Insecure URL: use https:// for remote hosts"));
+    mockInsecure.mockReturnValue(true);
+    const out = await enrichPersonInPlace({
+      filepath: "p.md",
+      expectedMtime: 2000,
+      ocrResult: "x",
+      context: "",
+      tags: [],
+    });
+    expect(out).toEqual({
+      kind: "failed",
+      transient: false,
+      reason: "Insecure URL: use https:// for remote hosts",
+    });
+    // Never throws, never rewrites the note — the existing capture stands.
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   it("passes a null baseline straight through when there is no snapshot either", async () => {

@@ -39,6 +39,7 @@ vi.mock("../lib/dispatcher", () => ({
   enrichPerson: vi.fn(),
   isPermanentError: vi.fn(() => false),
   isNotConfiguredError: vi.fn(() => false),
+  isInsecureTransportError: vi.fn(() => false),
   promoteIdea: vi.fn(),
 }));
 

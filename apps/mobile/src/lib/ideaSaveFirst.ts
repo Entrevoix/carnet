@@ -30,7 +30,12 @@ import {
 } from "./writer";
 import { preserveFrontmatterFields, upsertFrontmatterField } from "./frontmatter";
 import { mergeUserTags } from "./tags";
-import { enrichIdea, isNotConfiguredError, isPermanentError } from "./dispatcher";
+import {
+  enrichIdea,
+  isInsecureTransportError,
+  isNotConfiguredError,
+  isPermanentError,
+} from "./dispatcher";
 
 /** Frontmatter `status` value stamped on the raw note before enrichment lands.
  * Enrichment overwrites the whole note (including this) with the LLM result. */
@@ -296,7 +301,11 @@ export async function enrichIdeaInPlace(
     const reason = e instanceof Error ? e.message : String(e);
     // Not-configured + 4xx are permanent (no retry helps); everything else
     // (network / timeout / 5xx) is transient and safe to queue for a drain.
-    const transient = !isNotConfiguredError(e) && !isPermanentError(e);
+    // Insecure transport (a plain-http remote URL) joins the non-transient set:
+    // it looks like a connection error but only a Settings change can fix it,
+    // so queueing it would burn retries on a request that can never succeed.
+    const transient =
+      !isNotConfiguredError(e) && !isPermanentError(e) && !isInsecureTransportError(e);
     return { kind: "failed", transient, reason };
   }
   const applied = await applyEnrichedIdea({

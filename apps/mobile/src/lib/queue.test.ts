@@ -126,6 +126,8 @@ vi.mock("./llmClient", () => ({
   isPermanentError: vi.fn().mockReturnValue(false),
   // Default false; the not-configured drain test flips it on for one pass.
   isNotConfiguredError: vi.fn().mockReturnValue(false),
+  // Same deal for the insecure-transport drain test.
+  isInsecureTransportError: vi.fn().mockReturnValue(false),
 }));
 
 // ── Mock writer ───────────────────────────────────────────────────────────────
@@ -308,6 +310,36 @@ describe("drainQueue", () => {
     expect(rows().length).toBe(2);
     expect(rows().every((r) => r.attempts === 0)).toBe(true);
     expect(rows().every((r) => r.last_error === null)).toBe(true);
+  });
+
+  it("leaves rows untouched (no attempts burned) when the provider URL is insecure http", async () => {
+    const { enrichIdea, isInsecureTransportError } = await import("./llmClient");
+    vi.mocked(enrichIdea).mockRejectedValue(
+      new Error("Insecure URL: use https:// for remote hosts"),
+    );
+    // Same drain-breaks-after-one reasoning as the not-configured test above.
+    vi.mocked(isInsecureTransportError).mockReturnValueOnce(true);
+
+    seed([
+      { id: "a", mode: "idea", payload_json: JSON.stringify({ mode: "idea", text: "one" }), created_at: 100, attempts: 0, last_error: null },
+      { id: "b", mode: "idea", payload_json: JSON.stringify({ mode: "idea", text: "two" }), created_at: 200, attempts: 0, last_error: null },
+    ]);
+
+    await drainQueue();
+
+    expect(rows().length).toBe(2);
+    expect(rows().every((r) => r.attempts === 0)).toBe(true);
+    expect(rows().every((r) => r.last_error === null)).toBe(true);
+
+    // Settings fixed (https now): the untouched rows drain on the next pass —
+    // no attempt was spent on a request that could never have succeeded.
+    vi.mocked(enrichIdea).mockResolvedValue({
+      markdown: "---\nstatus: seedling\n---\n# Test Idea\n\nbody\n",
+      model: "t",
+    });
+    await drainQueue();
+
+    expect(rows().length).toBe(0);
   });
 
   it("processes rows oldest-first", async () => {
