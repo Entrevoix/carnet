@@ -1,3 +1,16 @@
+/**
+ * Recents-history mutation chaining for CaptureScreen's submit flow.
+ *
+ * Owns the one invariant this module exists to enforce: `recordCapture` and
+ * `removeFromHistoryByFilepath` are both read-modify-write cycles over the
+ * same AsyncStorage array, so two attempts racing (a submit and the Edit ->
+ * resubmit it enables) would interleave and silently lose one side's write.
+ * Split out of CaptureScreen.tsx as a move-only extraction so the chaining
+ * logic is unit-testable against mocked lib/storage without a renderer; the
+ * screen still owns the `recordCaptureRef` that threads one attempt's chain
+ * into the next.
+ */
+
 import {
   recordCapture,
   removeFromHistoryByFilepath,

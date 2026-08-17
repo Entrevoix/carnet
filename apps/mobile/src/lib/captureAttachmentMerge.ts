@@ -1,3 +1,14 @@
+/**
+ * Attachment-ref reconciliation for CaptureScreen's Idea resubmit path.
+ *
+ * Owns the one invariant this module exists to enforce: `persistAttachments`
+ * memoizes by `PickedAttachment` object identity, so an attachment staged
+ * before an Edit tap can come back in BOTH the preserved-from-the-first-
+ * attempt list and the fresh-from-this-attempt list — merging them naively
+ * would embed it twice. Split out of CaptureScreen.tsx as a move-only
+ * extraction so the merge/de-dupe logic is unit-testable without a renderer.
+ */
+
 import type { AttachmentRef } from "./writer";
 
 /**

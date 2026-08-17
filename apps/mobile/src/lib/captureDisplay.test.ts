@@ -107,25 +107,47 @@ describe("buildCapturePreviewResponse", () => {
 
 describe("computeCanSubmit", () => {
   it("is false outside the input phase regardless of content", () => {
-    expect(computeCanSubmit("submitting", "idea", "hello", "", "")).toBe(false);
-    expect(computeCanSubmit("preview", "idea", "hello", "", "")).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "submitting", mode: "idea", text: "hello", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "preview", mode: "idea", text: "hello", transcript: "", ocrText: "" }),
+    ).toBe(false);
   });
 
   it("idea requires non-blank text", () => {
-    expect(computeCanSubmit("input", "idea", "", "", "")).toBe(false);
-    expect(computeCanSubmit("input", "idea", "   ", "", "")).toBe(false);
-    expect(computeCanSubmit("input", "idea", "hi", "", "")).toBe(true);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "idea", text: "", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "idea", text: "   ", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "idea", text: "hi", transcript: "", ocrText: "" }),
+    ).toBe(true);
   });
 
   it("journal accepts either transcript or text", () => {
-    expect(computeCanSubmit("input", "journal", "", "", "")).toBe(false);
-    expect(computeCanSubmit("input", "journal", "notes", "", "")).toBe(true);
-    expect(computeCanSubmit("input", "journal", "", "spoken", "")).toBe(true);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "journal", text: "", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "journal", text: "notes", transcript: "", ocrText: "" }),
+    ).toBe(true);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "journal", text: "", transcript: "spoken", ocrText: "" }),
+    ).toBe(true);
   });
 
   it("person accepts either ocrText or text", () => {
-    expect(computeCanSubmit("input", "person", "", "", "")).toBe(false);
-    expect(computeCanSubmit("input", "person", "context", "", "")).toBe(true);
-    expect(computeCanSubmit("input", "person", "", "", "scanned")).toBe(true);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "person", text: "", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "person", text: "context", transcript: "", ocrText: "" }),
+    ).toBe(true);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "person", text: "", transcript: "", ocrText: "scanned" }),
+    ).toBe(true);
   });
 });

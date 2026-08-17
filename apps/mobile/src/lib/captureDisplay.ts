@@ -58,17 +58,24 @@ export function buildMetaSummary(
   return parts.join(" · ");
 }
 
+/** computeCanSubmit's inputs, grouped into one object — the three free-text
+ * fields (text/transcript/ocrText) sat as adjacent same-typed positional
+ * params, easy to transpose at the call site without either the compiler or
+ * a reviewer catching it. */
+export interface CanSubmitInputs {
+  phase: CapturePhase;
+  mode: CaptureMode;
+  text: string;
+  transcript: string;
+  ocrText: string;
+}
+
 /** Whether Send should be enabled: only in the "input" phase, and only once
  * the mode's required field(s) have non-whitespace content. Journal and
  * Person both accept either their dedicated field or the shared notes/context
  * field. */
-export function computeCanSubmit(
-  phase: CapturePhase,
-  mode: CaptureMode,
-  text: string,
-  transcript: string,
-  ocrText: string,
-): boolean {
+export function computeCanSubmit(inputs: CanSubmitInputs): boolean {
+  const { phase, mode, text, transcript, ocrText } = inputs;
   if (phase !== "input") return false;
   if (mode === "idea") return text.trim().length > 0;
   if (mode === "journal") return transcript.trim().length > 0 || text.trim().length > 0;

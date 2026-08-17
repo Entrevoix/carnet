@@ -267,7 +267,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
   );
 
   const canSubmit = useMemo(
-    () => computeCanSubmit(phase, mode, text, transcript, ocrText),
+    () => computeCanSubmit({ phase, mode, text, transcript, ocrText }),
     [phase, mode, text, transcript, ocrText],
   );
 
