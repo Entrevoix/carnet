@@ -11,10 +11,19 @@
  *     retry helps, so surface the real message and keep the text.
  *   - transient: network / timeout / 5xx — safe to enqueue for a later drain.
  *
+ * An insecure-transport failure (plain-http remote URL) is classified
+ * notConfigured for the same reason the blank URL is: only Settings can fix it.
+ * Queuing it would be worse than useless now that drainQueue breaks on that
+ * error — the row would never drain AND would block every healthy row behind it.
+ *
  * Pure and React-free so the classification is unit-testable without a renderer.
  */
 
-import { isNotConfiguredError, isPermanentError } from "./dispatcher";
+import {
+  isInsecureTransportError,
+  isNotConfiguredError,
+  isPermanentError,
+} from "./dispatcher";
 
 /** Copy shown when the OmniRoute URL is unset — a config error, not offline. */
 export const OMNIROUTE_NOT_CONFIGURED_MESSAGE =
@@ -34,6 +43,14 @@ export type CaptureErrorDecision =
 export function classifyCaptureError(e: unknown): CaptureErrorDecision {
   if (isNotConfiguredError(e)) {
     return { kind: "notConfigured", message: OMNIROUTE_NOT_CONFIGURED_MESSAGE };
+  }
+  // Same shape of problem, different flag on purpose: `notConfigured` also
+  // gates dispatcher's shouldRetryWithFallback, and an insecure primary must
+  // keep falling back to a working secondary. The provider's own wording names
+  // the offending URL, so it is surfaced verbatim rather than flattened into
+  // the canonical constant above — exactly as classifyCardScanOcrError does.
+  if (isInsecureTransportError(e)) {
+    return { kind: "notConfigured", message: e instanceof Error ? e.message : String(e) };
   }
   if (isPermanentError(e)) {
     return { kind: "permanent", message: e instanceof Error ? e.message : String(e) };

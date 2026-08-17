@@ -80,6 +80,11 @@ export async function enrichPersonInPlace(
     // Insecure transport (a plain-http remote URL) joins the non-transient set:
     // it looks like a connection error but only a Settings change can fix it,
     // so queueing it would burn retries on a request that can never succeed.
+    // Consistency-hardening here rather than a live fix: this function's only
+    // caller (finishEnrichment's mapInPlaceOutcome) already collapses every
+    // failure to one shape and never reads `transient`. The capture paths that
+    // DO act on it classify through captureErrorDecision.ts, which carries the
+    // same rule — keeping the two in step is the point.
     const transient =
       !isNotConfiguredError(e) && !isPermanentError(e) && !isInsecureTransportError(e);
     return { kind: "failed", transient, reason };
