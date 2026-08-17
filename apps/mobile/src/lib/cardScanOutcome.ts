@@ -10,7 +10,12 @@
  * HttpError, plus a 4xx status), never from matching the message text. See
  * `captureErrorDecision.ts` for the same three-way split on the capture path.
  */
-import { isNotConfiguredError, isPermanentError, probeVisionReadiness } from "./dispatcher";
+import {
+  isInsecureTransportError,
+  isNotConfiguredError,
+  isPermanentError,
+  probeVisionReadiness,
+} from "./dispatcher";
 
 export type CardScanOcrOutcome =
   | { kind: "ok" }
@@ -28,6 +33,11 @@ export function classifyCardScanOcrError(error: unknown): CardScanOcrFailure {
   // a blank vision model, which a single canonical constant would flatten.
   const message = error instanceof Error ? error.message : String(error);
   if (isNotConfiguredError(error)) return { kind: "notConfigured", message };
+  // A plain-http remote URL is a Settings problem too — the message already
+  // says so — even though it deliberately carries a different flag: the
+  // fallback chain must keep retrying an insecure primary against a working
+  // secondary, which `notConfigured` would disable.
+  if (isInsecureTransportError(error)) return { kind: "notConfigured", message };
   if (isPermanentError(error)) return { kind: "permanent", message };
   return { kind: "transient", message };
 }
@@ -44,15 +54,8 @@ export async function probeCardScanReadiness(): Promise<CardScanOcrOutcome> {
   } catch (error: unknown) {
     // Every probe failure is a CONFIGURATION failure, whatever the shared
     // classifier says. The probe makes no network call, so "transient" is
-    // impossible here by construction — and the classifier does return it:
-    // assertHttpsOrLocal rejects a plain-http remote URL with status 0 and no
-    // `notConfigured` flag, which is neither not-configured nor 4xx-permanent.
-    //
-    // Fixing that at the throw is tempting but wrong: assertHttpsOrLocal has
-    // three call sites, and flagging it notConfigured would make
-    // shouldRetryWithFallback return false everywhere, silently disabling the
-    // fallback chain for any misconfigured primary. Narrowing the verdict HERE
-    // keeps that behavior untouched.
+    // impossible here by construction, and narrowing the verdict here keeps
+    // that true even for an error shape the classifier has no flag for yet.
     return { kind: "notConfigured", message: classifyCardScanOcrError(error).message };
   }
 }

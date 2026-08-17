@@ -6,11 +6,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // against real LlmClientError shapes in llmClient.test.ts:211-222 and 476-490.
 const isPermanentErrorMock = vi.fn().mockReturnValue(false);
 const isNotConfiguredErrorMock = vi.fn().mockReturnValue(false);
+const isInsecureTransportErrorMock = vi.fn().mockReturnValue(false);
 const probeVisionReadinessMock = vi.fn(async () => undefined);
 
 vi.mock("./dispatcher", () => ({
   isPermanentError: (...args: unknown[]) => isPermanentErrorMock(...args),
   isNotConfiguredError: (...args: unknown[]) => isNotConfiguredErrorMock(...args),
+  isInsecureTransportError: (...args: unknown[]) => isInsecureTransportErrorMock(...args),
   probeVisionReadiness: () => probeVisionReadinessMock(),
 }));
 
@@ -24,6 +26,7 @@ import {
 beforeEach(() => {
   isPermanentErrorMock.mockReturnValue(false);
   isNotConfiguredErrorMock.mockReturnValue(false);
+  isInsecureTransportErrorMock.mockReturnValue(false);
   probeVisionReadinessMock.mockReset().mockResolvedValue(undefined);
 });
 
@@ -43,6 +46,27 @@ describe("classifyCardScanOcrError", () => {
     isNotConfiguredErrorMock.mockReturnValue(true);
     expect(classifyCardScanOcrError(new Error("Vision model not configured — set it in Settings")).message)
       .toContain("Vision model");
+  });
+
+  it("classifies an insecure remote URL as configuration, never as a retryable outage", () => {
+    // assertHttpsOrLocal carries `insecureTransport`, NOT `notConfigured` — the
+    // latter would disable the provider fallback chain. Post-capture copy must
+    // still send the user to Settings rather than tell them to scan again,
+    // which can never succeed against a plain-http remote URL.
+    isInsecureTransportErrorMock.mockReturnValue(true);
+    const message =
+      "OmniRoute URL must use https:// (or be a loopback/LAN address) to protect the API key";
+
+    const outcome = classifyCardScanOcrError(new Error(message));
+
+    expect(outcome).toEqual({ kind: "notConfigured", message });
+    expect(cardScanHint(outcome)).not.toMatch(/scan again/i);
+  });
+
+  it("classifies an insecure transport before consulting the 4xx status", () => {
+    isInsecureTransportErrorMock.mockReturnValue(true);
+    isPermanentErrorMock.mockReturnValue(true);
+    expect(classifyCardScanOcrError(new Error("ambiguous")).kind).toBe("notConfigured");
   });
 
   it("classifies a 4xx as permanent", () => {

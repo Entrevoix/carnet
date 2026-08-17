@@ -44,6 +44,16 @@ export function isAllowedPlaintextHost(url: string): boolean {
   }
 }
 
+/** True when `url` points at a loopback or RFC1918 LAN host, whatever its
+ * scheme — the same exact-hostname classification {@link isAllowedPlaintextHost}
+ * performs, named for call sites that ask "is this endpoint on my own network?"
+ * rather than "is cleartext safe here?". A self-hosted local endpoint (Relais on
+ * loopback, an OmniRoute box at 192.168.x) legitimately needs no API key; a
+ * remote one does. */
+export function isLocalNetworkUrl(url: string): boolean {
+  return isAllowedPlaintextHost(url);
+}
+
 /** True when `url` is safe to send a Bearer API key to: any `https://` URL, or
  * an `http://` URL whose host is in the local/LAN allowlist. Everything else
  * (other schemes, unparseable URLs, plain http to a public host) is false. */
