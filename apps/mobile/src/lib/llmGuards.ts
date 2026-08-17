@@ -22,11 +22,13 @@ import { LlmClientError } from "./llmErrors";
  * must not treat it as a stand-in for a real credential check (dispatcher.ts
  * runs `assertVisionCredentialPresent` as a separate step for that reason).
  * Kept as its own named interface — rather than an inline object type or a
- * `Pick<ProviderConfig, ...>` — so a stored `LlmProvider` settings record
- * cannot silently satisfy this gate just by having matching field names; see
- * the PR #157 bug class (a keyless cloud provider was treated as vision-ready
- * because it structurally matched, not because it could actually serve a
- * vision call).
+ * `Pick<ProviderConfig, ...>` — to document this contract at the definition
+ * site; `ProviderConfig extends VisionReadyConfig` pins the coupling so a
+ * field rename breaks here instead of drifting silently. Note TypeScript's
+ * structural typing means other shapes (e.g. a stored `LlmProvider` record)
+ * WILL still satisfy this parameter type — the interface documents the
+ * readiness-vs-credential distinction, it does not enforce it; see the
+ * PR #157 bug class (a keyless cloud provider treated as vision-ready).
  */
 export interface VisionReadyConfig {
   visionModel: string;
