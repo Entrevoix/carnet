@@ -1,30 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Keyboard, ScrollView, StyleSheet, View } from "react-native";
-import {
-  ActivityIndicator,
-  Button,
-  HelperText,
-  IconButton,
-  Text,
-} from "react-native-paper";
+import { Keyboard, ScrollView, StyleSheet } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-// Non-crypto local ID — only used as a key for the recents history list,
-// not for anything security-sensitive. uuid v11 requires crypto.getRandomValues
-// which RN doesn't provide without the react-native-get-random-values polyfill
-// (which would require a native rebuild). This avoids that whole detour.
-const localId = (): string =>
-  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 import type { RootStackParamList } from "../../App";
 import type { VoiceButtonHandle } from "../voice/VoiceButton";
 import { ModeInput } from "../components/CaptureModeInput";
 import {
+  CaptureActionBar,
   CaptureMetaSheet,
   CapturePreviewCard,
   CaptureSavedCard,
+  CaptureSubmittingView,
 } from "../components/CaptureViews";
 import { getSettings } from "../lib/settings";
-import { recordCapture, removeFromHistoryByFilepath, type CaptureMode } from "../lib/storage";
+import { recordCapture, type CaptureMode } from "../lib/storage";
 import {
   enrichIdea,
   enrichJournal,
@@ -48,15 +37,23 @@ import {
 import { classifyCaptureError } from "../lib/captureErrorDecision";
 import { planSaveFirstOutcome } from "../lib/saveFirstOutcome";
 import { persistAttachments as persistAttachmentsToVault } from "../lib/attachmentPersistence";
+import { mergeAttachmentRefs } from "../lib/captureAttachmentMerge";
+import { chainHistoryWrite } from "../lib/captureHistory";
+import { localId, todayLocal } from "../lib/captureLocalIds";
 import { confirmSaveIdea, confirmSaveJournal, confirmSavePerson } from "../lib/captureConfirmSave";
 import type { Place } from "../lib/writer";
 import { promoteIdeaOnDisk } from "../lib/promoteIdeaOnDisk";
 import { pickAttachment, type PickedAttachment } from "../lib/attachments";
 import { clearDraft, loadDraft, saveDraft } from "../lib/captureDraft";
-import { MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
 import { enqueue, drainQueue, getQueueDepth } from "../lib/queue";
 import { getTagIndex, upsertNoteInIndex } from "../lib/vault";
-import { buildPreviewSubtitle, buildMetaSummary, buildCapturePreviewResponse } from "../lib/captureDisplay";
+import {
+  buildPreviewSubtitle,
+  buildMetaSummary,
+  buildCapturePreviewResponse,
+  computeCanSubmit,
+  type CapturePhase,
+} from "../lib/captureDisplay";
 import {
   deriveTitle,
   parseStatusFromMarkdown,
@@ -66,17 +63,7 @@ import {
 
 type Props = NativeStackScreenProps<RootStackParamList, "Capture">;
 
-/** Local-date YYYY-MM-DD (NOT UTC). Late-evening captures in UTC- timezones
- * must land in today's journal, not tomorrow's. */
-function todayLocal(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-type Phase = "input" | "submitting" | "preview" | "saved";
+type Phase = CapturePhase;
 
 /** Pending OmniRoute idea result — held in state until user confirms save. */
 interface PendingIdea {
@@ -102,7 +89,6 @@ interface PendingPerson {
 
 export default function CaptureScreen({ route, navigation }: Props) {
   const mode: CaptureMode = route.params.mode;
-  const theme = useCarnetTheme();
   const [phase, setPhase] = useState<Phase>("input");
   // Metadata (tags/location/attachments) lives in a sheet behind the "+"
   // button so it never blocks writing — capture-first, file later.
@@ -280,12 +266,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
     [tags, pending, location],
   );
 
-  const canSubmit = useMemo(() => {
-    if (phase !== "input") return false;
-    if (mode === "idea") return text.trim().length > 0;
-    if (mode === "journal") return transcript.trim().length > 0 || text.trim().length > 0;
-    return ocrText.trim().length > 0 || text.trim().length > 0;
-  }, [phase, mode, text, transcript, ocrText]);
+  const canSubmit = useMemo(
+    () => computeCanSubmit(phase, mode, text, transcript, ocrText),
+    [phase, mode, text, transcript, ocrText],
+  );
 
   // Handle to the active VoiceButton (Idea/Journal). Lets the attach handlers
   // gracefully stop dictation + commit the partial transcript before the picker
@@ -330,6 +314,27 @@ export default function CaptureScreen({ route, navigation }: Props) {
   const persistAttachments = (): Promise<AttachmentRef[]> =>
     persistAttachmentsToVault(pending, persistedRefs.current);
 
+  /** Clear every staged-metadata field once a capture is safely persisted
+   * (written to disk, queued, or enqueued) — repeated across the offline
+   * queue, save-first commit, and confirmSave (Idea/Journal) so the next
+   * capture starts fresh with nothing carried over. */
+  const clearStagedAttachmentsAndMeta = (): void => {
+    setPending([]);
+    setSavedAttachments([]);
+    setTags([]);
+    setLocation(null);
+    setPlaces([]);
+  };
+
+  /** Same clear, minus the attachment fields — Person captures never stage
+   * attachments, so confirmSave's person branch only has tags/location/
+   * places to reset. */
+  const clearStagedMeta = (): void => {
+    setTags([]);
+    setLocation(null);
+    setPlaces([]);
+  };
+
   /** Build an offline-or-error handler. Permanent errors (4xx) surface to
    * the user with the actual message; transient errors (network / 5xx)
    * enqueue silently with a "queued for sync" notice. */
@@ -368,11 +373,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       setText("");
       setTranscript("");
       setOcrText("");
-      setPending([]);
-      setSavedAttachments([]);
-      setTags([]);
-      setLocation(null);
-      setPlaces([]);
+      clearStagedAttachmentsAndMeta();
       void clearDraft(mode).catch(() => undefined);
     } catch (qe: unknown) {
       if (superseded()) return;
@@ -633,16 +634,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
         // On a resubmit, `refs` covers only what was staged since the Edit —
         // the first attempt's binaries are on disk but no longer in `pending`,
         // so they come from preservedAttachmentsRef or they are silently lost.
-        // De-duped by rel: persistAttachments memoizes by identity, so an
-        // attachment still staged when Edit was tapped comes back in BOTH
-        // lists, and injectAttachments would then embed it twice.
-        const attachments = resuming
-          ? [
-              ...new Map(
-                [...preservedAttachmentsRef.current, ...refs].map((r) => [r.rel, r]),
-              ).values(),
-            ]
-          : refs;
+        // De-duped by rel — see mergeAttachmentRefs.
+        const attachments = mergeAttachmentRefs(
+          preservedAttachmentsRef.current,
+          refs,
+          Boolean(resuming),
+        );
         const ctx: RawIdeaInput = { ...submittedDraftRef.current, attachments };
         submittedDraftRef.current = ctx;
         // Consumed — a later, unrelated capture must not inherit these refs.
@@ -663,23 +660,17 @@ export default function CaptureScreen({ route, navigation }: Props) {
         const { filepath, mtime, markdown: rawMarkdown } = await writePromise;
         if (superseded()) return;
         const title = deriveTitle(ctx.text) || "Idea";
-        // Every history mutation this attempt performs, as ONE chain: each step
-        // is a read-modify-write over the same AsyncStorage array, so an
-        // interleaved attempt loses one side's write (a duplicate row, or the
-        // stale-titled one resurrected). `recordCapture` prepends
-        // unconditionally, hence the resumed capture dropping its old row first.
-        const priorHistoryWrite = recordCaptureRef.current;
-        const historyWrite = (async () => {
-          await priorHistoryWrite;
-          if (resuming) await removeFromHistoryByFilepath(filepath);
-          await recordCapture({
-            id: localId(),
-            mode,
-            title,
-            filepath,
-            createdAt: Date.now(),
-          });
-        })();
+        // Every history mutation this attempt performs, chained after the
+        // previous attempt's own chain — see chainHistoryWrite.
+        const historyWrite = chainHistoryWrite({
+          priorWrite: recordCaptureRef.current,
+          resuming: Boolean(resuming),
+          filepath,
+          mode,
+          title,
+          id: localId(),
+          createdAt: Date.now(),
+        });
         // Published BEFORE it is awaited — the same rule rawWriteRef follows. A
         // resume arriving mid-chain then awaits THIS chain rather than whatever
         // stale (already-settled) promise the ref happened to hold. Stored as a
@@ -701,11 +692,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
         saveFirstCtxRef.current = ctx;
         // The capture is safely persisted — clear the inputs so a back-out
         // leaves nothing staged and the next capture starts fresh.
-        setPending([]);
-      setSavedAttachments([]);
-        setTags([]);
-        setLocation(null);
-        setPlaces([]);
+        clearStagedAttachmentsAndMeta();
         setText("");
         void clearDraft(mode).catch(() => undefined);
         const outcome = await enrichIdeaInPlace({
@@ -801,11 +788,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           tags,
           location,
         });
-        setPending([]);
-      setSavedAttachments([]);
-        setTags([]);
-        setLocation(null);
-        setPlaces([]);
+        clearStagedAttachmentsAndMeta();
         setSavedFilepath(filepath);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, markdown).catch(() => undefined);
@@ -838,11 +821,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           location,
           places,
         });
-        setPending([]);
-      setSavedAttachments([]);
-        setTags([]);
-        setLocation(null);
-        setPlaces([]);
+        clearStagedAttachmentsAndMeta();
         setSavedFilepath(filepath);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, dayFileMarkdown).catch(() => undefined);
@@ -866,9 +845,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
           tags,
           location,
         });
-        setTags([]);
-        setLocation(null);
-        setPlaces([]);
+        clearStagedMeta();
         setSavedFilepath(filepath);
         await recordCapture({ id: localId(), mode, title, filepath, createdAt: Date.now() });
         void upsertNoteInIndex(filepath, markdown).catch(() => undefined);
@@ -928,53 +905,14 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
       {phase === "input" && (
         <>
-          {/* Single action bar: metadata tucked behind "+" (never blocks
-              writing), Send as the one filled CTA on the screen. */}
-          <View style={styles.actionBar}>
-            <IconButton
-              icon="plus-circle-outline"
-              size={26}
-              onPress={() => {
-                // Dismiss the keyboard first: in dark mode a still-open
-                // keyboard renders over the near-black sheet and makes it
-                // look like the tap did nothing (QA finding).
-                Keyboard.dismiss();
-                setMetaOpen(true);
-              }}
-              accessibilityLabel="Add tags, location, or attachments"
-            />
-            {metaSummary ? (
-              <Text
-                variant="labelSmall"
-                style={[styles.metaSummary, { color: theme.colors.onSurfaceVariant }]}
-                onPress={() => setMetaOpen(true)}
-                numberOfLines={1}
-              >
-                {metaSummary}
-              </Text>
-            ) : (
-              <View style={styles.metaSummary} />
-            )}
-            <Button
-              mode="contained"
-              onPress={submit}
-              disabled={!canSubmit}
-              contentStyle={styles.sendContent}
-            >
-              Send
-            </Button>
-          </View>
-          {queueDepth > 0 && (
-            <HelperText type="info" visible>
-              {queueDepth} capture{queueDepth > 1 ? "s" : ""} waiting for
-              enrichment — they'll finish automatically.
-            </HelperText>
-          )}
-          {error && (
-            <HelperText type="error" visible>
-              {error}
-            </HelperText>
-          )}
+          <CaptureActionBar
+            metaSummary={metaSummary}
+            onOpenMeta={() => setMetaOpen(true)}
+            onSubmit={submit}
+            canSubmit={canSubmit}
+            queueDepth={queueDepth}
+            error={error}
+          />
 
           <CaptureMetaSheet
             visible={metaOpen}
@@ -997,21 +935,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
       )}
 
       {phase === "submitting" && (
-        <View style={styles.loading}>
-          <ActivityIndicator animating size="large" />
-          <Text variant="bodyMedium" style={styles.loadingText}>
-            {llmBackend === "local"
-              ? "Local LLM is structuring the note…"
-              : "OmniRoute is structuring the note…"}
-          </Text>
-          <Button
-            mode="text"
-            onPress={() => void editInstead()}
-            accessibilityLabel="Edit before enriching"
-          >
-            Edit
-          </Button>
-        </View>
+        <CaptureSubmittingView llmBackend={llmBackend} onEditInstead={() => void editInstead()} />
       )}
 
       {phase === "preview" && response && (
@@ -1043,15 +967,4 @@ export default function CaptureScreen({ route, navigation }: Props) {
 
 const styles = StyleSheet.create({
   content: { padding: 16, gap: 12 },
-  actionBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginTop: 12,
-    minHeight: MIN_TAP_TARGET,
-  },
-  metaSummary: { flex: 1 },
-  sendContent: { paddingHorizontal: 16 },
-  loading: { paddingVertical: 64, alignItems: "center", gap: 12 },
-  loadingText: { opacity: 0.8 },
 });

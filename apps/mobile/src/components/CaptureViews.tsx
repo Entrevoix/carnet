@@ -1,10 +1,12 @@
-import { StyleSheet, View } from "react-native";
+import { Keyboard, StyleSheet, View } from "react-native";
 import {
+  ActivityIndicator,
   Banner,
   Button,
   Card,
   Chip,
   HelperText,
+  IconButton,
   Modal,
   Portal,
   Text,
@@ -13,10 +15,112 @@ import {
 import { TagInput } from "./TagInput";
 import { LocationChip } from "./LocationChip";
 import { PlacesEditor } from "./PlacesEditor";
-import { useCarnetTheme } from "../lib/theme";
+import { MIN_TAP_TARGET, useCarnetTheme } from "../lib/theme";
 import type { PickedAttachment } from "../lib/attachments";
 import type { Place } from "../lib/writer";
 import { IDEA_STATUSES, type IdeaStatus } from "@carnet/shared";
+
+interface CaptureActionBarProps {
+  /** One quiet summary line for what's staged behind the "+" sheet (tags /
+   * attachments / location) — empty string hides the text but keeps the
+   * layout slot so Send doesn't shift. */
+  metaSummary: string;
+  onOpenMeta: () => void;
+  onSubmit: () => void;
+  canSubmit: boolean;
+  queueDepth: number;
+  error: string | null;
+}
+
+/** The distraction-free input's single action bar: metadata tucked behind
+ * "+" (never blocks writing), Send as the one filled CTA, plus the
+ * queue-depth and error helper lines beneath it. Presentational —
+ * CaptureScreen owns all the state and threads it in. */
+export function CaptureActionBar({
+  metaSummary,
+  onOpenMeta,
+  onSubmit,
+  canSubmit,
+  queueDepth,
+  error,
+}: CaptureActionBarProps) {
+  const theme = useCarnetTheme();
+  return (
+    <>
+      <View style={styles.actionBar}>
+        <IconButton
+          icon="plus-circle-outline"
+          size={26}
+          onPress={() => {
+            // Dismiss the keyboard first: in dark mode a still-open keyboard
+            // renders over the near-black sheet and makes it look like the
+            // tap did nothing (QA finding).
+            Keyboard.dismiss();
+            onOpenMeta();
+          }}
+          accessibilityLabel="Add tags, location, or attachments"
+        />
+        {metaSummary ? (
+          <Text
+            variant="labelSmall"
+            style={[styles.metaSummary, { color: theme.colors.onSurfaceVariant }]}
+            onPress={onOpenMeta}
+            numberOfLines={1}
+          >
+            {metaSummary}
+          </Text>
+        ) : (
+          <View style={styles.metaSummary} />
+        )}
+        <Button
+          mode="contained"
+          onPress={onSubmit}
+          disabled={!canSubmit}
+          contentStyle={styles.sendContent}
+        >
+          Send
+        </Button>
+      </View>
+      {queueDepth > 0 && (
+        <HelperText type="info" visible>
+          {queueDepth} capture{queueDepth > 1 ? "s" : ""} waiting for
+          enrichment — they'll finish automatically.
+        </HelperText>
+      )}
+      {error && (
+        <HelperText type="error" visible>
+          {error}
+        </HelperText>
+      )}
+    </>
+  );
+}
+
+interface CaptureSubmittingViewProps {
+  /** Names which backend the "structuring the note…" label attributes the
+   * work to, so it never claims OmniRoute while a local backend enriches. */
+  llmBackend: "omniroute" | "local";
+  onEditInstead: () => void;
+}
+
+/** The "submitting" phase: a spinner plus the non-blocking Edit escape hatch
+ * (go back to an editable draft instead of waiting out the enrichment now in
+ * flight). Presentational — CaptureScreen owns the in-flight request. */
+export function CaptureSubmittingView({ llmBackend, onEditInstead }: CaptureSubmittingViewProps) {
+  return (
+    <View style={styles.loading}>
+      <ActivityIndicator animating size="large" />
+      <Text variant="bodyMedium" style={styles.loadingText}>
+        {llmBackend === "local"
+          ? "Local LLM is structuring the note…"
+          : "OmniRoute is structuring the note…"}
+      </Text>
+      <Button mode="text" onPress={onEditInstead} accessibilityLabel="Edit before enriching">
+        Edit
+      </Button>
+    </View>
+  );
+}
 
 interface CaptureMetaSheetProps {
   visible: boolean;
@@ -273,4 +377,15 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   statusChip: {},
   degradedBanner: { marginBottom: 8 },
+  actionBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 12,
+    minHeight: MIN_TAP_TARGET,
+  },
+  metaSummary: { flex: 1 },
+  sendContent: { paddingHorizontal: 16 },
+  loading: { paddingVertical: 64, alignItems: "center", gap: 12 },
+  loadingText: { opacity: 0.8 },
 });
