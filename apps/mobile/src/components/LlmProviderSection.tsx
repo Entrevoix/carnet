@@ -565,15 +565,21 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         onChangeText={(v) => setEditBuffer({ ...editBuffer, baseUrl: v })}
         placeholder={isRelais ? "http://127.0.0.1:8080" : "https://..."}
       />
-      {/* This copy previously claimed LAN addresses could use plain http://.
-          They cannot: Android permits cleartext to loopback but refuses it to
-          any other address on a release build (device-verified 2026-08-01), so
-          users following that advice hit a bare "Unreachable" with a server
-          that was running perfectly. Do not reintroduce that claim. */}
+      {/* History of this copy, because it has flip-flopped with evidence each
+          time: it originally promised LAN http://, was then narrowed to
+          loopback-only after a 2026-08-01 device check found Android refusing
+          LAN cleartext on a release build, and a 2026-08-16 emulator
+          investigation (#153) then found even LOOPBACK refused on API 35 —
+          the platform default was version-dependent all along. Since
+          withCleartextLocalProviders.js pins usesCleartextTraffic, the app's
+          own allowlist (netAllowlist.ts: loopback + RFC1918) is the single
+          gate on every Android version, and this copy states that. Keep the
+          three in sync: this text, netAllowlist.ts, and the plugin. */}
       <HelperText type="info" visible>
-        Only 127.0.0.1 may use plain http:// — a provider on another machine
-        must serve https://, because Android blocks plaintext to anything but
-        loopback.
+        Local addresses (127.0.0.1 or a private 10.x / 172.16–31.x / 192.168.x
+        host, e.g. Relais or Ollama on your LAN) may use plain http://. Any
+        other provider must serve https:// so your API key is never sent in
+        the clear.
       </HelperText>
 
       <TextInput
