@@ -13,6 +13,7 @@ import * as providerKeys from "../lib/providerKeys";
 import { healthCheck, type HealthResult } from "../lib/llmClient";
 import { listModels } from "../lib/dispatcher";
 import {
+  countDuplicateIds,
   filterAndSplitModels,
   resolveBrowseApiKey,
   RECOMMENDED_MODELS,
@@ -451,6 +452,14 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       const stored = await providerKeys.getKey(keyOwnerId);
       const key = src ? stored : resolveBrowseApiKey(pendingKey, stored);
       const list = await listModels(src ? src.baseUrl : editBuffer.baseUrl, key);
+      // One-shot diagnostic, console-only: filterAndSplitModels collapses
+      // repeated ids to stop the browser flickering (#148), which also silences
+      // the only symptom of a gateway serving duplicates. Log it here — once
+      // per fetch — rather than in the splitter, which reruns per keystroke.
+      const dupes = countDuplicateIds(list);
+      if (dupes > 0) {
+        console.warn(`[models] catalog served ${dupes} duplicate id(s)`);
+      }
       if (!mountedRef.current) return;
       setModels(list);
     } catch (e: unknown) {

@@ -391,6 +391,41 @@ describe("SettingsScreen", () => {
       );
     });
 
+    // #148 deduped the catalog to stop the model browser flickering, which also
+    // removed the only visible sign that the gateway serves duplicate ids. This
+    // guards the replacement signal: one console warning per fetch (not per
+    // keystroke — the splitter reruns on every filter change).
+    it("warns once per fetch when the catalog serves duplicate ids", async () => {
+      listModels.mockResolvedValue(["dupe-model", "other-model", "dupe-model"]);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      renderScreen();
+      const browseButtons = await screen.findAllByText("Browse available models");
+      fireEvent.click(browseButtons[0]);
+
+      await waitFor(() =>
+        expect(warn).toHaveBeenCalledWith("[models] catalog served 1 duplicate id(s)"),
+      );
+      expect(
+        warn.mock.calls.filter((c) => String(c[0]).startsWith("[models]")),
+      ).toHaveLength(1);
+      warn.mockRestore();
+    });
+
+    it("stays quiet for a duplicate-free catalog", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      renderScreen();
+      const browseButtons = await screen.findAllByText("Browse available models");
+      fireEvent.click(browseButtons[0]);
+
+      await waitFor(() => expect(listModels).toHaveBeenCalled());
+      expect(
+        warn.mock.calls.filter((c) => String(c[0]).startsWith("[models]")),
+      ).toHaveLength(0);
+      warn.mockRestore();
+    });
+
     it("no delete affordance for the active preset entry — C11", async () => {
       renderScreen();
       await screen.findByText("Active provider — tap to change");
