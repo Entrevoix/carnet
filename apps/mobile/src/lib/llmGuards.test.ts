@@ -11,6 +11,12 @@ import {
   isPermanentError,
   LlmClientError,
 } from "./llmErrors";
+// Test-only: importing ProviderConfig here does not create a production
+// import cycle (llmGuards.ts itself never imports from ./llmClient) — test
+// files aren't part of the runtime module graph, so this is safe even
+// though llmGuards.ts's own assertVisionReady takes VisionReadyConfig to
+// avoid exactly that cycle in production code.
+import type { ProviderConfig } from "./llmClient";
 
 // ── assertBase64UnderLimit ────────────────────────────────────────────────────
 
@@ -60,7 +66,7 @@ describe("assertBase64UnderLimit", () => {
 });
 
 describe("assertVisionReady", () => {
-  const ready = {
+  const ready: ProviderConfig = {
     baseUrl: "https://llm.example.com/",
     apiKey: "k",
     model: "m",

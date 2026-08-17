@@ -10,6 +10,11 @@ import type { PromptPair } from "./prompts";
 import { parseErrorBody, sanitizeErrorMessage, withTimeout } from "./httpClient";
 import { LlmClientError, timeoutError } from "./llmErrors";
 import { assertHttpsOrLocal, assertUrlConfigured } from "./llmGuards";
+// Type-only — no runtime import, so this cannot form a cycle with
+// llmClient.ts (which imports executeChat/chatCompletion from here at
+// runtime). Same pattern as syncConflicts.ts's `import type { NoteFileRef }
+// from "./writer"`.
+import type { EnrichResult } from "./llmClient";
 
 /** OpenAI-compatible content part for multimodal messages. `input_audio`
  * is the OpenAI shape that LiteLLM bridges to Gemini's audio modality and
@@ -72,7 +77,7 @@ export async function executeChat(
   noteType: NoteType,
   label: string,
   timeoutMs: number = FETCH_TIMEOUT_MS,
-): Promise<{ markdown: string; model: string }> {
+): Promise<EnrichResult> {
   const trimmed = assertUrlConfigured(baseUrl, label);
   const trimmedUrl = trimmed.replace(/\/+$/, "");
   assertHttpsOrLocal(trimmedUrl, label);
@@ -147,7 +152,7 @@ export async function chatCompletion(
   noteType: NoteType,
   label: string,
   timeoutMs?: number,
-): Promise<{ markdown: string; model: string }> {
+): Promise<EnrichResult> {
   const messages: OpenAIMessage[] = [
     { role: "system", content: prompt.system },
     { role: "user", content: prompt.user },

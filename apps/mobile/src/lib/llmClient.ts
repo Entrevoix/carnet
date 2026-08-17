@@ -60,12 +60,23 @@ import {
   assertUrlConfigured,
   assertVisionModelConfigured,
   assertVisionReady,
+  type VisionReadyConfig,
 } from "./llmGuards";
-import { chatCompletion, executeChat, FETCH_TIMEOUT_MS, ENHANCE_TIMEOUT_MS, type OpenAIMessage, type OpenAIResponse } from "./llmHttp";
+import {
+  chatCompletion,
+  executeChat,
+  FETCH_TIMEOUT_MS,
+  ENHANCE_TIMEOUT_MS,
+  type OpenAIMessage,
+  type OpenAIResponse,
+} from "./llmHttp";
 
 /** One configured OpenAI-compatible endpoint. The caller (dispatcher.ts)
- * resolves this from settings — this module never reads settings itself. */
-export interface ProviderConfig {
+ * resolves this from settings — this module never reads settings itself.
+ * Extends {@link VisionReadyConfig} (defined in ./llmGuards, not here) so
+ * `assertVisionReady` can type-check its parameter without importing this
+ * interface back and forming a cycle. */
+export interface ProviderConfig extends VisionReadyConfig {
   baseUrl: string;
   apiKey: string;
   model: string;

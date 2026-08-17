@@ -145,7 +145,7 @@ anything that can't be reproduced this way (voice/OCR/native share-sheet/Syncthi
   decomposition PRs pull them down, then new features push them back up, so `wc -l` the
   file rather than trusting a count written here. As of 2026-08-15 the over-800 set is
   `voice/VoiceButton.tsx` (~1534), `screens/CaptureScreen.tsx`
-  (~1057), `screens/RecentDetailScreen.tsx` (~893), `lib/llmClient.ts` (~857),
+  (~1057), `screens/RecentDetailScreen.tsx` (~893),
   `components/LlmProviderSection.tsx` (~808). Note both screens were previously brought
   *under* 800 by the #88/#89/#90 decomposition work and have since grown back with new
   features — that is the expected cycle, not a regression to revert; the point is the

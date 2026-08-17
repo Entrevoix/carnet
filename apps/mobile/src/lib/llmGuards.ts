@@ -3,15 +3,36 @@
  * out of llmClient.ts as a move-only extraction — see llmClient.ts's module
  * comment for the full decomposition map.
  *
- * `assertVisionReady` takes a structural `{ visionModel, baseUrl, label }`
- * shape rather than importing `ProviderConfig` from ./llmClient: llmClient.ts
- * imports these guards, so importing ProviderConfig back would form a cycle.
- * `ProviderConfig` satisfies this shape structurally, so callers pass it
- * unchanged and get the same type-checking they always did.
+ * `assertVisionReady` takes a `VisionReadyConfig` shape defined HERE rather
+ * than importing `ProviderConfig` from ./llmClient: llmClient.ts imports
+ * these guards, so importing ProviderConfig back would form a cycle.
+ * `ProviderConfig extends VisionReadyConfig` in llmClient.ts, so callers
+ * pass it unchanged and get the same type-checking they always did — the
+ * dependency points llmClient -> llmGuards, never the reverse.
  */
 
 import { isCredentialSafeUrl } from "./netAllowlist";
 import { LlmClientError } from "./llmErrors";
+
+/**
+ * The fields `assertVisionReady` needs to check readiness — deliberately
+ * NOT the same thing as "this provider has a working credential". Passing
+ * this gate means vision model + URL + transport are all present and safe;
+ * it says nothing about whether `apiKey` is actually valid, and callers
+ * must not treat it as a stand-in for a real credential check (dispatcher.ts
+ * runs `assertVisionCredentialPresent` as a separate step for that reason).
+ * Kept as its own named interface — rather than an inline object type or a
+ * `Pick<ProviderConfig, ...>` — so a stored `LlmProvider` settings record
+ * cannot silently satisfy this gate just by having matching field names; see
+ * the PR #157 bug class (a keyless cloud provider was treated as vision-ready
+ * because it structurally matched, not because it could actually serve a
+ * vision call).
+ */
+export interface VisionReadyConfig {
+  visionModel: string;
+  baseUrl: string;
+  label: string;
+}
 
 /** Hard cap on image payload sent to a vision model. Vision providers reject
  * >10 MB payloads and the in-memory peak on a phone (base64 inflates by 33%,
@@ -42,6 +63,28 @@ export function assertBase64UnderLimit(base64: string): void {
 }
 
 /**
+ * Every config precondition a vision call checks BEFORE touching the network,
+ * in one place so a readiness probe and the real call can never disagree.
+ * `ocrCardViaVision` calls this rather than repeating the three asserts, so a
+ * caller that passes this is guaranteed to get past the same point at runtime.
+ *
+ * Order matters and is pinned by tests: vision model, then URL, then transport.
+ * A fully blank config must report the vision model first.
+ *
+ * Throws the same `notConfigured`-flagged {@link LlmClientError} the real call
+ * throws, so callers classify it with the existing predicates.
+ */
+export function assertVisionReady(
+  config: VisionReadyConfig,
+): { model: string; url: string } {
+  const model = assertVisionModelConfigured(config.visionModel, config.label);
+  const trimmed = assertUrlConfigured(config.baseUrl, config.label);
+  const url = trimmed.replace(/\/+$/, "");
+  assertHttpsOrLocal(url, config.label);
+  return { model, url };
+}
+
+/**
  * Reject non-HTTPS provider URLs to prevent the API key from being sent
  * over cleartext. HTTPS is always allowed; plain http:// is allowed only for
  * the local / LAN dev + self-hosted loop (loopback, 10.x, 192.168.x) via
@@ -55,30 +98,6 @@ export function assertBase64UnderLimit(base64: string): void {
  * guard; this is not a security change (verified: same predicate, same
  * outcomes either way), only a corrected message.
  */
-/**
- * Every config precondition a vision call checks BEFORE touching the network,
- * in one place so a readiness probe and the real call can never disagree.
- * `ocrCardViaVision` calls this rather than repeating the three asserts, so a
- * caller that passes this is guaranteed to get past the same point at runtime.
- *
- * Order matters and is pinned by tests: vision model, then URL, then transport.
- * A fully blank config must report the vision model first.
- *
- * Throws the same `notConfigured`-flagged {@link LlmClientError} the real call
- * throws, so callers classify it with the existing predicates.
- */
-export function assertVisionReady(config: {
-  visionModel: string;
-  baseUrl: string;
-  label: string;
-}): { model: string; url: string } {
-  const model = assertVisionModelConfigured(config.visionModel, config.label);
-  const trimmed = assertUrlConfigured(config.baseUrl, config.label);
-  const url = trimmed.replace(/\/+$/, "");
-  assertHttpsOrLocal(url, config.label);
-  return { model, url };
-}
-
 export function assertHttpsOrLocal(trimmed: string, label: string): void {
   if (isCredentialSafeUrl(trimmed)) return;
   throw new LlmClientError(
