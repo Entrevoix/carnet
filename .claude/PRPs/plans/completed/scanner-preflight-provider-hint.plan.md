@@ -1,6 +1,6 @@
 # Plan: Up-front provider-readiness hint in the card scanner
 
-Status: in-progress
+Status: shipped
 
 ## Summary
 
