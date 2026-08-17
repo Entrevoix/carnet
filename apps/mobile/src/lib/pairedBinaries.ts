@@ -13,48 +13,25 @@
 
 import { fsForUri } from "./vaultFs";
 import { resolveRoot } from "./vaultRoot";
+import { mimeFromFilename } from "./mimeTypes";
 
-/** Map a MIME type to a sensible file extension for binary writes. Covers
- * the image types we accept on share intent + a few common audio/document
- * types we'll grow into. Falls back to `bin` rather than guessing wrong. */
-export function extFromMime(mime?: string): string {
-  if (!mime) return "bin";
-  const m = mime.toLowerCase();
-  if (m === "image/jpeg" || m === "image/jpg") return "jpg";
-  if (m === "image/png") return "png";
-  if (m === "image/webp") return "webp";
-  if (m === "image/gif") return "gif";
-  if (m === "image/heic") return "heic";
-  if (m === "image/heif") return "heif";
-  if (m === "audio/mpeg" || m === "audio/mp3") return "mp3";
-  if (m === "audio/wav" || m === "audio/x-wav") return "wav";
-  if (m === "audio/mp4" || m === "audio/m4a") return "m4a";
-  if (m === "application/pdf") return "pdf";
-  // Common document/archive types shared into carnet. Without these the
-  // generic subtype fallback below produces monsters like
-  // `report.vnd.openxmlformats-officedocument.wordprocessingml.document` —
-  // and SAF's createFileAsync then RENAMES the file by appending the
-  // mime-canonical extension (`.docx`), which used to desync the on-disk
-  // name from the note's ../Files/ link (broken pairing: attachments
-  // silently skipped Karakeep export and were orphaned on archive).
-  if (m === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return "docx";
-  if (m === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return "xlsx";
-  if (m === "application/vnd.openxmlformats-officedocument.presentationml.presentation") return "pptx";
-  if (m === "application/msword") return "doc";
-  if (m === "application/vnd.ms-excel") return "xls";
-  if (m === "text/plain") return "txt";
-  if (m === "text/markdown") return "md";
-  if (m === "text/csv") return "csv";
-  if (m === "application/zip") return "zip";
-  if (m === "application/json") return "json";
-  const slash = m.indexOf("/");
-  return slash >= 0 ? m.slice(slash + 1) : "bin";
-}
+// The MIME<->extension mapping lives in ./mimeTypes — pure, shared beyond the
+// paired-binary convention. Re-exported so importers of ./pairedBinaries (and
+// ./writer, which re-exports this module) keep their import path unchanged.
+export { extFromMime, mimeFromFilename } from "./mimeTypes";
 
 /** The relative-link convention every binary writer emits: `../{subdir}/{name}`.
  * The filename class `[^/\s)]+` rejects `/` so a crafted `[x](../Photos/../..)`
- * link can't traverse out of the recognized subdir. */
-const PAIRED_BINARY_LINK = /\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/g;
+ * link can't traverse out of the recognized subdir.
+ *
+ * Kept as a source string so both flavors of the pattern can be derived from
+ * one place: a `/g`-flagged RegExp for `matchAll` (enumeration), and a
+ * non-global one for `.match()` (single-link lookups). A `/g` regex used with
+ * `.match()` returns only whole matches, not capture groups — so the two
+ * flavors can't share one RegExp instance. */
+const PAIRED_BINARY_LINK_SOURCE = "\\.\\./(Photos|Audio|Files)/([^/\\s)]+)";
+const PAIRED_BINARY_LINK = new RegExp(PAIRED_BINARY_LINK_SOURCE, "g");
+const PAIRED_BINARY_LINK_ONE = new RegExp(PAIRED_BINARY_LINK_SOURCE);
 
 type PairedSubdir = "Photos" | "Audio" | "Files";
 
@@ -157,40 +134,6 @@ export function stripPairedBinaryLinks(
     .replace(/\n+$/, "\n");
 }
 
-/** Best-effort inverse of `extFromMime` for the file extensions we actually
- * write into the vault. Returns "application/octet-stream" for unknowns so
- * downstream code (e.g. `enrichSharedImage`) gets to surface its own error
- * about an unsupported type, rather than us guessing wrong. */
-export function mimeFromFilename(filename: string): string {
-  const dot = filename.lastIndexOf(".");
-  if (dot < 0) return "application/octet-stream";
-  const ext = filename.slice(dot + 1).toLowerCase();
-  const map: Record<string, string> = {
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    webp: "image/webp",
-    gif: "image/gif",
-    heic: "image/heic",
-    heif: "image/heif",
-    mp3: "audio/mpeg",
-    wav: "audio/wav",
-    m4a: "audio/mp4",
-    pdf: "application/pdf",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    doc: "application/msword",
-    xls: "application/vnd.ms-excel",
-    txt: "text/plain",
-    md: "text/markdown",
-    csv: "text/csv",
-    zip: "application/zip",
-    json: "application/json",
-  };
-  return map[ext] ?? "application/octet-stream";
-}
-
 /**
  * Locate the paired binary referenced by a note's body and return its URI
  * + filename + inferred MIME — WITHOUT reading the bytes. Used by the
@@ -211,7 +154,7 @@ export function mimeFromFilename(filename: string): string {
 export async function readPairedBinaryUri(
   body: string,
 ): Promise<{ uri: string; mime: string; filename: string }> {
-  const linkMatch = body.match(/\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/);
+  const linkMatch = body.match(PAIRED_BINARY_LINK_ONE);
   if (!linkMatch) {
     throw new Error("No paired binary link found in note.");
   }
@@ -246,7 +189,7 @@ export async function readPairedBinaryUri(
 export async function readPairedBinaryFromNote(
   body: string,
 ): Promise<{ base64: string; mime: string }> {
-  const linkMatch = body.match(/\.\.\/(Photos|Audio|Files)\/([^/\s)]+)/);
+  const linkMatch = body.match(PAIRED_BINARY_LINK_ONE);
   if (!linkMatch) {
     throw new Error("No paired binary link found in note.");
   }

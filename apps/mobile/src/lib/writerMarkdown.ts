@@ -1,5 +1,5 @@
 /**
- * Markdown body manipulation for the vault writer (PURE — no filesystem access).
+ * Markdown body manipulation for the vault writer (no filesystem access).
  *
  * Section upsert/read plus the injectors that fold captured extras (image
  * embeds, attachment links, named places) into a note body. Every function
@@ -8,22 +8,16 @@
  * the online capture path and the offline drain can share them and produce
  * byte-identical bodies.
  *
- * Keep this module filesystem-free — writer.ts re-exports the public surface,
- * so a native import here would leak into every pure consumer.
+ * Not native-free, though: injectPlaces imports formatCoords from ./location,
+ * which imports expo-location. Keep this module filesystem-free regardless —
+ * writer.ts re-exports the public surface, so filesystem access here would
+ * leak into every pure consumer.
  */
 
 // Pure formatting helper + its type; location.ts imports only expo-location, so
 // this cannot form a cycle back into writer.ts.
 import { formatCoords, type Coords } from "./location";
 
-/**
- * Inject a markdown image embed `![](relPath)` immediately under the first
- * H1 line of `markdown`. If there is no H1, prepend the embed at the top.
- *
- * The earlier inline `/^(#\s+.+\n)/m` regex silently no-op'd when the H1
- * had no trailing newline (e.g. last line of a model response), dropping
- * the embed. This helper handles `\n` and end-of-string equally.
- */
 /**
  * Idempotently insert-or-replace an H2 section in a markdown body.
  *
@@ -88,6 +82,14 @@ export function upsertSection(
   return [...before, ...replacement, ...after].join("\n");
 }
 
+/**
+ * Inject a markdown image embed `![](relPath)` immediately under the first
+ * H1 line of `markdown`. If there is no H1, prepend the embed at the top.
+ *
+ * The earlier inline `/^(#\s+.+\n)/m` regex silently no-op'd when the H1
+ * had no trailing newline (e.g. last line of a model response), dropping
+ * the embed. This helper handles `\n` and end-of-string equally.
+ */
 export function injectImageEmbed(markdown: string, relPath: string): string {
   const embed = `![](${relPath})`;
   // Match the H1 line and capture its trailing newline (if any).
