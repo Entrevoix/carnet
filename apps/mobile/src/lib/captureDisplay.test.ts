@@ -3,6 +3,7 @@ import {
   buildPreviewSubtitle,
   buildMetaSummary,
   buildCapturePreviewResponse,
+  computeCanSubmit,
 } from "./captureDisplay";
 import type { PickedAttachment } from "./attachments";
 
@@ -101,5 +102,52 @@ describe("buildCapturePreviewResponse", () => {
       preview_markdown: "# Hi",
       filepath: "file:///v/Ideas/hi.md",
     });
+  });
+});
+
+describe("computeCanSubmit", () => {
+  it("is false outside the input phase regardless of content", () => {
+    expect(
+      computeCanSubmit({ phase: "submitting", mode: "idea", text: "hello", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "preview", mode: "idea", text: "hello", transcript: "", ocrText: "" }),
+    ).toBe(false);
+  });
+
+  it("idea requires non-blank text", () => {
+    expect(
+      computeCanSubmit({ phase: "input", mode: "idea", text: "", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "idea", text: "   ", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "idea", text: "hi", transcript: "", ocrText: "" }),
+    ).toBe(true);
+  });
+
+  it("journal accepts either transcript or text", () => {
+    expect(
+      computeCanSubmit({ phase: "input", mode: "journal", text: "", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "journal", text: "notes", transcript: "", ocrText: "" }),
+    ).toBe(true);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "journal", text: "", transcript: "spoken", ocrText: "" }),
+    ).toBe(true);
+  });
+
+  it("person accepts either ocrText or text", () => {
+    expect(
+      computeCanSubmit({ phase: "input", mode: "person", text: "", transcript: "", ocrText: "" }),
+    ).toBe(false);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "person", text: "context", transcript: "", ocrText: "" }),
+    ).toBe(true);
+    expect(
+      computeCanSubmit({ phase: "input", mode: "person", text: "", transcript: "", ocrText: "scanned" }),
+    ).toBe(true);
   });
 });
