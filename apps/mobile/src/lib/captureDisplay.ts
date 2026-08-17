@@ -12,6 +12,11 @@ import type { CaptureMode } from "./storage";
 import type { PickedAttachment } from "./attachments";
 import type { CaptureResponse } from "@carnet/shared";
 
+/** The capture screen's phase machine: distraction-free input, an
+ * enrichment request in flight, the blocking preview (opt-in Idea, and
+ * Journal/Person), or the save-first "Saved to vault" confirmation. */
+export type CapturePhase = "input" | "submitting" | "preview" | "saved";
+
 /** A subset of the screen's pending-preview state — only the fields the
  * subtitle needs from each mode's pending object. */
 export interface PreviewSubtitleInputs {
@@ -51,6 +56,23 @@ export function buildMetaSummary(
     parts.push(`${pending.length} attachment${pending.length > 1 ? "s" : ""}`);
   if (location) parts.push("location");
   return parts.join(" · ");
+}
+
+/** Whether Send should be enabled: only in the "input" phase, and only once
+ * the mode's required field(s) have non-whitespace content. Journal and
+ * Person both accept either their dedicated field or the shared notes/context
+ * field. */
+export function computeCanSubmit(
+  phase: CapturePhase,
+  mode: CaptureMode,
+  text: string,
+  transcript: string,
+  ocrText: string,
+): boolean {
+  if (phase !== "input") return false;
+  if (mode === "idea") return text.trim().length > 0;
+  if (mode === "journal") return transcript.trim().length > 0 || text.trim().length > 0;
+  return ocrText.trim().length > 0 || text.trim().length > 0;
 }
 
 /** Build the ok-status preview response shown by CapturePreviewCard.

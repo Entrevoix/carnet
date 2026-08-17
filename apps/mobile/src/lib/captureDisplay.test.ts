@@ -3,6 +3,7 @@ import {
   buildPreviewSubtitle,
   buildMetaSummary,
   buildCapturePreviewResponse,
+  computeCanSubmit,
 } from "./captureDisplay";
 import type { PickedAttachment } from "./attachments";
 
@@ -101,5 +102,30 @@ describe("buildCapturePreviewResponse", () => {
       preview_markdown: "# Hi",
       filepath: "file:///v/Ideas/hi.md",
     });
+  });
+});
+
+describe("computeCanSubmit", () => {
+  it("is false outside the input phase regardless of content", () => {
+    expect(computeCanSubmit("submitting", "idea", "hello", "", "")).toBe(false);
+    expect(computeCanSubmit("preview", "idea", "hello", "", "")).toBe(false);
+  });
+
+  it("idea requires non-blank text", () => {
+    expect(computeCanSubmit("input", "idea", "", "", "")).toBe(false);
+    expect(computeCanSubmit("input", "idea", "   ", "", "")).toBe(false);
+    expect(computeCanSubmit("input", "idea", "hi", "", "")).toBe(true);
+  });
+
+  it("journal accepts either transcript or text", () => {
+    expect(computeCanSubmit("input", "journal", "", "", "")).toBe(false);
+    expect(computeCanSubmit("input", "journal", "notes", "", "")).toBe(true);
+    expect(computeCanSubmit("input", "journal", "", "spoken", "")).toBe(true);
+  });
+
+  it("person accepts either ocrText or text", () => {
+    expect(computeCanSubmit("input", "person", "", "", "")).toBe(false);
+    expect(computeCanSubmit("input", "person", "context", "", "")).toBe(true);
+    expect(computeCanSubmit("input", "person", "", "", "scanned")).toBe(true);
   });
 });
