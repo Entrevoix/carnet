@@ -45,7 +45,38 @@ export class FileSystemRepository {
   readonly root: string;
   constructor(root: string, readonly schemas = new SchemaRegistry()) { this.root = resolve(root); }
 
+  /**
+   * Set up the knowledge-base tree, once per repository instance.
+   *
+   * Every entry point re-enters this: processInbox and processCapture both
+   * call it, so a run over N captures re-copied every bundled schema N+1
+   * times — an fsync and a rename per file, per call — over a tree already
+   * correct after the first. Measured on the inbox test: 5 full runs, 50
+   * fsync+rename pairs, where 1 and 10 suffice.
+   *
+   * The repeats are not merely wasteful. Four of those five ran deep inside
+   * the test body, so `schemas/` was still being rewritten late in the run —
+   * and a vitest timeout does not cancel the promise chain it abandons. The
+   * abandoned renames then landed inside the test's own `rm -rf`, which is how
+   * `ENOTEMPTY: rmdir '.../schemas'` reached CI (fs.rm does not retry it).
+   * With the memo, the only schema write happens at the caller's first
+   * initialize() and is awaited before anything else runs.
+   *
+   * Scope is deliberately this instance and this process — a cache of work
+   * already done, not a claim about the tree on disk. A rejected attempt is
+   * not remembered, so a caller can retry after fixing whatever blocked it.
+   */
   async initialize(): Promise<void> {
+    this.initialized ??= this.runInitialize().catch((error: unknown) => {
+      this.initialized = undefined;
+      throw error;
+    });
+    return this.initialized;
+  }
+
+  private initialized: Promise<void> | undefined;
+
+  private async runInitialize(): Promise<void> {
     await Promise.all(KB_DIRECTORIES.map((directory) => mkdir(join(this.root, directory), { recursive: true })));
     for (const name of await readdir(bundledSchemaDirectory())) {
       if (!name.endsWith(".json")) continue;
