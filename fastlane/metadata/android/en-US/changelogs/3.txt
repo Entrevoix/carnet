@@ -1,0 +1,5 @@
+v0.5.0: Card scanner now warns up front when no vision provider is
+configured, instead of failing partway through. Note enrichment now adds
+facts as annotations rather than rewriting your own prose. A stalled offline
+capture can now be resumed to finish enriching. Fixed the "test connection"
+check in Settings to probe the correct endpoint for all provider types.

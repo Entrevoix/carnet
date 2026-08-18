@@ -1,0 +1,41 @@
+Carnet is a mobile-first capture tool for people who keep their notes as plain
+Markdown files in an Obsidian vault.
+
+There is no server and no database. Carnet writes ordinary Markdown files
+straight into a folder on your device — the same folder your Syncthing app
+watches — and Syncthing carries them to your workstation and into your vault.
+Carnet never talks to a sync service of its own; Syncthing (which you already
+run and control) does that job. No account, no sign-up, no cloud storage.
+
+Five capture modes cover the way notes actually happen:
+* Idea — type or dictate a quick note
+* Journal — voice or text, appended to today's daily note
+* Person — scan a business card (on-device OCR) and dictate context
+* Photo — snap a picture, paired with its own note
+* Audio — record a voice memo, transcribed on-device
+
+Captures also arrive through Android's share sheet (share a link, image, or
+text straight into Carnet from any app) and from a persistent notification's
+inline reply, so a thought never needs its own app-switch.
+
+LLM enrichment (tagging, cleanup, structure) is entirely optional and
+entirely yours to configure: point Carnet at a self-hosted OmniRoute
+instance, a local on-device runtime (Relais on the same handset), or any
+OpenAI-compatible endpoint you already run or trust. Every capture is
+save-first — the Markdown file lands on disk immediately, and enrichment
+patches it afterward — so a flaky network or a slow model never costs you a
+note. Anything captured offline queues on-device and drains automatically
+once you're back online.
+
+Notes stay browsable and searchable right in the app: full text, tags, and a
+recent-captures list, all reading from the same files Obsidian sees.
+
+Carnet has no analytics and no trackers of any kind. The only network calls
+it makes are the ones you configure yourself (your LLM endpoint, and,
+optionally, a self-hosted Karakeep instance for one-tap bookmark export).
+API keys for those live in the Android Keystore-backed secure storage, never
+in plain text.
+
+Carnet is Android-only today — there is no iOS build.
+
+Carnet is free and open source software, licensed AGPL-3.0-only.
