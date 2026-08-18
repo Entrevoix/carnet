@@ -37,6 +37,7 @@ import {
   saveSettingsWithKeys,
   toggleNotification,
 } from "../lib/settingsPersistence";
+import { migratePreVaultNotes } from "../lib/vaultMigration";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { DiagnosticsSection } from "../components/DiagnosticsSection";
 import { SettingsTransferSection } from "../components/SettingsTransferSection";
@@ -67,6 +68,13 @@ export default function SettingsScreen() {
    * wrote "error: ..." into the path field, which then got persisted on
    * Save as a broken capture folder. */
   const [pickerError, setPickerError] = useState<string | null>(null);
+  /** Snackbar text for the pre-vault migration sweep (see vaultMigration.ts) —
+   * separate from `pickerError` so a migration outcome (success or partial
+   * failure) never gets mistaken for a picker error, and separate from
+   * `saved` so it can outlive that Snackbar's shorter duration. */
+  const [migrationMessage, setMigrationMessage] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     void (async () => {
@@ -149,6 +157,41 @@ export default function SettingsScreen() {
       return;
     }
     setSaved(true);
+
+    // Pre-vault migration (#172): sweeps on EVERY save that leaves a real
+    // vault folder configured, not just the first — migratePreVaultNotes is
+    // cheap and self-guarding when there's nothing to do (empty internal
+    // root, or source === target when no folder is configured), so this is
+    // also the retry path for a note a PRIOR sweep failed to move (a
+    // transient read error, a revoked SAF grant that's since been re-granted,
+    // etc.) — those notes must not stay invisible forever just because the
+    // first attempt already ran once.
+    const nextPath = form.captureFolderPath.trim();
+    if (nextPath) {
+      void (async () => {
+        try {
+          const migration = await migratePreVaultNotes();
+          if (migration.migrated > 0 || migration.failed > 0) {
+            const parts: string[] = [];
+            if (migration.migrated > 0) {
+              parts.push(
+                `Moved ${migration.migrated} earlier capture${migration.migrated === 1 ? "" : "s"} into your vault`,
+              );
+            }
+            if (migration.failed > 0) {
+              parts.push(
+                `${migration.failed} couldn't be moved and stayed on-device`,
+              );
+            }
+            setMigrationMessage(parts.join(" — "));
+          }
+        } catch (e: unknown) {
+          setMigrationMessage(
+            errorMessage(e, "Couldn't check for earlier captures to migrate"),
+          );
+        }
+      })();
+    }
   };
 
   // Clear flips UI state only AFTER the keychain write confirms — a reject
@@ -471,6 +514,14 @@ export default function SettingsScreen() {
         duration={5000}
       >
         {pickerError ?? ""}
+      </Snackbar>
+
+      <Snackbar
+        visible={migrationMessage !== null}
+        onDismiss={() => setMigrationMessage(null)}
+        duration={6000}
+      >
+        {migrationMessage ?? ""}
       </Snackbar>
 
     </ScrollView>

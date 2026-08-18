@@ -23,6 +23,20 @@ export interface Root {
 }
 
 /**
+ * The app-sandbox root used when no vault folder has been picked yet
+ * (`captureFolderPath` empty). Exported as the single source of truth for
+ * this computation — vaultMigration.ts needs to name this root EXPLICITLY
+ * (as the pre-vault migration source) independent of whatever
+ * `captureFolderPath` currently holds, so it must not recompute
+ * `documentDirectory ?? fallback` itself: a drift between the two copies
+ * would silently point migration at the wrong folder.
+ */
+export function internalVaultRoot(): Root {
+  const base = FileSystem.documentDirectory ?? "file:///data/user/0/carnet/files/";
+  return { uri: `${base.replace(/\/$/, "")}/carnet`, fs: vaultFsFor(false) };
+}
+
+/**
  * Resolve the root folder URI from settings.
  *   - empty / default → app sandbox carnet/
  *   - content://...tree/... → SAF tree URI as-is
@@ -32,8 +46,7 @@ export async function resolveRoot(): Promise<Root> {
   const { captureFolderPath } = await getSettings();
   const trimmed = captureFolderPath.trim();
   if (!trimmed) {
-    const base = FileSystem.documentDirectory ?? "file:///data/user/0/carnet/files/";
-    return { uri: `${base.replace(/\/$/, "")}/carnet`, fs: vaultFsFor(false) };
+    return internalVaultRoot();
   }
   if (trimmed.startsWith("content://")) {
     return { uri: trimmed, fs: vaultFsFor(true) };

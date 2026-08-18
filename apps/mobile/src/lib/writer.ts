@@ -28,7 +28,7 @@
 
 import * as FileSystem from "expo-file-system/legacy";
 import { fsForUri, safLastSegment, type VaultFs } from "./vaultFs";
-import { resolveRoot } from "./vaultRoot";
+import { resolveRoot, type Root } from "./vaultRoot";
 // Pure predicate only — syncConflicts.ts stays filesystem-free, so this import
 // cannot form a cycle (its NoteFileRef import back is type-only).
 import { isSyncConflictName } from "./syncConflicts";
@@ -464,6 +464,40 @@ async function listNoteDirMarkdown(): Promise<NoteFileRef[]> {
 export async function listNoteFiles(): Promise<NoteFileRef[]> {
   return (await listNoteDirMarkdown()).filter((f) => !isSyncConflictName(f.name));
 }
+
+/**
+ * Enumerate every `.md` note under an EXPLICIT root's note subdirs, unlike
+ * {@link listNoteFiles} (which always reads the CURRENT `resolveRoot()`).
+ * Used by vaultMigration.ts to enumerate the internal-storage root while
+ * `resolveRoot()` points at the just-picked target vault.
+ *
+ * Deliberately does NOT reuse listNoteDirMarkdown's `findOrCreateSubdir` —
+ * that CREATES the subdir on read, which would fabricate empty
+ * Ideas/Journal/People folders inside a never-used internal root on a fresh
+ * install (and make an "empty root → no migration" test lie). This uses the
+ * read-only `findSubdir`, which returns null for an absent subdir instead.
+ * Syncthing conflict copies are excluded, matching listNoteFiles' scope.
+ */
+export async function listNoteFilesInRoot(root: Root): Promise<NoteFileRef[]> {
+  const out: NoteFileRef[] = [];
+  for (const subdir of NOTE_SUBDIRS) {
+    const subdirUri = await root.fs.findSubdir(root.uri, subdir);
+    if (!subdirUri) continue; // subdir never created — nothing to enumerate
+    const entries = await root.fs.listChildren(subdirUri);
+    for (const { uri, name } of entries) {
+      if (name.toLowerCase().endsWith(".md") && !isSyncConflictName(name)) {
+        out.push({ uri, name, subdir });
+      }
+    }
+  }
+  return out;
+}
+
+/** Resolve a collision-free filename in `parentUri`. Exported so
+ * vaultMigration.ts can place a copied note/binary in the target vault
+ * without reinventing the numbered-suffix (`{stem}-2{ext}`) convention every
+ * other writer in this module uses. */
+export { findCollisionFreeName };
 
 /** Enumerate the Syncthing conflict copies in the note subdirs — the review
  * surface's source (Home banner). Markdown only, matching listNoteFiles'
