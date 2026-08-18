@@ -25,7 +25,7 @@ import { tagsForNote, type NoteIndex, type NoteIndexEntry } from "./vault";
  */
 export function computeRelatedNotes(
   body: string,
-  entry: CaptureEntry,
+  entry: Pick<CaptureEntry, "filepath" | "title" | "mode">,
   index: NoteIndex,
 ): NoteIndexEntry[] {
   return findRelatedNotes(
