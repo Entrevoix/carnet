@@ -25,7 +25,7 @@ export const STT_ENGINE_KEY = 'stt_engine';
 export const STT_RECOGNIZER_PKG_KEY = 'stt_recognizer_pkg';
 export const STT_RECOGNIZER_LABEL_KEY = 'stt_recognizer_label';
 
-export const KNOWN_RECOGNIZERS: RecognizerOption[] = [
+export const KNOWN_RECOGNIZERS: readonly RecognizerOption[] = [
   // Android System Intelligence — the actual on-device Google STT service. Prefer first.
   { pkg: 'com.google.android.as', label: 'Google (On-Device)' },
   // "Speech Services by Google" — the Play Store package that exposes Google STT
@@ -58,6 +58,21 @@ export const PREFERRED_LANG = 'en-US';
 // wording, so one message covers every trigger path.
 export const NO_SERVICE_MESSAGE =
   'No working speech service found on this device.\nInstall a speech service below, or copy diagnostics for details.';
+
+// Discriminant for the terminal error/status sheet VoiceButton's state
+// machine can put the UI into. Owned here (not by the presentational
+// VoiceErrorSheet) because the state machine decides transitions between
+// these values; the sheet only renders whichever one it's handed.
+export type ErrAction = 'none' | 'no-service' | 'no-service-mic-revoked' | 'permission' | 'lang-unavailable' | 'diag';
+
+// Target package/label for the mic-revoked sheet's "Open App info" deep
+// link — set once a code-9 (service-not-allowed) package is still
+// resolvable on the device. One shape shared by the state (VoiceButton) and
+// the props that consume it (VoiceErrorSheet) so they can't drift apart.
+export interface MicRevokedTarget {
+  pkg: string;
+  label: string;
+}
 
 export function labelForPackage(pkg: string): string {
   const known = KNOWN_RECOGNIZERS.find((r) => r.pkg === pkg);

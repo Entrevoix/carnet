@@ -9,13 +9,7 @@
 
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { type CarnetTheme } from '../lib/theme';
-
-export type ErrAction = 'none' | 'no-service' | 'no-service-mic-revoked' | 'permission' | 'lang-unavailable' | 'diag';
-
-export interface MicRevokedTarget {
-  pkg: string;
-  label: string;
-}
+import { type ErrAction, type MicRevokedTarget } from './recognizerCatalog';
 
 export interface VoiceErrorSheetProps {
   theme: CarnetTheme;

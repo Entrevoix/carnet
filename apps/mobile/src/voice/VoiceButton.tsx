@@ -48,13 +48,16 @@ import {
   SODA_DICTATION_MODEL,
   KNOWN_RECOGNIZERS,
   NO_SERVICE_MESSAGE,
+  PREFERRED_LANG,
   STT_ENGINE_KEY,
   STT_RECOGNIZER_PKG_KEY,
   STT_RECOGNIZER_LABEL_KEY,
   labelForPackage,
+  type ErrAction,
+  type MicRevokedTarget,
 } from './recognizerCatalog';
 import { collectDiagnostics, detectAvailableRecognizers, pickBestLocale } from './sttDeviceProbe';
-import { VoiceErrorSheet, type ErrAction } from './VoiceErrorSheet';
+import { VoiceErrorSheet } from './VoiceErrorSheet';
 import { VoiceRecognizerPicker } from './VoiceRecognizerPicker';
 
 export { STT_ENGINE_KEY, STT_RECOGNIZER_PKG_KEY, STT_RECOGNIZER_LABEL_KEY };
@@ -131,7 +134,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   const code9PkgsRef = useRef<Set<string>>(new Set());
   // Target package for the mic-revoked sheet's "Open App info" deep link, plus
   // its label for the button copy. Set when that sheet variant is shown.
-  const [micRevokedTarget, setMicRevokedTarget] = useState<{ pkg: string; label: string } | null>(null);
+  const [micRevokedTarget, setMicRevokedTarget] = useState<MicRevokedTarget | null>(null);
   // Consecutive silent session ends (code-7 no-speech end, or an `end` with no
   // new final text). Reset to 0 by any final transcript; drives silence auto-stop.
   const consecutiveSilentEndsRef = useRef(0);
@@ -283,7 +286,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   const handleDownloadModel = useCallback(async () => {
     setDownloadingModel(true);
     try {
-      const result = await triggerVoiceModelDownload('en-US');
+      const result = await triggerVoiceModelDownload(PREFERRED_LANG);
       if (result === 'installed') {
         dismissErr();
         await startRecognizerRef.current(await AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY));
