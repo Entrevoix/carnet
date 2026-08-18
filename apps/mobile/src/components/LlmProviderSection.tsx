@@ -11,6 +11,12 @@ import {
 } from "../lib/llmProviders";
 import * as providerKeys from "../lib/providerKeys";
 import { healthCheck, type HealthResult } from "../lib/llmClient";
+import {
+  isLocalProvider,
+  localProviderHint,
+  probeLocalProviderReachability,
+  type LocalReadinessState,
+} from "../lib/providerReadiness";
 import { listModels } from "../lib/dispatcher";
 import {
   countDuplicateIds,
@@ -116,6 +122,15 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   const [testingConnection, setTestingConnection] = useState(false);
   const [connectionResult, setConnectionResult] = useState<HealthResult | null>(null);
 
+  /** Reachability of each LOCAL provider (id -> state), keyed by
+   * `LlmProvider.id`. Cloud providers never appear here — they already have
+   * "Test connection" for that. Populated by the probe effect below;
+   * `undefined` (no entry) reads the same as "not yet probed" in
+   * `localProviderHint` — no hint until there's a confirmed failure. */
+  const [localReadiness, setLocalReadiness] = useState<Map<string, LocalReadinessState>>(
+    new Map(),
+  );
+
   const [browseOpen, setBrowseOpen] = useState(false);
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseError, setBrowseError] = useState<string | null>(null);
@@ -167,6 +182,44 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       mountedRef.current = false;
     };
   }, []);
+
+  // Fire-and-forget local-provider readiness probe (#85) — never blocks
+  // render, same pattern as CardScannerModal's preflight probe. Gated on the
+  // provider PICKER being open (not on the section merely mounting): every
+  // provider — active or not — is visible there, so that's the one place
+  // that actually needs every local entry's state at once. Probing
+  // unconditionally on mount would fire `healthCheck` for whichever local
+  // provider(s) happen to be in the list before the user ever asks to see
+  // one, which collides with `healthCheck`'s OTHER caller, "Test connection"
+  // — both share the same underlying network client, and firing this probe
+  // first would race a user-initiated Test Connection click for the exact
+  // same provider. Deferring to "picker opened" means a provider's hint is
+  // populated the first time it's actually shown in the list, and reruns if
+  // the list changes (add/delete/edit) while the picker stays open.
+  useEffect(() => {
+    if (providers === null || pickerMode === null) return;
+    const locals = providers.filter((p) => isLocalProvider(p));
+    if (locals.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const entries = await Promise.all(
+        locals.map(async (p) => {
+          const key = await providerKeys.getKey(p.id);
+          const state = await probeLocalProviderReachability(p.baseUrl, key);
+          return [p.id, state] as const;
+        }),
+      );
+      if (cancelled) return;
+      setLocalReadiness((prev) => {
+        const next = new Map(prev);
+        for (const [id, state] of entries) next.set(id, state);
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [providers, pickerMode]);
 
   if (providers === null) return null;
   // Narrowed local binding — the async handlers below are separate closures
@@ -515,6 +568,20 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     ? providerList.find((p) => p.id === deleteTarget)?.label ?? deleteTarget
     : "";
 
+  // Local-provider readiness hints (#85), keyed by provider id — only local
+  // providers ever get an entry; a cloud provider's id simply isn't in this
+  // map, and `ProviderPickerModal`/the active row below both treat "no
+  // entry" as "no hint" the same way `localProviderHint(undefined)` does.
+  // Computed once per render rather than passing `localReadiness` + probe
+  // logic down: the picker modal stays presentation-only, as its header
+  // comment already promises.
+  const localHints = new Map(
+    providerList
+      .filter((p) => isLocalProvider(p))
+      .map((p) => [p.id, localProviderHint(localReadiness.get(p.id))] as const),
+  );
+  const activeHint = localHints.get(active.id) ?? null;
+
   return (
     <View style={styles.section}>
       <Text variant="titleMedium" style={styles.title}>
@@ -536,6 +603,11 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         disabled={writing}
         style={styles.row}
       />
+      {activeHint !== null && (
+        <HelperText type="info" visible style={styles.readinessHint}>
+          {activeHint}
+        </HelperText>
+      )}
 
       <ProviderEditForm
         theme={theme}
@@ -599,6 +671,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         providers={providerList}
         selectedId={pickerSelectedId}
         allowNone={pickerMode !== "active"}
+        localHints={localHints}
         onSelect={handlePickerSelect}
         onDeleteCustom={(id) => {
           setPickerMode(null);
@@ -647,4 +720,5 @@ const styles = StyleSheet.create({
   section: { marginTop: spacing.lg },
   title: { paddingHorizontal: 0, paddingTop: spacing.sm },
   row: { paddingHorizontal: 0 },
+  readinessHint: { paddingHorizontal: 0, marginTop: -spacing.xs },
 });

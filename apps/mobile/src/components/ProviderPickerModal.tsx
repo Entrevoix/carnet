@@ -1,5 +1,5 @@
 import { ScrollView, StyleSheet, View } from "react-native";
-import { IconButton, List, Modal, Portal, Text } from "react-native-paper";
+import { HelperText, IconButton, List, Modal, Portal, Text } from "react-native-paper";
 
 import type { LlmProvider } from "../lib/llmProviders";
 import { spacing, type CarnetTheme } from "../lib/theme";
@@ -20,6 +20,11 @@ interface ProviderPickerModalProps {
    * pickers (both are optional); the active-provider picker omits it, since
    * there is always exactly one active provider. */
   allowNone: boolean;
+  /** Local-provider readiness hint text (#85), keyed by provider id — a
+   * missing entry (cloud provider, or a local one not yet probed/reachable)
+   * renders no hint. Owned entirely by the caller: this component stays
+   * presentation-only and doesn't know what "local" or "reachable" mean. */
+  localHints: ReadonlyMap<string, string | null>;
   onSelect: (id: string | null) => void;
   /** Renders a delete affordance on custom (preset === null) rows only —
    * presets can never be deleted (llmProviders.ts's removeProvider throws
@@ -45,6 +50,7 @@ export function ProviderPickerModal({
   providers,
   selectedId,
   allowNone,
+  localHints,
   onSelect,
   onDeleteCustom,
 }: ProviderPickerModalProps) {
@@ -93,44 +99,56 @@ export function ProviderPickerModal({
           )}
           <List.Subheader style={styles.subheader}>Presets</List.Subheader>
           {presets.map((p) => (
-            <List.Item
-              key={p.id}
-              title={p.label}
-              description={p.baseUrl || "(no base URL set)"}
-              onPress={() => onSelect(p.id)}
-              left={(ip) => (
-                <List.Icon
-                  {...ip}
-                  icon={selectedId === p.id ? "radiobox-marked" : "radiobox-blank"}
-                />
+            <View key={p.id}>
+              <List.Item
+                title={p.label}
+                description={p.baseUrl || "(no base URL set)"}
+                onPress={() => onSelect(p.id)}
+                left={(ip) => (
+                  <List.Icon
+                    {...ip}
+                    icon={selectedId === p.id ? "radiobox-marked" : "radiobox-blank"}
+                  />
+                )}
+                style={styles.row}
+              />
+              {localHints.get(p.id) != null && (
+                <HelperText type="info" visible style={styles.hint}>
+                  {localHints.get(p.id)}
+                </HelperText>
               )}
-              style={styles.row}
-            />
+            </View>
           ))}
           {customs.length > 0 && (
             <List.Subheader style={styles.subheader}>Custom</List.Subheader>
           )}
           {customs.map((p) => (
-            <List.Item
-              key={p.id}
-              title={p.label}
-              description={p.baseUrl || "(no base URL set)"}
-              onPress={() => onSelect(p.id)}
-              left={(ip) => (
-                <List.Icon
-                  {...ip}
-                  icon={selectedId === p.id ? "radiobox-marked" : "radiobox-blank"}
-                />
+            <View key={p.id}>
+              <List.Item
+                title={p.label}
+                description={p.baseUrl || "(no base URL set)"}
+                onPress={() => onSelect(p.id)}
+                left={(ip) => (
+                  <List.Icon
+                    {...ip}
+                    icon={selectedId === p.id ? "radiobox-marked" : "radiobox-blank"}
+                  />
+                )}
+                right={() => (
+                  <IconButton
+                    icon="delete-outline"
+                    accessibilityLabel={`Delete ${p.label}`}
+                    onPress={() => onDeleteCustom(p.id)}
+                  />
+                )}
+                style={styles.row}
+              />
+              {localHints.get(p.id) != null && (
+                <HelperText type="info" visible style={styles.hint}>
+                  {localHints.get(p.id)}
+                </HelperText>
               )}
-              right={() => (
-                <IconButton
-                  icon="delete-outline"
-                  accessibilityLabel={`Delete ${p.label}`}
-                  onPress={() => onDeleteCustom(p.id)}
-                />
-              )}
-              style={styles.row}
-            />
+            </View>
           ))}
         </ScrollView>
       </Modal>
@@ -152,5 +170,6 @@ const styles = StyleSheet.create({
   },
   list: { flexGrow: 0, maxHeight: 480 },
   row: { paddingVertical: 0 },
+  hint: { paddingHorizontal: spacing.lg, paddingTop: 0, marginTop: -spacing.xs },
   subheader: { paddingHorizontal: spacing.lg, paddingTop: spacing.xs },
 });
