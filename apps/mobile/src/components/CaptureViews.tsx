@@ -98,22 +98,32 @@ export function CaptureActionBar({
 
 interface CaptureSubmittingViewProps {
   /** Names which backend the "structuring the note…" label attributes the
-   * work to, so it never claims OmniRoute while a local backend enriches. */
+   * work to, so it never claims a hardcoded provider while a local backend
+   * enriches. */
   llmBackend: "omniroute" | "local";
+  /** The active (non-local) provider's display name, used when `llmBackend`
+   * is "omniroute" — despite the field's name, that branch fires for ANY
+   * remote provider (Groq, OpenAI, OpenRouter, a real OmniRoute), so the
+   * label must come from the caller rather than being hardcoded here. */
+  providerLabel: string;
   onEditInstead: () => void;
 }
 
 /** The "submitting" phase: a spinner plus the non-blocking Edit escape hatch
  * (go back to an editable draft instead of waiting out the enrichment now in
  * flight). Presentational — CaptureScreen owns the in-flight request. */
-export function CaptureSubmittingView({ llmBackend, onEditInstead }: CaptureSubmittingViewProps) {
+export function CaptureSubmittingView({
+  llmBackend,
+  providerLabel,
+  onEditInstead,
+}: CaptureSubmittingViewProps) {
   return (
     <View style={styles.loading}>
       <ActivityIndicator animating size="large" />
       <Text variant="bodyMedium" style={styles.loadingText}>
         {llmBackend === "local"
           ? "Local LLM is structuring the note…"
-          : "OmniRoute is structuring the note…"}
+          : `${providerLabel} is structuring the note…`}
       </Text>
       <Button mode="text" onPress={onEditInstead} accessibilityLabel="Edit before enriching">
         Edit

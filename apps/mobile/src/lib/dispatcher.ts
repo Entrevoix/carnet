@@ -100,6 +100,14 @@ export type { EnrichResult } from "./llmClient";
  *   - any other id (cloud preset or custom entry): no special defaulting —
  *     a blank baseUrl/model throws not-configured exactly as llmClient.ts
  *     already does for any blank field.
+ *
+ * `label` (threaded into every llmClient.ts error/status message) is always
+ * `provider.label` — relais and omniroute used to hard-code "Local LLM"/
+ * "OmniRoute" here regardless of the entry's actual (possibly user-edited)
+ * label, so an adjacent surface reading `provider.label` directly (or a
+ * renamed preset) could disagree with dispatcher's own wording for the same
+ * provider. Deleted as an unnecessary special case: the two ids still get
+ * their own baseUrl/model defaulting above, just not a separate label.
  */
 async function buildConfig(settings: Settings, providerId: string): Promise<ProviderConfig> {
   const provider = resolveActiveProvider(settings.llmProviders, providerId);
@@ -111,9 +119,7 @@ async function buildConfig(settings: Settings, providerId: string): Promise<Prov
       apiKey,
       model: provider.model.trim(),
       visionModel: provider.model.trim(),
-      // Threaded into every llmClient.ts error message so this stays
-      // byte-identical to localLlm.ts's original "Local LLM ..." wording.
-      label: "Local LLM",
+      label: provider.label,
     };
   }
   if (provider.id === "omniroute") {
@@ -122,9 +128,7 @@ async function buildConfig(settings: Settings, providerId: string): Promise<Prov
       apiKey,
       model: provider.model.trim() || DEFAULT_OMNIROUTE_MODEL,
       visionModel: provider.visionModel.trim(),
-      // Threaded into every llmClient.ts error message so this stays
-      // byte-identical to omniroute.ts's original "OmniRoute ..." wording.
-      label: "OmniRoute",
+      label: provider.label,
     };
   }
   return {

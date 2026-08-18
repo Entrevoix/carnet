@@ -13,17 +13,23 @@
  *               success, fallbackNotice if even the enqueue fails).
  *   - degraded: a permanent failure — keep the raw note and offer Re-enrich.
  *
- * Pure and React-free.
+ * Pure and React-free. `planSaveFirstOutcome` takes the active provider's
+ * label as a parameter (rather than reading Settings itself) to stay pure —
+ * callers resolve it via llmProviders.ts's resolveActiveProvider and pass it
+ * down.
  */
 
 import type { EnrichIdeaOutcome } from "./ideaSaveFirst";
+import { UNKNOWN_PROVIDER_LABEL } from "./llmProviders";
 
 /** Info line shown when the note changed on disk during enrichment. */
 export const SAVE_FIRST_CONFLICT_NOTICE =
   "This note changed on disk during enrichment — your version was kept.";
-/** Info line shown when a transient failure was successfully queued. */
-export const SAVE_FIRST_QUEUED_NOTICE =
-  "Saved as a raw note — enrichment queued and will finish when OmniRoute is reachable.";
+/** Build the info line shown when a transient failure was successfully
+ * queued, naming the active provider. */
+export function saveFirstQueuedNotice(providerLabel: string): string {
+  return `Saved as a raw note — enrichment queued and will finish when ${providerLabel} is reachable.`;
+}
 /** Fallback info line when even the offline enqueue failed. */
 export const SAVE_FIRST_QUEUE_FAILED_NOTICE =
   "Saved as a raw note — enrichment will retry next time you open carnet.";
@@ -43,8 +49,13 @@ export type SaveFirstPlan =
   | { kind: "queue"; notice: string; fallbackNotice: string }
   | { kind: "degraded"; reason: string };
 
-/** Map an enrichment outcome onto the plan the screen should execute. */
-export function planSaveFirstOutcome(outcome: EnrichIdeaOutcome): SaveFirstPlan {
+/** Map an enrichment outcome onto the plan the screen should execute.
+ * `providerLabel` names the active provider in the queued notice; defaults
+ * to a provider-neutral phrasing when the caller has none to hand. */
+export function planSaveFirstOutcome(
+  outcome: EnrichIdeaOutcome,
+  providerLabel: string = UNKNOWN_PROVIDER_LABEL,
+): SaveFirstPlan {
   switch (outcome.kind) {
     case "updated":
       return { kind: "close", markdown: outcome.markdown };
@@ -54,7 +65,7 @@ export function planSaveFirstOutcome(outcome: EnrichIdeaOutcome): SaveFirstPlan 
       return outcome.transient
         ? {
             kind: "queue",
-            notice: SAVE_FIRST_QUEUED_NOTICE,
+            notice: saveFirstQueuedNotice(providerLabel),
             fallbackNotice: SAVE_FIRST_QUEUE_FAILED_NOTICE,
           }
         : { kind: "degraded", reason: outcome.reason };

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   planSaveFirstOutcome,
+  saveFirstQueuedNotice,
   SAVE_FIRST_CONFLICT_NOTICE,
-  SAVE_FIRST_QUEUED_NOTICE,
   SAVE_FIRST_QUEUE_FAILED_NOTICE,
 } from "./saveFirstOutcome";
 
@@ -18,7 +18,26 @@ describe("planSaveFirstOutcome", () => {
     expect(plan).toEqual({ kind: "conflict", notice: SAVE_FIRST_CONFLICT_NOTICE });
   });
 
-  it("plans a queue (with success + fallback copy) for a transient failure", () => {
+  it("plans a queue (with success + fallback copy) for a transient failure, naming the active provider", () => {
+    const plan = planSaveFirstOutcome(
+      {
+        kind: "failed",
+        transient: true,
+        reason: "network down",
+      },
+      "Groq",
+    );
+    expect(plan).toEqual({
+      kind: "queue",
+      notice: saveFirstQueuedNotice("Groq"),
+      fallbackNotice: SAVE_FIRST_QUEUE_FAILED_NOTICE,
+    });
+    expect(plan.kind === "queue" && plan.notice).toBe(
+      "Saved as a raw note — enrichment queued and will finish when Groq is reachable.",
+    );
+  });
+
+  it("falls back to provider-neutral phrasing when no label is supplied", () => {
     const plan = planSaveFirstOutcome({
       kind: "failed",
       transient: true,
@@ -26,7 +45,8 @@ describe("planSaveFirstOutcome", () => {
     });
     expect(plan).toEqual({
       kind: "queue",
-      notice: SAVE_FIRST_QUEUED_NOTICE,
+      notice:
+        "Saved as a raw note — enrichment queued and will finish when your LLM provider is reachable.",
       fallbackNotice: SAVE_FIRST_QUEUE_FAILED_NOTICE,
     });
   });

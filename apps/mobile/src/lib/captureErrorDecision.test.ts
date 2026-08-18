@@ -12,7 +12,7 @@ vi.mock("./dispatcher", () => ({
 
 import {
   classifyCaptureError,
-  OMNIROUTE_NOT_CONFIGURED_MESSAGE,
+  notConfiguredMessage,
 } from "./captureErrorDecision";
 
 beforeEach(() => {
@@ -22,12 +22,24 @@ beforeEach(() => {
 });
 
 describe("classifyCaptureError", () => {
-  it("surfaces the config message (not a queue) when the URL is unset", () => {
+  it("surfaces the config message (not a queue) when the URL is unset, naming the active provider", () => {
+    isNotConfiguredErrorMock.mockReturnValue(true);
+    const decision = classifyCaptureError(new Error("no url"), "Groq");
+    expect(decision).toEqual({
+      kind: "notConfigured",
+      message: notConfiguredMessage("Groq"),
+    });
+    expect(decision.kind === "notConfigured" && decision.message).toBe(
+      "Groq URL not configured — set it in Settings.",
+    );
+  });
+
+  it("falls back to provider-neutral phrasing when no label is supplied", () => {
     isNotConfiguredErrorMock.mockReturnValue(true);
     const decision = classifyCaptureError(new Error("no url"));
     expect(decision).toEqual({
       kind: "notConfigured",
-      message: OMNIROUTE_NOT_CONFIGURED_MESSAGE,
+      message: "your LLM provider URL not configured — set it in Settings.",
     });
   });
 
@@ -61,13 +73,14 @@ describe("classifyCaptureError", () => {
   });
 
   it("keeps the provider's wording for insecure transport rather than the canonical config message", () => {
-    // The message names the offending URL; flattening it into the OmniRoute
-    // constant would tell the user to set a URL that is already set.
+    // The message names the offending URL; flattening it into the generic
+    // not-configured message would tell the user to set a URL that is
+    // already set.
     isInsecureTransportErrorMock.mockReturnValue(true);
-    const decision = classifyCaptureError(new Error("Insecure URL: http://box.example"));
+    const decision = classifyCaptureError(new Error("Insecure URL: http://box.example"), "Groq");
     expect(decision).not.toEqual({
       kind: "notConfigured",
-      message: OMNIROUTE_NOT_CONFIGURED_MESSAGE,
+      message: notConfiguredMessage("Groq"),
     });
     expect(decision.kind).not.toBe("transient");
   });

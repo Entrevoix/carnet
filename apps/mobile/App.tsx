@@ -42,6 +42,11 @@ import {
   type ThemePreference,
 } from "./src/lib/themePreference";
 import { drainPendingKarakeepExports } from "./src/lib/pendingSyncRunner";
+import { drainQueue } from "./src/lib/queue";
+import {
+  createForegroundDrainTrigger,
+  type ForegroundDrainTrigger,
+} from "./src/lib/foregroundDrainTrigger";
 
 // Installed once at module load, as early as possible — chains onto RN's
 // default handler so every uncaught JS exception lands in the local crash
@@ -197,6 +202,33 @@ export default function App() {
     });
     return () => sub.remove();
   }, []);
+
+  // Enrichment-queue drain trigger: cold start + every return to foreground,
+  // same throttle shape as the Karakeep trigger above (independent queue, its
+  // own trigger instance so one system's throttle window never gates the
+  // other — see lib/foregroundDrainTrigger.ts). Previously drainQueue() only
+  // ran on CaptureScreen mount and manual retry, so a capture queued while
+  // offline sat stuck until the user next opened Capture — syncStatus.ts's
+  // "will finish automatically when reachable" wasn't true. drainQueue()
+  // itself is single-flight (lib/queue.ts's `_draining` guard) and a cheap
+  // no-op on an empty queue, so this only decides WHEN to kick it.
+  // useRef(factory()) would call the factory on EVERY render (only the ref
+  // object itself is stable, not its initializer argument) — lazy-init via
+  // ??= so createForegroundDrainTrigger runs exactly once.
+  const queueDrainTriggerRef = useRef<ForegroundDrainTrigger | null>(null);
+  queueDrainTriggerRef.current ??= createForegroundDrainTrigger(
+    drainQueue,
+    30_000,
+    "App:queue",
+  );
+  const queueDrainTrigger = queueDrainTriggerRef.current;
+  useEffect(() => {
+    queueDrainTrigger.kick();
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") queueDrainTrigger.kick();
+    });
+    return () => sub.remove();
+  }, [queueDrainTrigger]);
 
   useEffect(() => {
     // Load the persisted theme override before first paint so the app

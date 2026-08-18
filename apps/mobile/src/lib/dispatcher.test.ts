@@ -362,6 +362,26 @@ describe("dispatcher backend routing", () => {
     const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://127.0.0.1:8080/v1/chat/completions");
   });
+
+  it("names the relais entry's OWN (possibly user-edited) label in its error messages, not a hardcoded 'Local LLM'", async () => {
+    // buildConfig used to hard-code label: "Local LLM" for relais regardless
+    // of the entry's actual label — adjacent surfaces that read
+    // resolveActiveProvider(...).label directly (e.g. syncStatus.ts,
+    // CaptureScreen's providerLabel) would then disagree with dispatcher's
+    // own error wording for the very same provider. A renamed entry exposes
+    // the mismatch most clearly.
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...BASE_SETTINGS,
+      activeProviderId: "relais",
+      llmProviders: BASE_SETTINGS.llmProviders.map((p) =>
+        p.id === "relais" ? { ...p, label: "My Local Box", model: "" } : p,
+      ),
+    });
+
+    await expect(enrichIdea("blank model")).rejects.toThrow(
+      "My Local Box model not configured — set it in Settings",
+    );
+  });
 });
 
 describe("dispatcher online path (enrichIdea) hits the same HTTP request", () => {

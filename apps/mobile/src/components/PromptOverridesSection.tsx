@@ -70,7 +70,7 @@ export function PromptOverridesSection({
         Advanced · Prompt overrides
       </Text>
       <HelperText type="info" visible>
-        Override how OmniRoute structures each capture mode. Leave a section
+        Override how your active provider structures each capture mode. Leave a section
         empty to use the default. Removing the frontmatter format or injection
         guard can drop captures to a stub note — use "Reset to default" to
         recover.

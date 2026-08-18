@@ -13,7 +13,7 @@
  * future change benefits both entry points.
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Image, ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
@@ -41,6 +41,8 @@ import { enrichSharedImage } from "../lib/dispatcher";
 import { assertBase64UnderLimit } from "../lib/llmClient";
 import { caretProps, useCarnetTheme } from "../lib/theme";
 import { deriveTitle } from "@carnet/shared";
+import { getSettings } from "../lib/settings";
+import { resolveActiveProvider, UNKNOWN_PROVIDER_LABEL } from "../lib/llmProviders";
 
 type Props = NativeStackScreenProps<RootStackParamList, "PhotoCapture">;
 
@@ -84,6 +86,21 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
   const [degradedReason, setDegradedReason] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Active provider's display label for the "structuring the photo…" label
+  // — read once on mount so it never claims a hardcoded provider.
+  const [providerLabel, setProviderLabel] = useState(UNKNOWN_PROVIDER_LABEL);
+
+  useEffect(() => {
+    void getSettings()
+      .then((s) => {
+        if (Array.isArray(s.llmProviders) && s.llmProviders.length > 0) {
+          setProviderLabel(
+            resolveActiveProvider(s.llmProviders, s.activeProviderId).label,
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const combinedContext = useMemo(() => {
     const parts = [context, transcript].map((s) => s.trim()).filter(Boolean);
@@ -288,7 +305,7 @@ export default function PhotoCaptureScreen({ navigation }: Props) {
       <View style={styles.loading}>
         <ActivityIndicator size="large" />
         <Text variant="bodyMedium" style={styles.dim}>
-          OmniRoute is structuring the photo…
+          {providerLabel} is structuring the photo…
         </Text>
       </View>
     );

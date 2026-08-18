@@ -419,7 +419,7 @@ export default function SettingsScreen() {
           style={styles.notificationRow}
         />
         <HelperText type="info" visible>
-          Doubles the OmniRoute API spend per audio capture. Skip if you only
+          Doubles your active provider's API spend per audio capture. Skip if you only
           transcribe occasionally.
         </HelperText>
         <List.Item

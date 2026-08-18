@@ -90,6 +90,16 @@ export function buildDefaultProviders(): LlmProvider[] {
 }
 
 /**
+ * Fallback provider name for user-facing copy composed by a pure lib module
+ * (captureErrorDecision.ts, saveFirstOutcome.ts, syncStatus.ts) that has no
+ * label parameter supplied — e.g. a caller that hasn't loaded Settings yet.
+ * Those modules stay pure by taking a label PARAMETER rather than reading
+ * Settings themselves; this is only the default when no caller-supplied
+ * label is available.
+ */
+export const UNKNOWN_PROVIDER_LABEL = "your LLM provider";
+
+/**
  * Resolve `activeProviderId` to its {@link LlmProvider} entry. Falls back to
  * the matching preset (defensive — should not happen once migration has
  * run). A totally unknown id — e.g. a dangling `activeProviderId` left

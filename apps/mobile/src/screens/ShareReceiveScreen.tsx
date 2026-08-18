@@ -58,6 +58,8 @@ import {
 } from "../lib/shareHelpers";
 import { caretProps, useCarnetTheme } from "../lib/theme";
 import { deriveTitle } from "@carnet/shared";
+import { getSettings } from "../lib/settings";
+import { resolveActiveProvider, UNKNOWN_PROVIDER_LABEL } from "../lib/llmProviders";
 
 type Props = NativeStackScreenProps<RootStackParamList, "ShareReceive">;
 
@@ -98,6 +100,21 @@ export default function ShareReceiveScreen({ navigation }: Props) {
     }
   }, [shareIntent, navigation]);
 
+  // Active provider's display label for the "enriching + saving…" label —
+  // read once on mount so it never claims a hardcoded provider.
+  const [providerLabel, setProviderLabel] = useState(UNKNOWN_PROVIDER_LABEL);
+  useEffect(() => {
+    void getSettings()
+      .then((s) => {
+        if (Array.isArray(s.llmProviders) && s.llmProviders.length > 0) {
+          setProviderLabel(
+            resolveActiveProvider(s.llmProviders, s.activeProviderId).label,
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const [context, setContext] = useState("");
   const [transcript, setTranscript] = useState("");
   const [phase, setPhase] = useState<Phase>("input");
@@ -107,7 +124,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
    * "Fetching link preview…" for URL shares, flips to the enrichment
    * message once the preview promise settles. */
   const [savingDetail, setSavingDetail] = useState<string>(
-    "OmniRoute is enriching + saving…",
+    `${providerLabel} is enriching + saving…`,
   );
   /** Surfaced as a banner on the saved screen when AI enrichment failed and
    * we fell back to a stub note. Carries the sanitized error message so the
@@ -155,7 +172,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
     savingRef.current = true;
     setError(null);
     setDegradedReason(null);
-    setSavingDetail("OmniRoute is enriching + saving…");
+    setSavingDetail(`${providerLabel} is enriching + saving…`);
     setPhase("saving");
     // Tracked across the branch to gate auto-transcribe — only fires on
     // the audio branch, not on image / link / other-file shares.
@@ -373,7 +390,7 @@ export default function ShareReceiveScreen({ navigation }: Props) {
             text,
             context: ctx,
             onPreviewSettled: () =>
-              setSavingDetail("OmniRoute is enriching + saving…"),
+              setSavingDetail(`${providerLabel} is enriching + saving…`),
           });
           enrichedMd = result.markdown;
         } catch (e: unknown) {

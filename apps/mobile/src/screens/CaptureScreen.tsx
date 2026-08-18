@@ -36,6 +36,7 @@ import {
 } from "../lib/ideaSaveFirst";
 import { classifyCaptureError } from "../lib/captureErrorDecision";
 import { planSaveFirstOutcome } from "../lib/saveFirstOutcome";
+import { resolveActiveProvider, UNKNOWN_PROVIDER_LABEL } from "../lib/llmProviders";
 import { persistAttachments as persistAttachmentsToVault } from "../lib/attachmentPersistence";
 import { mergeAttachmentRefs } from "../lib/captureAttachmentMerge";
 import { chainHistoryWrite } from "../lib/captureHistory";
@@ -137,6 +138,10 @@ export default function CaptureScreen({ route, navigation }: Props) {
   // previewBeforeSave so "OmniRoute is structuring…" doesn't show while a
   // capture is actually enriching via the local backend (or vice versa).
   const [llmBackend, setLlmBackend] = useState<"omniroute" | "local">("omniroute");
+  // Active provider's display label — read once alongside llmBackend, threaded
+  // into classifyCaptureError/planSaveFirstOutcome so their queue/error copy
+  // names the real provider instead of a hardcoded one.
+  const [providerLabel, setProviderLabel] = useState(UNKNOWN_PROVIDER_LABEL);
   // Saved-screen state for the save-first Idea failure paths (mirrors photo):
   // `degradedReason` = permanent enrichment failure (raw note kept, Re-enrich
   // offered); `enrichNotice` = an info line (queued offline, or conflict).
@@ -243,6 +248,17 @@ export default function CaptureScreen({ route, navigation }: Props) {
       .then((s) => {
         setPreviewBeforeSave(s.previewBeforeSave);
         setLlmBackend(s.activeProviderId === "relais" ? "local" : "omniroute");
+        // Defensive on two counts: some test doubles for getSettings() return
+        // a partial Settings without llmProviders, AND a genuinely empty list
+        // is a real (if unexpected) state. Either way there's nothing to
+        // resolve a label from, so providerLabel just keeps its
+        // UNKNOWN_PROVIDER_LABEL default rather than calling
+        // resolveActiveProvider on an empty array.
+        if (Array.isArray(s.llmProviders) && s.llmProviders.length > 0) {
+          setProviderLabel(
+            resolveActiveProvider(s.llmProviders, s.activeProviderId).label,
+          );
+        }
       })
       .catch(() => {});
   }, []);
@@ -349,7 +365,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
     // A blank OmniRoute URL is a config problem (not an offline blip) and a 4xx
     // is permanent — both surface the message and keep the text for a resend.
     // Only transient (network / 5xx) errors fall through to the offline queue.
-    const decision = classifyCaptureError(e);
+    const decision = classifyCaptureError(e, providerLabel);
     if (decision.kind !== "transient") {
       setError(decision.message);
       setPhase("input");
@@ -378,7 +394,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
     } catch (qe: unknown) {
       if (superseded()) return;
       const qmsg = qe instanceof Error ? qe.message : String(qe);
-      setError(`Couldn't reach OmniRoute, and queuing offline failed: ${qmsg}`);
+      setError(`Couldn't reach ${providerLabel}, and queuing offline failed: ${qmsg}`);
     } finally {
       // The `return`s above skip this by design: a superseded attempt must not
       // pull the user out of the draft they went back to editing.
@@ -403,7 +419,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
      * enqueue just as easily as during the model call. */
     superseded: () => boolean,
   ): Promise<void> => {
-    const plan = planSaveFirstOutcome(outcome);
+    const plan = planSaveFirstOutcome(outcome, providerLabel);
     if (plan.kind === "close") {
       // Reflect the enriched note (final tags, pending-enrich status gone)
       // in the cached index before landing back on Home.
@@ -935,7 +951,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
       )}
 
       {phase === "submitting" && (
-        <CaptureSubmittingView llmBackend={llmBackend} onEditInstead={() => void editInstead()} />
+        <CaptureSubmittingView
+          llmBackend={llmBackend}
+          providerLabel={providerLabel}
+          onEditInstead={() => void editInstead()}
+        />
       )}
 
       {phase === "preview" && response && (
