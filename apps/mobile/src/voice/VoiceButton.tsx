@@ -22,9 +22,6 @@ import { Icon } from 'react-native-paper';
 import { MIN_TAP_TARGET, useCarnetTheme } from '../lib/theme';
 import {
   type RecognizerOption,
-  SYSTEM_DEFAULT_RECOGNIZER,
-  DEFAULT_RECOGNIZER_PKGS,
-  orderRecognizerCandidates,
   isPinnedRecognizer,
   resolveEffectivePkg,
   pinnedFailoverChain,
@@ -45,226 +42,26 @@ import {
   resetSegments,
   type TranscriptAccumulator,
 } from './dictationSession';
+import {
+  MAX_RECORDING_MS,
+  KNOWN_BAD_PKGS,
+  SODA_DICTATION_MODEL,
+  KNOWN_RECOGNIZERS,
+  NO_SERVICE_MESSAGE,
+  STT_ENGINE_KEY,
+  STT_RECOGNIZER_PKG_KEY,
+  STT_RECOGNIZER_LABEL_KEY,
+  labelForPackage,
+} from './recognizerCatalog';
+import { collectDiagnostics, detectAvailableRecognizers, pickBestLocale } from './sttDeviceProbe';
 
-// Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
-const MAX_RECORDING_MS = 3 * 60 * 1000;
-
-// Recognizer packages to actively reject if seen in storage. Module-level so
-// it doesn't re-allocate on every render. Empty by default — com.google.android.tts
-// is intentionally NOT here (see notes below).
-const KNOWN_BAD_PKGS: readonly string[] = [];
-// Android 16 fix: Soda's default LANGUAGE_MODEL flipped to AMBIENT_ONESHOT
-// after the Sept 2025 security patch. Without web_search, dictation returns
-// empty transcripts. (No standalone writeup exists for this — the full
-// rationale lives in the startRecognizerRef comment below and this one.)
-const SODA_DICTATION_MODEL = 'web_search';
-export const STT_ENGINE_KEY = 'stt_engine';
-export const STT_RECOGNIZER_PKG_KEY = 'stt_recognizer_pkg';
-export const STT_RECOGNIZER_LABEL_KEY = 'stt_recognizer_label';
-
-const KNOWN_RECOGNIZERS: RecognizerOption[] = [
-  // Android System Intelligence — the actual on-device Google STT service. Prefer first.
-  { pkg: 'com.google.android.as', label: 'Google (On-Device)' },
-  // "Speech Services by Google" — the Play Store package that exposes Google STT
-  // on most non-Pixel Androids (installed by anyone using Google TTS).
-  { pkg: 'com.google.android.tts', label: 'Speech Services by Google' },
-  { pkg: 'com.google.android.googlequicksearchbox', label: 'Google' },
-  { pkg: 'com.google.android.voicesearch', label: 'Google Voice Search' },
-  { pkg: 'com.google.android.apps.googleassistant', label: 'Google Assistant' },
-  { pkg: 'com.samsung.android.bixby.agent', label: 'Samsung Bixby' },
-  { pkg: 'com.samsung.android.speech', label: 'Samsung Voice' },
-  { pkg: 'com.htc.sense.hsp', label: 'HTC Voice' },
-  { pkg: 'com.nuance.android.vsuite.vsuiteapp', label: 'Nuance' },
-  { pkg: 'com.iflytek.speechsuite', label: 'iFlytek' },
-];
-
-// FAILOVER_CODES moved to ./sttErrorMessage.ts (isFailoverEligibleCode) so
-// it's unit-testable without pulling in this file's RN/expo native imports.
-// 7 (ERROR_NO_MATCH_OR_UNAVAILABLE) is deliberately NOT in that set — it's
-// handled as a silent same-recognizer restart below, not a failover trigger.
-
-const PREFERRED_LANG = 'en-US';
-
-// Single canonical copy for every "no working speech service" terminal
-// state (detection found nothing, failover chain exhausted post-detection,
-// or a null effectivePkg with detection already run). Previously three
-// near-duplicate strings existed and drifted from each other during QA
-// (2026-07-11) — unify so future edits can't reintroduce the split. All
-// three sites present the same 'no-service' action buttons regardless of
-// wording, so one message covers every trigger path.
-const NO_SERVICE_MESSAGE =
-  'No working speech service found on this device.\nInstall a speech service below, or copy diagnostics for details.';
-
-// Returns the best locale the given recognizer can serve, preferring an
-// already-installed match over a claimed-but-not-downloaded one. Falls back
-// to the preferred tag when the probe throws (old Android or missing perm).
-async function pickBestLocale(pkg: string | null, preferred = PREFERRED_LANG): Promise<string> {
-  try {
-    const opts = pkg ? { androidRecognitionServicePackage: pkg } : {};
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res = (await ExpoSpeechRecognitionModule.getSupportedLocales(opts)) as any;
-    const locales: string[] = Array.isArray(res?.locales) ? res.locales : [];
-    const installed: string[] = Array.isArray(res?.installedLocales) ? res.installedLocales : [];
-    const lower = preferred.toLowerCase();
-    const exact = (list: string[]) => list.find((l) => l.toLowerCase() === lower);
-    const anyEn = (list: string[]) => list.find((l) => l.toLowerCase().startsWith('en-'));
-    return exact(installed) ?? exact(locales) ?? anyEn(installed) ?? anyEn(locales) ?? preferred;
-  } catch {
-    return preferred;
-  }
-}
+export { STT_ENGINE_KEY, STT_RECOGNIZER_PKG_KEY, STT_RECOGNIZER_LABEL_KEY };
 
 // sttErrorMessage moved to ./sttErrorMessage.ts (describeSttError) so the
 // numeric-code / string-enum fallback logic is unit-testable without
 // pulling in this file's RN/expo native imports. Kept as a thin local alias
 // so the two call sites below don't need renaming.
 const sttErrorMessage = describeSttError;
-
-function labelForPackage(pkg: string): string {
-  const known = KNOWN_RECOGNIZERS.find((r) => r.pkg === pkg);
-  if (known) return known.label;
-  // Fallback label: derive from last path segment, title-cased
-  const seg = pkg.split('.').pop() ?? pkg;
-  return seg.charAt(0).toUpperCase() + seg.slice(1);
-}
-
-// Gather everything we know about the device's STT state. Returned as plain
-// text so the user can paste it into a bug report.
-async function collectDiagnostics(
-  lastError: string | null,
-  eventBuffer: string[] = [],
-): Promise<string> {
-  const lines: string[] = [];
-  const ts = new Date().toISOString();
-  lines.push(`carnet voice diagnostics @ ${ts}`);
-  lines.push('');
-  // getSpeechRecognitionServices
-  try {
-    const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices();
-    lines.push(`getSpeechRecognitionServices() → [${(services ?? []).join(', ') || '(empty)'}]`);
-  } catch (e: unknown) {
-    lines.push(`getSpeechRecognitionServices() threw: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  // getDefaultRecognitionService
-  try {
-    const def = ExpoSpeechRecognitionModule.getDefaultRecognitionService();
-    lines.push(`getDefaultRecognitionService() → ${def?.packageName || '(empty)'}`);
-  } catch (e: unknown) {
-    lines.push(`getDefaultRecognitionService() threw: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  // Per-package probes
-  lines.push('');
-  lines.push('Per-package getSupportedLocales probe:');
-  for (const r of KNOWN_RECOGNIZERS) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const res = (await ExpoSpeechRecognitionModule.getSupportedLocales({
-        androidRecognitionServicePackage: r.pkg,
-      })) as any;
-      const locales: string[] = Array.isArray(res?.locales) ? res.locales : [];
-      const installed: string[] = Array.isArray(res?.installedLocales) ? res.installedLocales : [];
-      lines.push(`  ${r.pkg}: ${locales.length} locales, ${installed.length} installed`);
-    } catch (e: unknown) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const code = (e as any)?.code ?? (e as any)?.nativeErrorCode;
-      const msg = e instanceof Error ? e.message : String(e);
-      lines.push(`  ${r.pkg}: ERROR code=${code ?? '?'} msg=${msg.slice(0, 80)}`);
-    }
-  }
-  // Saved state
-  lines.push('');
-  const [savedPkg, savedLabel, savedEngine] = await Promise.all([
-    AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY),
-    AsyncStorage.getItem(STT_RECOGNIZER_LABEL_KEY),
-    AsyncStorage.getItem(STT_ENGINE_KEY),
-  ]);
-  lines.push(`Saved engine: ${savedEngine ?? '(unset, defaults to on-device)'}`);
-  lines.push(`Saved pkg: ${savedPkg ?? '(null)'}`);
-  lines.push(`Saved label: ${savedLabel ?? '(null)'}`);
-  lines.push(`Last error: ${lastError ?? '(none)'}`);
-  lines.push('');
-  lines.push(`Recent events (${eventBuffer.length}):`);
-  if (eventBuffer.length === 0) {
-    lines.push('  (none captured)');
-  } else {
-    for (const line of eventBuffer) lines.push('  ' + line);
-  }
-  return lines.join('\n');
-}
-
-async function detectAvailableRecognizers(): Promise<RecognizerOption[]> {
-  // Primary: ask Android directly which recognizer services are installed.
-  // This bypasses Android 11+ <queries> visibility issues and Android 13+
-  // ERROR_LANGUAGE_UNAVAILABLE false negatives that the per-package probe hits.
-  try {
-    const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices();
-    if (services && services.length > 0) {
-      let defaultPkg = '';
-      try {
-        defaultPkg = ExpoSpeechRecognitionModule.getDefaultRecognitionService()?.packageName ?? '';
-      } catch {
-        // non-fatal
-      }
-      // Probe installed language models so a pinned engine with no on-device
-      // speech pack (e.g. a com.google.android.as that only returns code 12)
-      // ranks below a model-having one. Unknown/timeout → treat as has-model so
-      // a slow probe never wrongly demotes a working recognizer.
-      const candidates = Array.from(new Set([...DEFAULT_RECOGNIZER_PKGS, ...services]));
-      const modelByPkg = new Map<string, boolean>();
-      await Promise.all(
-        candidates.map(async (pkg) => {
-          try {
-            const res = (await Promise.race([
-              ExpoSpeechRecognitionModule.getSupportedLocales({ androidRecognitionServicePackage: pkg }),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
-            ])) as { installedLocales?: string[] } | undefined;
-            const installed = Array.isArray(res?.installedLocales) ? res.installedLocales : [];
-            modelByPkg.set(pkg, installed.length > 0);
-          } catch {
-            modelByPkg.set(pkg, true); // unknown → don't demote
-          }
-        }),
-      );
-      // Always include our pinned Google recognizers (ranked first), even when
-      // Android doesn't enumerate them — otherwise a device whose only
-      // *enumerated* RecognitionService is a third-party app (e.g. an installed
-      // assistant that can't actually serve STT) has no Google fallback, so that
-      // app's recognizer gets picked and STT dies with code 5/9.
-      return orderRecognizerCandidates(
-        services,
-        defaultPkg,
-        labelForPackage,
-        (pkg) => modelByPkg.get(pkg) ?? true,
-      );
-    }
-  } catch {
-    // fall through to legacy probe
-  }
-
-  // Fallback: legacy per-package probe for when getSpeechRecognitionServices
-  // is unavailable or returns empty.
-  const confirmed: RecognizerOption[] = [];
-  const tentative: RecognizerOption[] = [];
-  for (const r of KNOWN_RECOGNIZERS) {
-    try {
-      const result = await ExpoSpeechRecognitionModule.getSupportedLocales({
-        androidRecognitionServicePackage: r.pkg,
-      });
-      if (result?.locales && result.locales.length > 0) {
-        confirmed.push(r);
-      }
-    } catch (e: unknown) {
-      const code = (e as { code?: number; nativeErrorCode?: number })?.code
-        ?? (e as { code?: number; nativeErrorCode?: number })?.nativeErrorCode;
-      const msg = e instanceof Error ? e.message : String(e);
-      if (code === 14 || msg.includes('14')) {
-        tentative.push(r);
-      }
-    }
-  }
-  const found = confirmed.length > 0 ? confirmed : tentative;
-  return [...found, SYSTEM_DEFAULT_RECOGNIZER];
-}
 
 interface VoiceButtonProps {
   onTranscript: (text: string, isFinal: boolean) => void;
