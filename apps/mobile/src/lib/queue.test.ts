@@ -620,7 +620,15 @@ describe("drainQueue", () => {
 // pull on a rooted/debug device) must yield ciphertext, not readable capture
 // content. These assert against the RAW store, not the decrypting accessors.
 describe("queue at-rest encryption", () => {
-  const PII = "Jane Doe jane@example.com +1 555 0100 confidential idea";
+  // The phone-number stand-in is a 20+-char sentinel, not a bare "+1 555
+  // 0100" — a short digit run like "555" occasionally turns up BY CHANCE
+  // inside the base64 ciphertext/nonce/HMAC this test asserts against
+  // (observed flaking in CI: random AES output happened to contain "555"),
+  // since a 3-char substring has real odds of a coincidental match across a
+  // few hundred base64 characters. A sentinel this long is, for any
+  // practical purpose, impossible to hit by chance.
+  const PII_PHONE_SENTINEL = "PHONE-5550100-COLLISION-PROOF-MARKER";
+  const PII = `Jane Doe jane@example.com ${PII_PHONE_SENTINEL} confidential idea`;
 
   it("stores payloads as ciphertext, with no plaintext in the raw dump", async () => {
     await enqueue({ mode: "idea", text: PII });
@@ -628,7 +636,7 @@ describe("queue at-rest encryption", () => {
     const dump = _store.get(QUEUE_KEY)!;
     expect(dump).not.toContain("Jane Doe");
     expect(dump).not.toContain("jane@example.com");
-    expect(dump).not.toContain("555");
+    expect(dump).not.toContain(PII_PHONE_SENTINEL);
     expect(dump).not.toContain("confidential");
     expect(rows()[0].payload_json.startsWith("carnet-q1:")).toBe(true);
   });
