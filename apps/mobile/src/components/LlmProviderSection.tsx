@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
-import { Button, HelperText, List, Text, TextInput } from "react-native-paper";
+import { HelperText, List, Text } from "react-native-paper";
 
 import { getSettings } from "../lib/settings";
 import {
@@ -25,7 +25,12 @@ import {
   reassignIdentityAfterDelete,
   type EditBuffer,
 } from "../lib/llmProviderForm";
-import { apiKeyFieldLabel, apiKeyFieldPlaceholder, errorMessage } from "../lib/settingsForm";
+import {
+  resolveBrowseSource,
+  resolvePickerPresentation,
+  type PickerMode,
+} from "../lib/llmProviderPicker";
+import { errorMessage } from "../lib/settingsForm";
 import { useProviderWriteChain } from "../lib/useProviderWriteChain";
 import { ModelBrowserModal } from "./ModelBrowserModal";
 import { ProviderPickerModal } from "./ProviderPickerModal";
@@ -33,7 +38,8 @@ import { ProviderRoleRow } from "./ProviderRoleRow";
 import { EnhanceRoleSection } from "./EnhanceRoleSection";
 import { DeleteProviderDialog } from "./DeleteProviderDialog";
 import { AddProviderDialog } from "./AddProviderDialog";
-import { caretProps, spacing, type CarnetTheme } from "../lib/theme";
+import { ProviderEditForm } from "./ProviderEditForm";
+import { spacing, type CarnetTheme } from "../lib/theme";
 
 interface LlmProviderSectionProps {
   theme: CarnetTheme;
@@ -45,10 +51,6 @@ interface LlmProviderSectionProps {
    * failures). */
   onError: (message: string) => void;
 }
-
-/** Which identity id the open ProviderPickerModal is selecting for. `null`
- * means the modal is closed. */
-type PickerMode = "active" | "fallback" | "vision" | "enhance";
 
 /**
  * Settings → LLM provider (Phase 4 — see
@@ -443,12 +445,13 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       // enhanceProviderId when set, else the active entry — NOT the entry open
       // in the editor above, which the user may merely be inspecting. Its
       // saved baseUrl/key are used rather than editBuffer's unsaved edits.
-      const src =
-        target === "enhance"
-          ? providerList.find((p) => p.id === (enhanceProviderId ?? activeProviderId)) ??
-            active
-          : null;
-      const keyOwnerId = src ? src.id : active.id;
+      const { src, keyOwnerId } = resolveBrowseSource(
+        target,
+        providerList,
+        enhanceProviderId,
+        activeProviderId,
+        active,
+      );
       const stored = await providerKeys.getKey(keyOwnerId);
       const key = src ? stored : resolveBrowseApiKey(pendingKey, stored);
       const list = await listModels(src ? src.baseUrl : editBuffer.baseUrl, key);
@@ -492,20 +495,10 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   // with no URL configured yet), so Test connection is disabled instead.
   const canTestConnection = editBuffer.baseUrl.trim().length > 0 || isRelais;
 
-  const PICKER_TITLES: Record<PickerMode, string> = {
-    active: "Choose LLM provider",
-    fallback: "Offline fallback provider",
-    vision: "Vision provider",
-    enhance: "Enhance model",
-  };
-  const PICKER_SELECTED: Record<PickerMode, string | null> = {
-    active: activeProviderId,
-    fallback: fallbackProviderId,
-    vision: visionProviderId,
-    enhance: enhanceProviderId,
-  };
-  const pickerTitle = pickerMode ? PICKER_TITLES[pickerMode] : PICKER_TITLES.active;
-  const pickerSelectedId = pickerMode ? PICKER_SELECTED[pickerMode] : activeProviderId;
+  const { title: pickerTitle, selectedId: pickerSelectedId } = resolvePickerPresentation(
+    pickerMode,
+    { activeProviderId, fallbackProviderId, visionProviderId, enhanceProviderId },
+  );
   const handlePickerSelect = (id: string | null) => {
     if (pickerMode === "fallback") {
       void selectFallback(id);
@@ -544,192 +537,30 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         style={styles.row}
       />
 
-      {isCustom && (
-        <TextInput
-          {...caretProps(theme)}
-          label="Label"
-          mode="outlined"
-          value={editBuffer.label}
-          onChangeText={(v) => setEditBuffer({ ...editBuffer, label: v })}
-        />
-      )}
-
-      <TextInput
-        {...caretProps(theme)}
-        label="Base URL"
-        mode="outlined"
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="url"
-        value={editBuffer.baseUrl}
-        onChangeText={(v) => setEditBuffer({ ...editBuffer, baseUrl: v })}
-        placeholder={isRelais ? "http://127.0.0.1:8080" : "https://..."}
+      <ProviderEditForm
+        theme={theme}
+        editBuffer={editBuffer}
+        onLabelChange={(v) => setEditBuffer({ ...editBuffer, label: v })}
+        onBaseUrlChange={(v) => setEditBuffer({ ...editBuffer, baseUrl: v })}
+        onModelChange={(v) => setEditBuffer({ ...editBuffer, model: v })}
+        onVisionModelChange={(v) => setEditBuffer({ ...editBuffer, visionModel: v })}
+        isCustom={isCustom}
+        isRelais={isRelais}
+        keyConfigured={keyConfigured}
+        pendingKey={pendingKey}
+        onPendingKeyChange={setPendingKey}
+        onClearKey={() => void clearActiveKey()}
+        onBrowseChatModels={() => void openBrowse("chat")}
+        onBrowseVisionModels={() => void openBrowse("vision")}
+        onSaveEntry={() => void saveEntry()}
+        writing={writing}
+        testingConnection={testingConnection}
+        canTestConnection={canTestConnection}
+        onTestConnection={() => void testConnection()}
+        connectionResult={connectionResult}
+        onDeleteRequest={() => setDeleteTarget(active.id)}
+        onAddOpen={() => setAddOpen(true)}
       />
-      {/* History of this copy, because it has flip-flopped with evidence each
-          time: it originally promised LAN http://, was then narrowed to
-          loopback-only after a 2026-08-01 device check found Android refusing
-          LAN cleartext on a release build, and a 2026-08-16 emulator
-          investigation (#153) then found even LOOPBACK refused on API 35 —
-          the platform default was version-dependent all along. Since
-          withCleartextLocalProviders.js pins usesCleartextTraffic, the app's
-          own allowlist (netAllowlist.ts: loopback + RFC1918) is the single
-          gate on every Android version, and this copy states that. Keep the
-          three in sync: this text, netAllowlist.ts, and the plugin. */}
-      <HelperText type="info" visible>
-        Local addresses (127.0.0.1 or a private 10.x / 172.16–31.x / 192.168.x
-        host, e.g. Relais or Ollama on your LAN) may use plain http://. Any
-        other provider must serve https:// so your API key is never sent in
-        the clear.
-      </HelperText>
-
-      <TextInput
-        {...caretProps(theme)}
-        label={apiKeyFieldLabel("API key", keyConfigured, pendingKey.length)}
-        mode="outlined"
-        autoCapitalize="none"
-        autoCorrect={false}
-        secureTextEntry
-        placeholder={apiKeyFieldPlaceholder(
-          keyConfigured,
-          isRelais ? "optional — leave blank for an unauthenticated loopback server" : "sk-...",
-        )}
-        value={pendingKey}
-        onChangeText={setPendingKey}
-      />
-      <HelperText type="info" visible>
-        Stored in the secure keychain. The existing key is never shown again.
-      </HelperText>
-      {keyConfigured && (
-        <Button mode="text" compact onPress={() => void clearActiveKey()} style={styles.inlineBtn}>
-          Clear key
-        </Button>
-      )}
-
-      <TextInput
-        {...caretProps(theme)}
-        label="Model"
-        mode="outlined"
-        autoCapitalize="none"
-        autoCorrect={false}
-        value={editBuffer.model}
-        onChangeText={(v) => setEditBuffer({ ...editBuffer, model: v })}
-        placeholder="e.g. gpt-4o-mini"
-      />
-      <Button
-        mode="text"
-        icon="format-list-bulleted"
-        compact
-        onPress={() => void openBrowse("chat")}
-        disabled={!editBuffer.baseUrl.trim()}
-        style={styles.inlineBtn}
-      >
-        Browse available models
-      </Button>
-
-      {isRelais ? (
-        <HelperText type="info" visible>
-          One model handles text, vision, and business-card OCR for this
-          provider — no separate vision-model field.
-        </HelperText>
-      ) : (
-        <>
-          <TextInput
-            {...caretProps(theme)}
-            label="Vision model"
-            mode="outlined"
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={editBuffer.visionModel}
-            onChangeText={(v) => setEditBuffer({ ...editBuffer, visionModel: v })}
-            placeholder="e.g. gpt-4o-mini (vision-capable)"
-          />
-          <HelperText type="info" visible>
-            Used when you share a photo or image into carnet. Leave blank if
-            this provider serves no vision-capable model.
-          </HelperText>
-          <Button
-            mode="text"
-            icon="format-list-bulleted"
-            compact
-            onPress={() => void openBrowse("vision")}
-            disabled={!editBuffer.baseUrl.trim()}
-            style={styles.inlineBtn}
-          >
-            Browse available models
-          </Button>
-        </>
-      )}
-
-      <Button
-        mode="contained-tonal"
-        onPress={() => void saveEntry()}
-        disabled={writing}
-        style={styles.saveEntry}
-      >
-        Save provider
-      </Button>
-
-      <Button
-        mode="text"
-        icon="lan-connect"
-        compact
-        onPress={() => void testConnection()}
-        loading={testingConnection}
-        disabled={testingConnection || !canTestConnection}
-        style={styles.inlineBtn}
-      >
-        Test connection
-      </Button>
-      {connectionResult === "ok" && (
-        <HelperText type="info" visible>
-          ✓ Reachable
-        </HelperText>
-      )}
-      {connectionResult === "unreachable" && (
-        <HelperText type="error" visible>
-          Unreachable — check the URL and that the server is running.
-        </HelperText>
-      )}
-      {connectionResult === "unauthorized" && (
-        <HelperText type="error" visible>
-          The server answered but rejected the API key. The URL is fine — check
-          the key.
-        </HelperText>
-      )}
-      {connectionResult === "blocked-cleartext" && (
-        <HelperText type="error" visible>
-          Android blocked this plain http:// connection. Only 127.0.0.1 may
-          use http:// — a provider on another machine needs https://.
-        </HelperText>
-      )}
-      {connectionResult === "unsafe-url" && (
-        <HelperText type="error" visible>
-          Not a valid local address. Use http:// with 127.0.0.1, or https://
-          for anything else.
-        </HelperText>
-      )}
-
-      {isCustom && (
-        <Button
-          mode="text"
-          compact
-          textColor={theme.colors.error}
-          onPress={() => setDeleteTarget(active.id)}
-          style={styles.inlineBtn}
-        >
-          Delete this provider
-        </Button>
-      )}
-
-      <Button
-        mode="text"
-        icon="plus"
-        compact
-        onPress={() => setAddOpen(true)}
-        style={styles.inlineBtn}
-      >
-        Add custom provider
-      </Button>
 
       <ProviderRoleRow
         title="Offline fallback"
@@ -815,9 +646,5 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
 const styles = StyleSheet.create({
   section: { marginTop: spacing.lg },
   title: { paddingHorizontal: 0, paddingTop: spacing.sm },
-  subTitle: { paddingHorizontal: 0, paddingTop: spacing.lg },
   row: { paddingHorizontal: 0 },
-  inlineBtn: { alignSelf: "flex-start", marginTop: spacing.xs },
-  saveEntry: { alignSelf: "flex-start", marginTop: spacing.sm },
-  dialogContent: { gap: spacing.sm },
 });

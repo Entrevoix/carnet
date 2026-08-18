@@ -145,12 +145,13 @@ anything that can't be reproduced this way (voice/OCR/native share-sheet/Syncthi
   decomposition PRs pull them down, then new features push them back up, so `wc -l` the
   file rather than trusting a count written here. As of 2026-08-17 the over-800 set is
   `voice/VoiceButton.tsx` (~1534), `screens/CaptureScreen.tsx`
-  (~970), `components/LlmProviderSection.tsx` (~823). Note CaptureScreen and
+  (~970), `screens/RecentDetailScreen.tsx` (~809). Note CaptureScreen and
   RecentDetailScreen were previously brought *under* 800 by the #88/#89/#90 decomposition
-  work, grew back with new features, and were decomposed again in 2026-08 (PR #163 and
-  the RecentDetail follow-up; RecentDetailScreen is back under 800, CaptureScreen stopped
-  at ~970 because the remainder is one race-guarded submit state machine pinned by its
-  tests) — that is the expected cycle, not a regression to revert; the point is the
+  work, grew back with new features, and were decomposed again in 2026-08 (#163/#164;
+  RecentDetailScreen dipped to 783 and immediately re-crossed to ~809 when the #165
+  busy-latch bug fix added its guards — a textbook run of this cycle; CaptureScreen
+  stopped at ~970 because the remainder is one race-guarded submit state machine pinned
+  by its tests) — that is the expected cycle, not a regression to revert; the point is the
   extraction pattern, not the number. **Seven of 9 screens have `*.test.tsx` coverage**
   today (CaptureScreen, HomeScreen, RecentDetailScreen, SearchScreen, SettingsScreen,
   ShareReceiveScreen, TagBrowserScreen) — jsdom + @testing-library/react smoke tests
