@@ -486,6 +486,75 @@ describe("SettingsScreen", () => {
       expect(screen.queryByText("✓ Reachable")).toBeNull();
     });
 
+    it("a stale local-readiness probe batch does not overwrite a fresher one after the provider list reloads (#85)", async () => {
+      // The readiness-probe effect in LlmProviderSection.tsx re-runs
+      // whenever `providers` reloads (e.g. adding a custom entry), and
+      // guards its result with `if (cancelled) return;` so an IN-FLIGHT
+      // batch from a stale provider list can never clobber a fresher one
+      // that resolves first. Relais (always in buildDefaultProviders(), a
+      // loopback URL) is the local provider this drives through both
+      // batches.
+      const relaisUrl = "http://127.0.0.1:8080";
+      const resolvers: Array<(v: HealthResult) => void> = [];
+      healthCheck.mockImplementation((url: string) => {
+        if (url !== relaisUrl) return Promise.resolve("ok" as HealthResult);
+        return new Promise<HealthResult>((resolve) => {
+          resolvers.push(resolve);
+        });
+      });
+
+      renderScreen();
+
+      // Batch #1 (mount): wait for its Relais probe call to have started.
+      await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(1));
+
+      // Reload the provider list WHILE batch #1 is still pending — adding a
+      // custom entry is a real, user-triggered `providers` reload
+      // (persistIdentity -> setProviders), the same trigger the probe
+      // effect depends on.
+      fireEvent.click(await screen.findByText("Add custom provider"));
+      fireEvent.change(await screen.findByPlaceholderText("e.g. My Ollama"), {
+        target: { value: "My Server" },
+      });
+      fireEvent.change(screen.getByPlaceholderText("e.g. https://192.168.1.50:11434"), {
+        target: { value: "https://my.server" },
+      });
+      fireEvent.click(screen.getByText("Add"));
+      await waitFor(() =>
+        expect(savePersistedOnly).toHaveBeenCalledWith(
+          expect.objectContaining({ nextCustomSeq: 2 }),
+        ),
+      );
+
+      // Batch #2 (post-reload): wait for its Relais probe call to start.
+      await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(2));
+
+      // Resolve the FRESH batch #2 first — Relais is reachable.
+      await act(async () => {
+        resolvers[1]("ok");
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // THEN resolve the STALE batch #1 — Relais unreachable. Without the
+      // cancelled-flag guard, this landing AFTER the fresh result would
+      // overwrite it and the hint below would incorrectly reappear.
+      await act(async () => {
+        resolvers[0]("unreachable");
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Relais isn't the active provider (OmniRoute is, per baseSettings()),
+      // so it's only visible as a "listed" row in the picker.
+      fireEvent.click(await screen.findByText("Active provider — tap to change"));
+      await screen.findByText("Relais (local)");
+      expect(
+        screen.queryByText(/make sure it's running on this device or network/i),
+      ).toBeNull();
+    });
+
     it("adding a custom entry, then deleting it, deletes its stored key", async () => {
       // Mutation-catch target: swapping providerKeys.removeProviderAndKey
       // for llmProviders.removeProvider in LlmProviderSection.tsx must turn
@@ -628,7 +697,29 @@ describe("SettingsScreen", () => {
         ["unsafe-url", /Not a valid local address/i],
         ["ok", /Reachable/],
       ] as const)("renders the %s message", async (result, pattern) => {
-        healthCheck.mockResolvedValueOnce(result as never);
+        // Keyed by base URL rather than call order. #85's readiness hint
+        // makes LlmProviderSection auto-probe every LOCAL provider (Relais,
+        // always present in buildDefaultProviders()) via this SAME
+        // healthCheck the moment it mounts — a plain mockResolvedValueOnce
+        // here would be racing that background probe rather than reliably
+        // landing on the manual "Test connection" click below. Only the
+        // ACTIVE provider's base URL (omniroute, set by baseSettings()) is
+        // what this test's click actually probes, so key the mock on that
+        // URL instead of on call order — deterministic regardless of
+        // whether the background probe fires before or after the click.
+        //
+        // The non-active-URL fallback is "unauthorized" — a HealthResult
+        // NOT in this table — rather than "ok": an "ok" fallback would make
+        // this test pass even if the URL-keying above were broken (e.g. if
+        // the click accidentally probed Relais's URL instead of the active
+        // provider's), because "ok" happens to be this suite's overall
+        // default too. "unauthorized" has no row here, so a mis-probed URL
+        // fails loudly on every case instead of just the ones that aren't
+        // "ok".
+        const activeBaseUrl = "https://llm.grepon.cc";
+        healthCheck.mockImplementation(async (url: string) =>
+          url === activeBaseUrl ? result : "unauthorized",
+        );
 
         renderScreen();
 
