@@ -73,6 +73,31 @@ vi.mock("expo-file-system/legacy", () => {
   };
 });
 
+// ── Mock ./storage (Recents history) ─────────────────────────────────────────
+// A minimal id→filepath map, not the real AsyncStorage-backed module (which
+// needs its own native-module mock — see storage.test.ts). Only the one
+// primitive vaultMigration.ts actually calls is faked here;
+// `_updateCaptureFilepathImpl` is swappable per-test so the "remap failure
+// doesn't fail migration" case can force a rejection.
+const _history: Map<string, string> = new Map(); // filepath -> id, for lookup by filepath
+
+let _updateCaptureFilepathImpl: (
+  oldFilepath: string,
+  newFilepath: string,
+) => Promise<void> = async (oldFilepath, newFilepath) => {
+  const id = _history.get(oldFilepath);
+  if (id === undefined) return; // no matching entry — silent no-op, as storage.ts does
+  _history.delete(oldFilepath);
+  _history.set(newFilepath, id);
+};
+
+vi.mock("./storage", () => ({
+  updateCaptureFilepath: vi.fn(
+    async (oldFilepath: string, newFilepath: string) =>
+      _updateCaptureFilepathImpl(oldFilepath, newFilepath),
+  ),
+}));
+
 import { migratePreVaultNotes } from "./vaultMigration";
 
 const INTERNAL = "file:///data/carnet";
@@ -86,9 +111,21 @@ function has(uri: string): boolean {
   return _files.has(uri);
 }
 
+/** Seed a Recents entry pointing at `filepath`, keyed by a synthetic id. */
+function seedHistoryEntry(filepath: string, id: string): void {
+  _history.set(filepath, id);
+}
+
 beforeEach(() => {
   _files.clear();
+  _history.clear();
   _captureFolderPath = TARGET;
+  _updateCaptureFilepathImpl = async (oldFilepath, newFilepath) => {
+    const id = _history.get(oldFilepath);
+    if (id === undefined) return;
+    _history.delete(oldFilepath);
+    _history.set(newFilepath, id);
+  };
 });
 
 describe("migratePreVaultNotes", () => {
@@ -233,5 +270,56 @@ describe("migratePreVaultNotes", () => {
     expect(
       has(`${INTERNAL}/Ideas/note.sync-conflict-20260801-120000-ABC1234.md`),
     ).toBe(true);
+  });
+
+  // ── Recents (history) remap ──────────────────────────────────────────────
+
+  it("repoints a Recents entry at the note's new vault path", async () => {
+    seed(`${INTERNAL}/Ideas/my-idea.md`, "# My Idea\n");
+    seedHistoryEntry(`${INTERNAL}/Ideas/my-idea.md`, "recents-id-1");
+
+    const result = await migratePreVaultNotes();
+
+    expect(result.migrated).toBe(1);
+    expect(_history.get(`${TARGET}/Ideas/my-idea.md`)).toBe("recents-id-1");
+    expect(_history.has(`${INTERNAL}/Ideas/my-idea.md`)).toBe(false);
+  });
+
+  it("repoints a Recents entry at the note's COLLISION-BUMPED vault path", async () => {
+    seed(`${TARGET}/Ideas/my-idea.md`, "# Existing target note\n");
+    seed(`${INTERNAL}/Ideas/my-idea.md`, "# Migrated note\n");
+    seedHistoryEntry(`${INTERNAL}/Ideas/my-idea.md`, "recents-id-2");
+
+    const result = await migratePreVaultNotes();
+
+    expect(result.migrated).toBe(1);
+    // Must follow the ACTUAL written path, not the original name.
+    expect(_history.get(`${TARGET}/Ideas/my-idea-2.md`)).toBe("recents-id-2");
+    expect(_history.has(`${INTERNAL}/Ideas/my-idea.md`)).toBe(false);
+  });
+
+  it("is a no-op when the migrated note has no Recents entry", async () => {
+    seed(`${INTERNAL}/Ideas/my-idea.md`, "# My Idea\n");
+    // No seedHistoryEntry call — nothing in `_history` at all.
+
+    const result = await migratePreVaultNotes();
+
+    expect(result.migrated).toBe(1);
+    expect(_history.size).toBe(0);
+  });
+
+  it("does not fail the migration when the Recents remap itself rejects", async () => {
+    seed(`${INTERNAL}/Ideas/my-idea.md`, "# My Idea\n");
+    seedHistoryEntry(`${INTERNAL}/Ideas/my-idea.md`, "recents-id-3");
+    _updateCaptureFilepathImpl = async () => {
+      throw new Error("simulated AsyncStorage write failure");
+    };
+
+    const result = await migratePreVaultNotes();
+
+    // The note migration itself is unaffected — that's the important half.
+    expect(result).toEqual({ migrated: 1, failed: 0, failures: [] });
+    expect(has(`${INTERNAL}/Ideas/my-idea.md`)).toBe(false);
+    expect(has(`${TARGET}/Ideas/my-idea.md`)).toBe(true);
   });
 });

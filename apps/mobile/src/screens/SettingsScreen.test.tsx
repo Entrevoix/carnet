@@ -144,6 +144,19 @@ vi.mock("../voice/VoiceSetupCheck", () => ({
   VoiceSetupCheck: () => null,
 }));
 
+// migratePreVaultNotes (#172) has its own thorough behavioral coverage in
+// lib/vaultMigration.test.ts — mocked here so these ADDITIVE tests exercise
+// only the SettingsScreen WIRING (does Save call it, does the count render),
+// per team-lead's follow-up: zero edits to the tests above this point.
+const migratePreVaultNotes = vi.fn(async () => ({
+  migrated: 0,
+  failed: 0,
+  failures: [] as { subdir: string; name: string; error: string }[],
+}));
+vi.mock("../lib/vaultMigration", () => ({
+  migratePreVaultNotes: () => migratePreVaultNotes(),
+}));
+
 import SettingsScreen from "./SettingsScreen";
 
 function renderScreen() {
@@ -170,6 +183,7 @@ beforeEach(() => {
   stop.mockResolvedValue(undefined);
   isEnabled.mockResolvedValue(false);
   permissionIsGranted.mockResolvedValue(true);
+  migratePreVaultNotes.mockResolvedValue({ migrated: 0, failed: 0, failures: [] });
 });
 
 // RTL's automatic cleanup needs vitest globals (this repo runs without
@@ -727,5 +741,45 @@ describe("SettingsScreen", () => {
         expect(await screen.findByText(pattern)).toBeTruthy();
       });
     });
+  });
+});
+
+// Pre-vault migration wiring (#172) — additive, appended after the
+// pre-existing suite above (which stays untouched). vaultMigration.test.ts
+// covers migratePreVaultNotes' own behavior exhaustively; these two only
+// confirm SettingsScreen calls it (or doesn't) at the right moment and
+// surfaces its result.
+describe("SettingsScreen — pre-vault migration trigger", () => {
+  it("sweeps and shows the migrated count when Save leaves a real vault configured", async () => {
+    getSettings.mockResolvedValue(
+      baseSettings({ captureFolderPath: "content://real-vault-tree" }),
+    );
+    migratePreVaultNotes.mockResolvedValue({
+      migrated: 3,
+      failed: 0,
+      failures: [],
+    });
+
+    renderScreen();
+
+    fireEvent.click(await screen.findByText("Save"));
+
+    await waitFor(() => expect(migratePreVaultNotes).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText("Moved 3 earlier captures into your vault"),
+    ).toBeTruthy();
+  });
+
+  it("does not sweep when Save leaves no vault configured (internal storage)", async () => {
+    getSettings.mockResolvedValue(baseSettings({ captureFolderPath: "" }));
+
+    renderScreen();
+
+    fireEvent.click(await screen.findByText("Save"));
+
+    // "Settings saved" is the ordinary Save confirmation — waiting for it
+    // gives the migration branch, if wrongly taken, time to have fired.
+    await screen.findByText("Settings saved");
+    expect(migratePreVaultNotes).not.toHaveBeenCalled();
   });
 });

@@ -110,3 +110,24 @@ export async function updateCaptureTitleByFilepath(
   next[idx] = { ...next[idx], title };
   await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next));
 }
+
+/**
+ * Repoint a history entry's `filepath` in place, e.g. after vaultMigration.ts
+ * moves a pre-vault note to a new URI in the just-picked vault (#172) —
+ * without this, a Recents row surviving from before the move keeps pointing
+ * at the now-deleted internal-storage path and reads as broken. Same
+ * silent-no-op-when-unmatched contract as the sibling by-filepath helpers:
+ * a note with no history entry (never opened via a Recents-tracked capture)
+ * is not an error here.
+ */
+export async function updateCaptureFilepath(
+  oldFilepath: string,
+  newFilepath: string,
+): Promise<void> {
+  const existing = await getRecentCaptures();
+  const idx = existing.findIndex((e) => e.filepath === oldFilepath);
+  if (idx === -1) return;
+  const next = [...existing];
+  next[idx] = { ...next[idx], filepath: newFilepath };
+  await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+}

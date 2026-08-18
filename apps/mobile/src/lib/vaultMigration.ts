@@ -25,6 +25,12 @@
  * still copied (under a collision-bumped name), and the note body's
  * `../{subdir}/{name}` link is rewritten to match via a targeted substring
  * replace — never a frontmatter rewrite, never a full re-serialize.
+ *
+ * Recents history (AsyncStorage, keyed by filepath — storage.ts) is repointed
+ * to each note's new URI right after its migration succeeds, so a Recents row
+ * surviving from before the vault was picked doesn't read as broken. The
+ * remap is best-effort and isolated per note: it cannot fail the migration
+ * itself (the note move is the half that matters — see migratePreVaultNotes).
  */
 
 import { internalVaultRoot, resolveRoot, type Root } from "./vaultRoot";
@@ -35,6 +41,7 @@ import {
   type NoteFileRef,
 } from "./writer";
 import { listPairedBinaries } from "./pairedBinaries";
+import { updateCaptureFilepath } from "./storage";
 
 export interface MigrationFailure {
   subdir: NoteFileRef["subdir"];
@@ -104,6 +111,17 @@ async function migratePairedBinaries(
       // frontmatter or any other line.
       rewritten = rewritten.split(pb.rel).join(`../${pb.subdir}/${finalName}`);
     }
+    // Edge case (accepted, not fixed): if a SECOND note also references this
+    // exact `../{subdir}/{filename}` binary, its own migration pass runs
+    // this same lookup — but by then the first pass has already deleted the
+    // source binary (see migratePreVaultNotes' post-verify cleanup), so its
+    // `findChild` above returns null and that link is left unchanged. It
+    // then resolves to whatever pre-existing file already sat at that name
+    // in the target (the collision that triggered the rename in the first
+    // place), not to the second note's own bytes. Needs BOTH a binary shared
+    // across notes AND a target-name collision to trigger; narrow enough
+    // that a fix (tracking cross-note binary moves) isn't worth the
+    // complexity here.
     copiedSourceUris.push(sourceBinUri);
   }
 
@@ -165,6 +183,16 @@ export async function migratePreVaultNotes(): Promise<MigrationResult> {
         }
       }
       migrated++;
+
+      // Best-effort: repoint any Recents entry at the note's new path. A
+      // failure here (or no matching entry at all — most pre-vault notes were
+      // never opened via a Recents-tracked capture) must not undo or fail the
+      // migration that already succeeded above.
+      try {
+        await updateCaptureFilepath(note.uri, targetUri);
+      } catch {
+        /* Recents entry stays stale; the note itself is safely migrated */
+      }
     } catch (error) {
       failures.push({ subdir: note.subdir, name: note.name, error: errorMessage(error) });
     }

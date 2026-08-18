@@ -23,6 +23,7 @@ import {
   removeFromHistory,
   removeFromHistoryByFilepath,
   removeManyFromHistory,
+  updateCaptureFilepath,
   updateCaptureTitle,
   type CaptureEntry,
 } from "./storage";
@@ -202,5 +203,32 @@ describe("updateCaptureTitle", () => {
     vi.mocked(AsyncStorage.setItem).mockClear();
     await updateCaptureTitle("a", "entry-a");
     expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateCaptureFilepath", () => {
+  beforeEach(() => {
+    _store.clear();
+    vi.mocked(AsyncStorage.setItem).mockClear();
+  });
+
+  it("repoints the matching entry's filepath and leaves siblings untouched", async () => {
+    await recordCapture(entry("a"));
+    await recordCapture(entry("b"));
+    await updateCaptureFilepath("/vault/Ideas/a.md", "/vault/Ideas/a-2.md");
+    const xs = await getRecentCaptures();
+    const byId = Object.fromEntries(xs.map((e) => [e.id, e.filepath]));
+    expect(byId).toEqual({
+      a: "/vault/Ideas/a-2.md",
+      b: "/vault/Ideas/b.md",
+    });
+  });
+
+  it("is a no-op (skips the write) when no filepath matches", async () => {
+    await recordCapture(entry("a"));
+    vi.mocked(AsyncStorage.setItem).mockClear();
+    await updateCaptureFilepath("/vault/Ideas/ghost.md", "/vault/Ideas/new.md");
+    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    expect((await getRecentCaptures())[0].filepath).toBe("/vault/Ideas/a.md");
   });
 });
