@@ -94,15 +94,19 @@ describe("per-provider error message text (byte-identical to pre-merge omniroute
     }
   });
 
-  it("Local LLM: timeout message has NO Tailscale hint", async () => {
+  it("Local LLM: timeout message has NO Tailscale hint, and uses the long local-inference tier (#179)", async () => {
+    // LOCAL_CONFIG's baseUrl is loopback, so enrichIdea now applies the
+    // 120s local-inference tier (resolveEnrichmentTimeoutMs, ./llmHttp) —
+    // not the 20s cloud-reachability budget — per issue #179's
+    // device-verified cold CPU-fallback generation on Relais.
     vi.useFakeTimers();
     try {
       fetchMock.mockReturnValueOnce(new Promise<Response>(() => {}));
       const caught = enrichIdea("x", LOCAL_CONFIG).then(() => null, (e: unknown) => e);
-      await vi.advanceTimersByTimeAsync(21_000);
+      await vi.advanceTimersByTimeAsync(121_000);
       const err = await caught;
       expect((err as Error).message).toBe(
-        "Local LLM unreachable — timed out after 20s.",
+        "Local LLM unreachable — timed out after 120s.",
       );
     } finally {
       vi.useRealTimers();

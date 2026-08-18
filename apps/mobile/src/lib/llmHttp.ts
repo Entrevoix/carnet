@@ -10,6 +10,7 @@ import type { PromptPair } from "./prompts";
 import { parseErrorBody, sanitizeErrorMessage, withTimeout } from "./httpClient";
 import { LlmClientError, timeoutError } from "./llmErrors";
 import { assertHttpsOrLocal, assertUrlConfigured } from "./llmGuards";
+import { isLocalNetworkUrl } from "./netAllowlist";
 // Type-only — no runtime import, so this cannot form a cycle with
 // llmClient.ts (which imports executeChat/chatCompletion from here at
 // runtime). Same pattern as syncConflicts.ts's `import type { NoteFileRef }
@@ -58,6 +59,35 @@ export const FETCH_TIMEOUT_MS = 20_000;
  * headline use case (pick a better model) fail, and fail misleadingly.
  */
 export const ENHANCE_TIMEOUT_MS = 120_000;
+
+/**
+ * Pick the request timeout for an ENRICHMENT/chat call (issue #179).
+ * `FETCH_TIMEOUT_MS` is tuned for a cloud endpoint the offline queue must
+ * fail past quickly — but a LOCAL provider (loopback/LAN — Relais or a
+ * self-hosted OpenAI-compatible server) can be doing real on-device
+ * inference, which is a completely different latency shape than "is the
+ * host even reachable". Device-verified 2026-08-18 (issue #179, #85's
+ * airplane-mode acceptance run, build c7fcb19): a live, authenticated,
+ * model-resident Relais (Gemma 4 E2B, Tensor G5) fell back to CPU sampling
+ * mid-generation and was still writing ~30s in when Carnet's 20s timeout
+ * hung up on it (`SocketException: Broken pipe` in Relais's own logcat) —
+ * "Test Connection" at the same moment reported reachable, because a
+ * reachability probe and a generation call have wildly different budgets.
+ *
+ * Reuses `ENHANCE_TIMEOUT_MS` rather than a second 120s constant: the
+ * rationale is identical to Enhance's own — this ceiling exists so a
+ * legitimately slower model gets to finish instead of racing a budget sized
+ * for "is anyone home" — and a duplicate constant holding the same value
+ * would just be one more place to keep in sync for no behavioral gain.
+ *
+ * Deliberately NOT applied to `healthCheck`/`listModels` (./llmClient) —
+ * those are reachability probes, not inference calls, and must keep
+ * failing fast so the Settings screen's "Test Connection" / model browser
+ * never stalls for two minutes against a genuinely down host.
+ */
+export function resolveEnrichmentTimeoutMs(baseUrl: string): number {
+  return isLocalNetworkUrl(baseUrl) ? ENHANCE_TIMEOUT_MS : FETCH_TIMEOUT_MS;
+}
 
 /**
  * Shared network/timeout plumbing for every fetch this client makes:
