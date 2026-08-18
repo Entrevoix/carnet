@@ -392,7 +392,7 @@ export default function CaptureScreen({ route, navigation }: Props) {
     } catch (qe: unknown) {
       if (superseded()) return;
       const qmsg = qe instanceof Error ? qe.message : String(qe);
-      setError(`Couldn't reach OmniRoute, and queuing offline failed: ${qmsg}`);
+      setError(`Couldn't reach ${providerLabel}, and queuing offline failed: ${qmsg}`);
     } finally {
       // The `return`s above skip this by design: a superseded attempt must not
       // pull the user out of the draft they went back to editing.
@@ -949,7 +949,11 @@ export default function CaptureScreen({ route, navigation }: Props) {
       )}
 
       {phase === "submitting" && (
-        <CaptureSubmittingView llmBackend={llmBackend} onEditInstead={() => void editInstead()} />
+        <CaptureSubmittingView
+          llmBackend={llmBackend}
+          providerLabel={providerLabel}
+          onEditInstead={() => void editInstead()}
+        />
       )}
 
       {phase === "preview" && response && (

@@ -86,6 +86,14 @@ vi.mock("../lib/shareHelpers", () => ({
 
 vi.mock("../lib/storage", () => ({ recordCapture: vi.fn(async () => {}) }));
 
+// settings.ts pulls in expo-secure-store at module scope, which chokes under
+// vitest (__DEV__ undefined) — never load the real one. Empty llmProviders
+// keeps the providerLabel effect a no-op (falls back to
+// UNKNOWN_PROVIDER_LABEL), same as CaptureScreen.test.tsx's pattern.
+vi.mock("../lib/settings", () => ({
+  getSettings: vi.fn(async () => ({ activeProviderId: "omniroute" })),
+}));
+
 // Pulls in the native speech stack — irrelevant to this screen's save wiring.
 vi.mock("../voice/VoiceButton", () => ({ VoiceButton: () => null }));
 
