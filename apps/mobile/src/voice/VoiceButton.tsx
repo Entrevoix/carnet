@@ -17,14 +17,11 @@ import {
   type ExpoSpeechRecognitionResultEvent,
 } from 'expo-speech-recognition';
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { Animated, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Animated, Linking, Pressable, StyleSheet, View } from 'react-native';
 import { Icon } from 'react-native-paper';
 import { MIN_TAP_TARGET, useCarnetTheme } from '../lib/theme';
 import {
   type RecognizerOption,
-  SYSTEM_DEFAULT_RECOGNIZER,
-  DEFAULT_RECOGNIZER_PKGS,
-  orderRecognizerCandidates,
   isPinnedRecognizer,
   resolveEffectivePkg,
   pinnedFailoverChain,
@@ -45,226 +42,31 @@ import {
   resetSegments,
   type TranscriptAccumulator,
 } from './dictationSession';
+import {
+  MAX_RECORDING_MS,
+  KNOWN_BAD_PKGS,
+  SODA_DICTATION_MODEL,
+  KNOWN_RECOGNIZERS,
+  NO_SERVICE_MESSAGE,
+  PREFERRED_LANG,
+  STT_ENGINE_KEY,
+  STT_RECOGNIZER_PKG_KEY,
+  STT_RECOGNIZER_LABEL_KEY,
+  labelForPackage,
+  type ErrAction,
+  type MicRevokedTarget,
+} from './recognizerCatalog';
+import { collectDiagnostics, detectAvailableRecognizers, pickBestLocale } from './sttDeviceProbe';
+import { VoiceErrorSheet } from './VoiceErrorSheet';
+import { VoiceRecognizerPicker } from './VoiceRecognizerPicker';
 
-// Tap-to-toggle max recording — Soda starts to misbehave past a few minutes; cap to 3.
-const MAX_RECORDING_MS = 3 * 60 * 1000;
-
-// Recognizer packages to actively reject if seen in storage. Module-level so
-// it doesn't re-allocate on every render. Empty by default — com.google.android.tts
-// is intentionally NOT here (see notes below).
-const KNOWN_BAD_PKGS: readonly string[] = [];
-// Android 16 fix: Soda's default LANGUAGE_MODEL flipped to AMBIENT_ONESHOT
-// after the Sept 2025 security patch. Without web_search, dictation returns
-// empty transcripts. (No standalone writeup exists for this — the full
-// rationale lives in the startRecognizerRef comment below and this one.)
-const SODA_DICTATION_MODEL = 'web_search';
-export const STT_ENGINE_KEY = 'stt_engine';
-export const STT_RECOGNIZER_PKG_KEY = 'stt_recognizer_pkg';
-export const STT_RECOGNIZER_LABEL_KEY = 'stt_recognizer_label';
-
-const KNOWN_RECOGNIZERS: RecognizerOption[] = [
-  // Android System Intelligence — the actual on-device Google STT service. Prefer first.
-  { pkg: 'com.google.android.as', label: 'Google (On-Device)' },
-  // "Speech Services by Google" — the Play Store package that exposes Google STT
-  // on most non-Pixel Androids (installed by anyone using Google TTS).
-  { pkg: 'com.google.android.tts', label: 'Speech Services by Google' },
-  { pkg: 'com.google.android.googlequicksearchbox', label: 'Google' },
-  { pkg: 'com.google.android.voicesearch', label: 'Google Voice Search' },
-  { pkg: 'com.google.android.apps.googleassistant', label: 'Google Assistant' },
-  { pkg: 'com.samsung.android.bixby.agent', label: 'Samsung Bixby' },
-  { pkg: 'com.samsung.android.speech', label: 'Samsung Voice' },
-  { pkg: 'com.htc.sense.hsp', label: 'HTC Voice' },
-  { pkg: 'com.nuance.android.vsuite.vsuiteapp', label: 'Nuance' },
-  { pkg: 'com.iflytek.speechsuite', label: 'iFlytek' },
-];
-
-// FAILOVER_CODES moved to ./sttErrorMessage.ts (isFailoverEligibleCode) so
-// it's unit-testable without pulling in this file's RN/expo native imports.
-// 7 (ERROR_NO_MATCH_OR_UNAVAILABLE) is deliberately NOT in that set — it's
-// handled as a silent same-recognizer restart below, not a failover trigger.
-
-const PREFERRED_LANG = 'en-US';
-
-// Single canonical copy for every "no working speech service" terminal
-// state (detection found nothing, failover chain exhausted post-detection,
-// or a null effectivePkg with detection already run). Previously three
-// near-duplicate strings existed and drifted from each other during QA
-// (2026-07-11) — unify so future edits can't reintroduce the split. All
-// three sites present the same 'no-service' action buttons regardless of
-// wording, so one message covers every trigger path.
-const NO_SERVICE_MESSAGE =
-  'No working speech service found on this device.\nInstall a speech service below, or copy diagnostics for details.';
-
-// Returns the best locale the given recognizer can serve, preferring an
-// already-installed match over a claimed-but-not-downloaded one. Falls back
-// to the preferred tag when the probe throws (old Android or missing perm).
-async function pickBestLocale(pkg: string | null, preferred = PREFERRED_LANG): Promise<string> {
-  try {
-    const opts = pkg ? { androidRecognitionServicePackage: pkg } : {};
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res = (await ExpoSpeechRecognitionModule.getSupportedLocales(opts)) as any;
-    const locales: string[] = Array.isArray(res?.locales) ? res.locales : [];
-    const installed: string[] = Array.isArray(res?.installedLocales) ? res.installedLocales : [];
-    const lower = preferred.toLowerCase();
-    const exact = (list: string[]) => list.find((l) => l.toLowerCase() === lower);
-    const anyEn = (list: string[]) => list.find((l) => l.toLowerCase().startsWith('en-'));
-    return exact(installed) ?? exact(locales) ?? anyEn(installed) ?? anyEn(locales) ?? preferred;
-  } catch {
-    return preferred;
-  }
-}
+export { STT_ENGINE_KEY, STT_RECOGNIZER_PKG_KEY, STT_RECOGNIZER_LABEL_KEY };
 
 // sttErrorMessage moved to ./sttErrorMessage.ts (describeSttError) so the
 // numeric-code / string-enum fallback logic is unit-testable without
 // pulling in this file's RN/expo native imports. Kept as a thin local alias
 // so the two call sites below don't need renaming.
 const sttErrorMessage = describeSttError;
-
-function labelForPackage(pkg: string): string {
-  const known = KNOWN_RECOGNIZERS.find((r) => r.pkg === pkg);
-  if (known) return known.label;
-  // Fallback label: derive from last path segment, title-cased
-  const seg = pkg.split('.').pop() ?? pkg;
-  return seg.charAt(0).toUpperCase() + seg.slice(1);
-}
-
-// Gather everything we know about the device's STT state. Returned as plain
-// text so the user can paste it into a bug report.
-async function collectDiagnostics(
-  lastError: string | null,
-  eventBuffer: string[] = [],
-): Promise<string> {
-  const lines: string[] = [];
-  const ts = new Date().toISOString();
-  lines.push(`carnet voice diagnostics @ ${ts}`);
-  lines.push('');
-  // getSpeechRecognitionServices
-  try {
-    const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices();
-    lines.push(`getSpeechRecognitionServices() → [${(services ?? []).join(', ') || '(empty)'}]`);
-  } catch (e: unknown) {
-    lines.push(`getSpeechRecognitionServices() threw: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  // getDefaultRecognitionService
-  try {
-    const def = ExpoSpeechRecognitionModule.getDefaultRecognitionService();
-    lines.push(`getDefaultRecognitionService() → ${def?.packageName || '(empty)'}`);
-  } catch (e: unknown) {
-    lines.push(`getDefaultRecognitionService() threw: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  // Per-package probes
-  lines.push('');
-  lines.push('Per-package getSupportedLocales probe:');
-  for (const r of KNOWN_RECOGNIZERS) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const res = (await ExpoSpeechRecognitionModule.getSupportedLocales({
-        androidRecognitionServicePackage: r.pkg,
-      })) as any;
-      const locales: string[] = Array.isArray(res?.locales) ? res.locales : [];
-      const installed: string[] = Array.isArray(res?.installedLocales) ? res.installedLocales : [];
-      lines.push(`  ${r.pkg}: ${locales.length} locales, ${installed.length} installed`);
-    } catch (e: unknown) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const code = (e as any)?.code ?? (e as any)?.nativeErrorCode;
-      const msg = e instanceof Error ? e.message : String(e);
-      lines.push(`  ${r.pkg}: ERROR code=${code ?? '?'} msg=${msg.slice(0, 80)}`);
-    }
-  }
-  // Saved state
-  lines.push('');
-  const [savedPkg, savedLabel, savedEngine] = await Promise.all([
-    AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY),
-    AsyncStorage.getItem(STT_RECOGNIZER_LABEL_KEY),
-    AsyncStorage.getItem(STT_ENGINE_KEY),
-  ]);
-  lines.push(`Saved engine: ${savedEngine ?? '(unset, defaults to on-device)'}`);
-  lines.push(`Saved pkg: ${savedPkg ?? '(null)'}`);
-  lines.push(`Saved label: ${savedLabel ?? '(null)'}`);
-  lines.push(`Last error: ${lastError ?? '(none)'}`);
-  lines.push('');
-  lines.push(`Recent events (${eventBuffer.length}):`);
-  if (eventBuffer.length === 0) {
-    lines.push('  (none captured)');
-  } else {
-    for (const line of eventBuffer) lines.push('  ' + line);
-  }
-  return lines.join('\n');
-}
-
-async function detectAvailableRecognizers(): Promise<RecognizerOption[]> {
-  // Primary: ask Android directly which recognizer services are installed.
-  // This bypasses Android 11+ <queries> visibility issues and Android 13+
-  // ERROR_LANGUAGE_UNAVAILABLE false negatives that the per-package probe hits.
-  try {
-    const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices();
-    if (services && services.length > 0) {
-      let defaultPkg = '';
-      try {
-        defaultPkg = ExpoSpeechRecognitionModule.getDefaultRecognitionService()?.packageName ?? '';
-      } catch {
-        // non-fatal
-      }
-      // Probe installed language models so a pinned engine with no on-device
-      // speech pack (e.g. a com.google.android.as that only returns code 12)
-      // ranks below a model-having one. Unknown/timeout → treat as has-model so
-      // a slow probe never wrongly demotes a working recognizer.
-      const candidates = Array.from(new Set([...DEFAULT_RECOGNIZER_PKGS, ...services]));
-      const modelByPkg = new Map<string, boolean>();
-      await Promise.all(
-        candidates.map(async (pkg) => {
-          try {
-            const res = (await Promise.race([
-              ExpoSpeechRecognitionModule.getSupportedLocales({ androidRecognitionServicePackage: pkg }),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
-            ])) as { installedLocales?: string[] } | undefined;
-            const installed = Array.isArray(res?.installedLocales) ? res.installedLocales : [];
-            modelByPkg.set(pkg, installed.length > 0);
-          } catch {
-            modelByPkg.set(pkg, true); // unknown → don't demote
-          }
-        }),
-      );
-      // Always include our pinned Google recognizers (ranked first), even when
-      // Android doesn't enumerate them — otherwise a device whose only
-      // *enumerated* RecognitionService is a third-party app (e.g. an installed
-      // assistant that can't actually serve STT) has no Google fallback, so that
-      // app's recognizer gets picked and STT dies with code 5/9.
-      return orderRecognizerCandidates(
-        services,
-        defaultPkg,
-        labelForPackage,
-        (pkg) => modelByPkg.get(pkg) ?? true,
-      );
-    }
-  } catch {
-    // fall through to legacy probe
-  }
-
-  // Fallback: legacy per-package probe for when getSpeechRecognitionServices
-  // is unavailable or returns empty.
-  const confirmed: RecognizerOption[] = [];
-  const tentative: RecognizerOption[] = [];
-  for (const r of KNOWN_RECOGNIZERS) {
-    try {
-      const result = await ExpoSpeechRecognitionModule.getSupportedLocales({
-        androidRecognitionServicePackage: r.pkg,
-      });
-      if (result?.locales && result.locales.length > 0) {
-        confirmed.push(r);
-      }
-    } catch (e: unknown) {
-      const code = (e as { code?: number; nativeErrorCode?: number })?.code
-        ?? (e as { code?: number; nativeErrorCode?: number })?.nativeErrorCode;
-      const msg = e instanceof Error ? e.message : String(e);
-      if (code === 14 || msg.includes('14')) {
-        tentative.push(r);
-      }
-    }
-  }
-  const found = confirmed.length > 0 ? confirmed : tentative;
-  return [...found, SYSTEM_DEFAULT_RECOGNIZER];
-}
 
 interface VoiceButtonProps {
   onTranscript: (text: string, isFinal: boolean) => void;
@@ -277,8 +79,6 @@ export interface VoiceButtonHandle {
    * a picker / mutates state mid-dictation so the spoken words are saved. */
   stopAndFlush: () => void;
 }
-
-type ErrAction = 'none' | 'no-service' | 'no-service-mic-revoked' | 'permission' | 'lang-unavailable' | 'diag';
 
 export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   function VoiceButton({ onTranscript, disabled }, ref) {
@@ -334,7 +134,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   const code9PkgsRef = useRef<Set<string>>(new Set());
   // Target package for the mic-revoked sheet's "Open App info" deep link, plus
   // its label for the button copy. Set when that sheet variant is shown.
-  const [micRevokedTarget, setMicRevokedTarget] = useState<{ pkg: string; label: string } | null>(null);
+  const [micRevokedTarget, setMicRevokedTarget] = useState<MicRevokedTarget | null>(null);
   // Consecutive silent session ends (code-7 no-speech end, or an `end` with no
   // new final text). Reset to 0 by any final transcript; drives silence auto-stop.
   const consecutiveSilentEndsRef = useRef(0);
@@ -486,7 +286,7 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   const handleDownloadModel = useCallback(async () => {
     setDownloadingModel(true);
     try {
-      const result = await triggerVoiceModelDownload('en-US');
+      const result = await triggerVoiceModelDownload(PREFERRED_LANG);
       if (result === 'installed') {
         dismissErr();
         await startRecognizerRef.current(await AsyncStorage.getItem(STT_RECOGNIZER_PKG_KEY));
@@ -1300,156 +1100,30 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   return (
     <View>
       {/* Recognizer picker sheet */}
-      <Modal
+      <VoiceRecognizerPicker
+        theme={theme}
         visible={pickerVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setPickerVisible(false)}
-      >
-        <Pressable style={[styles.overlay, { backgroundColor: 'rgba(0,0,0,0.7)' }]} onPress={() => setPickerVisible(false)}>
-          <View style={[styles.sheet, { backgroundColor: theme.colors.surface }]}>
-            <Text style={[styles.sheetTitle, { color: theme.colors.onSurface }]}>Choose voice recognizer</Text>
-            <Text style={[styles.sheetSub, { color: theme.colors.onSurfaceVariant }]}>Multiple speech services found on this device</Text>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {pickerOptions.map(opt => (
-                <Pressable key={opt.pkg} style={[styles.sheetOption, { marginBottom: 12, backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={() => handlePickRecognizer(opt)}>
-                  <Text style={[styles.sheetOptionLabel, { color: theme.colors.onSurface }]}>{opt.label}</Text>
-                  <Text style={[styles.sheetOptionPkg, { color: theme.colors.onSurfaceVariant }]}>{opt.pkg}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          </View>
-        </Pressable>
-      </Modal>
+        options={pickerOptions}
+        onDismiss={() => setPickerVisible(false)}
+        onPick={handlePickRecognizer}
+      />
 
       {/* Error / status popup sheet */}
-      <Modal
-        visible={errMsg.length > 0}
-        transparent
-        animationType="slide"
-        onRequestClose={dismissErr}
-      >
-        <Pressable
-          style={[styles.overlay, { backgroundColor: 'rgba(0,0,0,0.7)' }]}
-          onPress={errPersist ? undefined : dismissErr}
-        >
-          <Pressable style={[styles.sheet, { backgroundColor: theme.colors.surface }]} onPress={() => {}}>
-            <Text style={[styles.errSheetTitle, { color: theme.colors.onSurface }]}>
-              {errPersist ? '⚠️ Voice Input' : 'ℹ️ Voice Input'}
-            </Text>
-            <ScrollView style={styles.errSheetScroll} showsVerticalScrollIndicator={false}>
-            {errAction === 'diag' ? (
-              <ScrollView style={[styles.diagScroll, { backgroundColor: theme.colors.background }]}>
-                <Text style={[styles.diagText, { color: theme.colors.onSurfaceVariant }]}>{errMsg}</Text>
-              </ScrollView>
-            ) : (
-              <Text style={[styles.errSheetMsg, { color: theme.colors.onSurface }]}>{errMsg}</Text>
-            )}
-            {errAction === 'permission' && (
-              <View style={styles.errActions}>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={openAppSettings}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Open App Settings</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Grant Microphone permission manually</Text>
-                </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={dismissErr}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Try Again</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>After enabling permission, tap mic</Text>
-                </Pressable>
-              </View>
-            )}
-            {errAction === 'lang-unavailable' && (
-              <View style={styles.errActions}>
-                <Pressable
-                  style={[styles.errActionBtn, { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary, opacity: downloadingModel ? 0.6 : 1 }]}
-                  onPress={handleDownloadModel}
-                  disabled={downloadingModel}
-                >
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onPrimary }]}>{downloadingModel ? 'Downloading…' : 'Download voice model'}</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onPrimary }]}>Pull the English model on-device — no Play Store trip</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]}
-                  onPress={() => openPlayStore('com.google.android.tts')}
-                >
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Open Speech Services by Google</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Download the English voice model</Text>
-                </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={retryDetection}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Retry Detection</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>After downloading, rescan devices</Text>
-                </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={copyDiagnostics}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Copy diagnostics</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Paste the scan + probe output into a bug report</Text>
-                </Pressable>
-              </View>
-            )}
-            {errAction === 'no-service' && (
-              <View style={styles.errActions}>
-                <Pressable
-                  style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]}
-                  onPress={() => openPlayStore('com.google.android.tts')}
-                >
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Install Speech Services by Google</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>com.google.android.tts — provides on-device STT</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]}
-                  onPress={() => openPlayStore('com.samsung.android.bixby.agent')}
-                >
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Install Samsung Bixby</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>com.samsung.android.bixby.agent</Text>
-                </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={retryDetection}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Retry Detection</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Rescan device for speech services</Text>
-                </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={copyDiagnostics}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Copy diagnostics</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Paste the scan + probe output into a bug report</Text>
-                </Pressable>
-              </View>
-            )}
-            {errAction === 'no-service-mic-revoked' && micRevokedTarget && (
-              <View style={styles.errActions}>
-                <Pressable
-                  style={[styles.errActionBtn, { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary }]}
-                  onPress={() => openAppDetails(micRevokedTarget.pkg)}
-                >
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onPrimary }]}>{`Open ${micRevokedTarget.label} App info`}</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onPrimary }]}>Enable its Microphone permission, then try again</Text>
-                </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={retryDetection}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Retry Detection</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>After enabling Microphone, rescan devices</Text>
-                </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={copyDiagnostics}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Copy diagnostics</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Paste the scan + probe output into a bug report</Text>
-                </Pressable>
-              </View>
-            )}
-            {errAction === 'diag' && (
-              <View style={styles.errActions}>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={copyDiagnostics}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Copy again</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Writes the dump above to the clipboard</Text>
-                </Pressable>
-                <Pressable style={[styles.errActionBtn, { backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={retryDetection}>
-                  <Text style={[styles.errActionBtnText, { color: theme.colors.onSurface }]}>Retry Detection</Text>
-                  <Text style={[styles.errActionBtnSub, { color: theme.colors.onSurfaceVariant }]}>Rescan device for speech services</Text>
-                </Pressable>
-              </View>
-            )}
-            </ScrollView>
-            <Pressable style={[styles.errSheetBtn, { backgroundColor: theme.colors.primary }]} onPress={dismissErr}>
-              <Text style={[styles.errSheetBtnText, { color: theme.colors.onPrimary }]}>
-                {errAction === 'none' ? 'Got it' : 'Dismiss'}
-              </Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <VoiceErrorSheet
+        theme={theme}
+        errMsg={errMsg}
+        errPersist={errPersist}
+        errAction={errAction}
+        micRevokedTarget={micRevokedTarget}
+        downloadingModel={downloadingModel}
+        onDismiss={dismissErr}
+        onOpenAppSettings={openAppSettings}
+        onDownloadModel={handleDownloadModel}
+        onOpenPlayStore={openPlayStore}
+        onRetryDetection={retryDetection}
+        onCopyDiagnostics={copyDiagnostics}
+        onOpenAppDetails={openAppDetails}
+      />
 
       <View style={styles.orbContainer}>
         <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
@@ -1498,37 +1172,4 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  errSheetTitle: { fontSize: 17, fontWeight: '700', marginBottom: 4 },
-  errSheetMsg: { fontSize: 15, lineHeight: 22 },
-  diagScroll: { maxHeight: 300, borderRadius: 8, padding: 10 },
-  diagText: { fontSize: 12, fontFamily: 'monospace', lineHeight: 17 },
-  errSheetBtn: {
-    marginTop: 16, borderRadius: 10,
-    paddingVertical: 12, alignItems: 'center',
-  },
-  errSheetBtnText: { fontSize: 16, fontWeight: '700' },
-  errActions: { gap: 10, marginTop: 12 },
-  errActionBtn: {
-    borderRadius: 10, padding: 14,
-    borderWidth: 1,
-  },
-  errActionBtnText: { fontSize: 15, fontWeight: '600' },
-  errActionBtnSub: { fontSize: 12, marginTop: 3 },
-  overlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    borderTopLeftRadius: 16, borderTopRightRadius: 16,
-    padding: 24, paddingBottom: 40, gap: 12, maxHeight: '85%',
-  },
-  errSheetScroll: {},
-  sheetTitle: { fontSize: 17, fontWeight: '700' },
-  sheetSub: { fontSize: 13, marginBottom: 4 },
-  sheetOption: {
-    borderRadius: 10, padding: 16,
-    borderWidth: 1,
-  },
-  sheetOptionLabel: { fontSize: 15, fontWeight: '600' },
-  sheetOptionPkg: { fontSize: 11, fontFamily: 'monospace', marginTop: 2 },
 });

@@ -144,15 +144,19 @@ anything that can't be reproduced this way (voice/OCR/native share-sheet/Syncthi
 - Several files exceed this project's 800-line norm. **These numbers go stale fast** —
   decomposition PRs pull them down, then new features push them back up, so `wc -l` the
   file rather than trusting a count written here. As of 2026-08-17 the over-800 set is
-  `voice/VoiceButton.tsx` (~1534), `screens/CaptureScreen.tsx`
+  `voice/VoiceButton.tsx` (~1172), `screens/CaptureScreen.tsx`
   (~970), `screens/RecentDetailScreen.tsx` (~809). Note CaptureScreen and
   RecentDetailScreen were previously brought *under* 800 by the #88/#89/#90 decomposition
   work, grew back with new features, and were decomposed again in 2026-08 (#163/#164;
   RecentDetailScreen dipped to 783 and immediately re-crossed to ~809 when the #165
   busy-latch bug fix added its guards — a textbook run of this cycle; CaptureScreen
   stopped at ~970 because the remainder is one race-guarded submit state machine pinned
-  by its tests) — that is the expected cycle, not a regression to revert; the point is the
-  extraction pattern, not the number. **Seven of 9 screens have `*.test.tsx` coverage**
+  by its tests; VoiceButton was decomposed from ~1534 in the same wave and stopped at
+  ~1172 because the remainder is the mutually-recursive recognizer/failover state machine
+  (startRecognizerRef ↔ triggerDetectionRef) whose decidable logic already lives in the
+  eight `voice/*.ts` modules) — that is the expected cycle, not a regression to revert;
+  the point is the extraction pattern, not the number. **Seven of 9 screens have
+  `*.test.tsx` coverage**
   today (CaptureScreen, HomeScreen, RecentDetailScreen, SearchScreen, SettingsScreen,
   ShareReceiveScreen, TagBrowserScreen) — jsdom + @testing-library/react smoke tests
   rendering the real component tree under `PaperProvider` (pattern: see
