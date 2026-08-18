@@ -134,6 +134,27 @@ vi.mock("../lib/finishEnrichment", () => ({
   })),
 }));
 
+// Fully mocked for the same reason as finishEnrichment above: only the
+// exported entry points RecentDetailScreen calls need a double here; the real
+// parse/splice logic is covered in noteReprocess.test.ts / enhanceProse.test.ts.
+vi.mock("../lib/noteReprocess", () => ({
+  reEnrichNote: vi.fn(async () => ({
+    kind: "updated",
+    nextBody: "---\n---\n# Image Re-enriched\n\nImage re-enriched body.\n",
+  })),
+  transcribeNote: vi.fn(async () => ({
+    kind: "updated",
+    nextBody: "---\n---\n# Transcribed\n\nTranscribed body.\n",
+  })),
+}));
+vi.mock("../lib/enhanceProse", () => ({
+  enhanceNoteProse: vi.fn(async () => ({
+    kind: "updated",
+    nextBody: "---\n---\n# Enhanced\n\nEnhanced body.\n",
+    providerLabel: "TestModel",
+  })),
+}));
+
 // react-native-markdown-display ships raw JSX in .js files, which vite
 // can't parse once the package is inlined. Markdown → native rendering
 // isn't what this smoke test covers; a passthrough keeps the body text
@@ -162,9 +183,11 @@ vi.mock("expo-sharing", () => ({
 
 import RecentDetailScreen from "./RecentDetailScreen";
 import { readNote, updateNote } from "../lib/writer";
-import { reEnrichNoteInPlace } from "../lib/finishEnrichment";
+import { finishPendingEnrichment, reEnrichNoteInPlace } from "../lib/finishEnrichment";
 import { removeFromHistory, updateCaptureTitleByFilepath } from "../lib/storage";
 import { attachPhotoToNote } from "../lib/attachPhotoToNote";
+import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
+import { enhanceNoteProse } from "../lib/enhanceProse";
 
 type ScreenProps = Parameters<typeof RecentDetailScreen>[0];
 
@@ -563,5 +586,128 @@ describe("RecentDetailScreen — re-enrich family", () => {
 
     expect(await screen.findByText(/model exploded/)).toBeTruthy();
     expect(screen.getByText(/Hello body text\./)).toBeTruthy();
+  });
+});
+
+// ── Busy-latch release on rejection (regression) ────────────────────────────
+//
+// handleReEnrich/handleFinishEnrichment/handleGeneralReEnrich/handleTranscribe/
+// handleEnhance each set a ref + busy-state flag, await their lib call, and
+// clear both — same shape handleDelete/handleRemoveFromHistory had before
+// #114. Today the callees swallow every failure into an outcome union, so
+// this can't latch in practice, but the try/finally exists for the same
+// reason handleDelete's does: a future uncaught rejection must release the
+// guard instead of pinning `actionsBusy` (disabling the whole actions sheet)
+// with no feedback. Mocking the lib call to REJECT bypasses the callee's own
+// internal catch to exercise that finally directly. The handler itself still
+// has no catch (only finally, per the wrapping this fix adds), so the
+// rejection surfaces as an unhandled promise rejection — expected and
+// swallowed via the process listener below, not a bug in the fix.
+/** Re-click the already-rendered ⋮ header. Unlike openActionsSheet, this does
+ * NOT render a fresh header tree — calling openActionsSheet a second time in
+ * the same test piles up duplicate "More actions" buttons (one per render),
+ * which breaks getByLabelText. */
+function reopenActionsSheet(): void {
+  const buttons = screen.getAllByLabelText("More actions");
+  fireEvent.click(buttons[buttons.length - 1]);
+}
+
+describe("RecentDetailScreen — busy-latch release on rejection (regression)", () => {
+  let unhandled: unknown[];
+  let onUnhandledRejection: (err: unknown) => void;
+
+  beforeEach(() => {
+    vi.mocked(readNote).mockResolvedValue(NOTE_MD);
+    unhandled = [];
+    onUnhandledRejection = (err: unknown) => {
+      unhandled.push(err);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+  });
+
+  afterEach(() => {
+    process.off("unhandledRejection", onUnhandledRejection);
+  });
+
+  const SHARED_IMAGE_MD =
+    "---\ncreated: 2026-07-08T11:55:46.000Z\nkind: shared-image\ntags: [qa-test]\n---\n# Photo Note\n\n![](../Photos/photo.jpg)\n";
+  const SHARED_AUDIO_MD =
+    "---\ncreated: 2026-07-08T11:55:46.000Z\nkind: shared-audio\ntags: [qa-test]\n---\n# Audio Note\n\n[audio](../Audio/note.m4a)\n";
+
+  it("a failing Re-enrich (image) does not permanently latch the actions sheet", async () => {
+    vi.mocked(readNote).mockResolvedValue(SHARED_IMAGE_MD);
+    vi.mocked(reEnrichNote).mockRejectedValueOnce(new Error("boom"));
+    const { navigation } = renderScreen();
+    await screen.findByText(/Photo Note/);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Re-enrich"));
+    await waitFor(() => expect(reEnrichNote).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(unhandled).toHaveLength(1));
+
+    // The guard must have been released: a retry actually re-invokes it.
+    // Without the finally-reset this second click is swallowed by the latch.
+    reopenActionsSheet();
+    fireEvent.click(await screen.findByText("Re-enrich"));
+    await waitFor(() => expect(reEnrichNote).toHaveBeenCalledTimes(2));
+  });
+
+  it("a failing Finish enrichment does not permanently latch the actions sheet", async () => {
+    vi.mocked(finishPendingEnrichment).mockRejectedValueOnce(new Error("boom"));
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Finish enrichment"));
+    await waitFor(() => expect(finishPendingEnrichment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(unhandled).toHaveLength(1));
+
+    reopenActionsSheet();
+    fireEvent.click(await screen.findByText("Finish enrichment"));
+    await waitFor(() => expect(finishPendingEnrichment).toHaveBeenCalledTimes(2));
+  });
+
+  it("a failing general Re-enrich does not permanently latch the actions sheet", async () => {
+    vi.mocked(readNote).mockResolvedValue(
+      "---\ncreated: 2026-07-08T11:55:46.000Z\nstatus: seedling\ntags: [qa-test]\n---\n# Draft Survival Test\n\nHello body text.\n",
+    );
+    vi.mocked(reEnrichNoteInPlace).mockRejectedValueOnce(new Error("boom"));
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Re-enrich"));
+    await waitFor(() => expect(reEnrichNoteInPlace).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(unhandled).toHaveLength(1));
+
+    reopenActionsSheet();
+    fireEvent.click(await screen.findByText("Re-enrich"));
+    await waitFor(() => expect(reEnrichNoteInPlace).toHaveBeenCalledTimes(2));
+  });
+
+  it("a failing Transcribe does not permanently latch the actions sheet", async () => {
+    vi.mocked(readNote).mockResolvedValue(SHARED_AUDIO_MD);
+    vi.mocked(transcribeNote).mockRejectedValueOnce(new Error("boom"));
+    const { navigation } = renderScreen();
+    await screen.findByText(/Audio Note/);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Transcribe"));
+    await waitFor(() => expect(transcribeNote).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(unhandled).toHaveLength(1));
+
+    reopenActionsSheet();
+    fireEvent.click(await screen.findByText("Transcribe"));
+    await waitFor(() => expect(transcribeNote).toHaveBeenCalledTimes(2));
+  });
+
+  it("a failing Enhance does not permanently latch the actions sheet", async () => {
+    vi.mocked(enhanceNoteProse).mockRejectedValueOnce(new Error("boom"));
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Enhance"));
+    await waitFor(() => expect(enhanceNoteProse).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(unhandled).toHaveLength(1));
+
+    reopenActionsSheet();
+    fireEvent.click(await screen.findByText("Enhance"));
+    await waitFor(() => expect(enhanceNoteProse).toHaveBeenCalledTimes(2));
   });
 });

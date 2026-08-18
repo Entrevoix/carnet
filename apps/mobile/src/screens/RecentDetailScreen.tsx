@@ -283,11 +283,17 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     reEnrichingRef.current = true;
     setReEnrichError(null);
     setReEnriching(true);
-    const outcome = await reEnrichNote({ body, filepath: entry.filepath });
-    if (outcome.kind === "updated") setBody(outcome.nextBody);
-    else setReEnrichError(outcome.reason);
-    reEnrichingRef.current = false;
-    setReEnriching(false);
+    try {
+      const outcome = await reEnrichNote({ body, filepath: entry.filepath });
+      if (outcome.kind === "updated") setBody(outcome.nextBody);
+      else setReEnrichError(outcome.reason);
+    } finally {
+      // Explicit release (#114 pattern, see handleDelete): reEnrichNote catches
+      // internally today, so this can't currently latch — but a future uncaught
+      // await must not pin actionsBusy with no feedback.
+      reEnrichingRef.current = false;
+      setReEnriching(false);
+    }
   }, [body, entry.filepath]);
 
   // Reuses the re-enrich in-flight ref and error slot: both are "re-run the
@@ -299,11 +305,15 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     reEnrichingRef.current = true;
     setReEnrichError(null);
     setReEnriching(true);
-    const outcome = await finishPendingEnrichment({ body, filepath: entry.filepath });
-    if (outcome.kind === "updated") setBody(outcome.markdown);
-    else setReEnrichError(outcome.reason);
-    reEnrichingRef.current = false;
-    setReEnriching(false);
+    try {
+      const outcome = await finishPendingEnrichment({ body, filepath: entry.filepath });
+      if (outcome.kind === "updated") setBody(outcome.markdown);
+      else setReEnrichError(outcome.reason);
+    } finally {
+      // Explicit release (#114 pattern, see handleDelete) — see handleReEnrich.
+      reEnrichingRef.current = false;
+      setReEnriching(false);
+    }
   }, [body, entry.filepath]);
 
   // The third member of the re-enrich family, and the only one not gated on the
@@ -315,26 +325,30 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     reEnrichingRef.current = true;
     setReEnrichError(null);
     setReEnriching(true);
-    const outcome = await reEnrichNoteInPlace({
-      body,
-      filepath: entry.filepath,
-      mode: entry.mode,
-    });
-    if (outcome.kind === "updated") {
-      setBody(outcome.markdown);
-      // Enrichment rewrites the title and tags, and every OTHER surface (Home
-      // cards, tag browser, search) reads those from the cached note index and
-      // the recents history — not from this screen's state. Without these two
-      // the note stays stale everywhere but here until the next full vault scan.
-      // Best-effort: a failure must not undo a write that already landed.
-      void upsertNoteInIndex(entry.filepath, outcome.markdown).catch(() => undefined);
-      void updateCaptureTitleByFilepath(
-        entry.filepath,
-        deriveTitle(outcome.markdown) || entry.title,
-      ).catch(() => undefined);
-    } else setReEnrichError(outcome.reason);
-    reEnrichingRef.current = false;
-    setReEnriching(false);
+    try {
+      const outcome = await reEnrichNoteInPlace({
+        body,
+        filepath: entry.filepath,
+        mode: entry.mode,
+      });
+      if (outcome.kind === "updated") {
+        setBody(outcome.markdown);
+        // Enrichment rewrites the title and tags, and every OTHER surface (Home
+        // cards, tag browser, search) reads those from the cached note index and
+        // the recents history — not from this screen's state. Without these two
+        // the note stays stale everywhere but here until the next full vault scan.
+        // Best-effort: a failure must not undo a write that already landed.
+        void upsertNoteInIndex(entry.filepath, outcome.markdown).catch(() => undefined);
+        void updateCaptureTitleByFilepath(
+          entry.filepath,
+          deriveTitle(outcome.markdown) || entry.title,
+        ).catch(() => undefined);
+      } else setReEnrichError(outcome.reason);
+    } finally {
+      // Explicit release (#114 pattern, see handleDelete) — see handleReEnrich.
+      reEnrichingRef.current = false;
+      setReEnriching(false);
+    }
   }, [body, entry.filepath, entry.mode, entry.title]);
 
   const handleTranscribe = useCallback(async () => {
@@ -342,11 +356,15 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     transcribingRef.current = true;
     setTranscribeError(null);
     setTranscribing(true);
-    const outcome = await transcribeNote({ body, filepath: entry.filepath });
-    if (outcome.kind === "updated") setBody(outcome.nextBody);
-    else setTranscribeError(outcome.reason);
-    transcribingRef.current = false;
-    setTranscribing(false);
+    try {
+      const outcome = await transcribeNote({ body, filepath: entry.filepath });
+      if (outcome.kind === "updated") setBody(outcome.nextBody);
+      else setTranscribeError(outcome.reason);
+    } finally {
+      // Explicit release (#114 pattern, see handleDelete) — see handleReEnrich.
+      transcribingRef.current = false;
+      setTranscribing(false);
+    }
   }, [body, entry.filepath]);
 
   const handleEnhance = useCallback(async () => {
@@ -355,13 +373,17 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     setEnhanceError(null);
     setEnhancedWith(null);
     setEnhancing(true);
-    const outcome = await enhanceNoteProse({ body, filepath: entry.filepath });
-    if (outcome.kind === "updated") {
-      setBody(outcome.nextBody);
-      setEnhancedWith(outcome.providerLabel);
-    } else setEnhanceError(outcome.reason);
-    enhancingRef.current = false;
-    setEnhancing(false);
+    try {
+      const outcome = await enhanceNoteProse({ body, filepath: entry.filepath });
+      if (outcome.kind === "updated") {
+        setBody(outcome.nextBody);
+        setEnhancedWith(outcome.providerLabel);
+      } else setEnhanceError(outcome.reason);
+    } finally {
+      // Explicit release (#114 pattern, see handleDelete) — see handleReEnrich.
+      enhancingRef.current = false;
+      setEnhancing(false);
+    }
   }, [body, entry.filepath]);
 
   const handleAttachPhoto = useCallback(
