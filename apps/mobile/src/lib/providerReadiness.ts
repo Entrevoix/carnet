@@ -14,28 +14,20 @@
 import { isLocalNetworkUrl } from "./netAllowlist";
 import { healthCheck, type HealthResult } from "./llmClient";
 
-/** Mirrors `llmClient.ts`'s `DEFAULT_LOCAL_LLM_URL` — deliberately a
- * separate literal, not an import of that constant. `healthCheck` is the
- * only `llmClient` export several existing tests mock wholesale (a fixed
- * `{ healthCheck: ... }` factory, e.g. SettingsScreen.test.tsx); importing
- * any other named export from that module here would silently resolve to
- * `undefined` under those mocks instead of failing loudly. Both literals
- * must be kept in sync if Relais's default ever changes. */
-const LOCAL_LOOPBACK_DEFAULT = "http://127.0.0.1:8080";
-
 /** True when `provider` points at a loopback/LAN base URL — i.e. the kind
  * of endpoint that only answers when something is running on this device or
  * network, as opposed to an always-on cloud API.
  *
- * A blank base URL is resolved against {@link LOCAL_LOOPBACK_DEFAULT} ONLY
- * for the `relais` preset — mirrors `LlmProviderSection.tsx`'s
- * `canTestConnection` precedent exactly (`isRelais` check): `healthCheck`
- * itself defaults ANY blank base URL to loopback, but treating a blank
- * OmniRoute/custom URL as "local" here would misclassify an unconfigured
- * cloud gateway as a local provider needing Relais-style start-up — the
- * same misleading-probe hazard `canTestConnection`'s comment documents. A
- * blank base URL on every other provider (including every custom entry) is
- * simply not local — it's unconfigured. */
+ * A blank base URL counts as local ONLY for the `relais` preset — mirrors
+ * `LlmProviderSection.tsx`'s `canTestConnection` precedent exactly (its
+ * `isRelais` check): a blank Relais URL and its loopback default
+ * (`llmClient.ts`'s `DEFAULT_LOCAL_LLM_URL`, which `healthCheck` itself
+ * substitutes for ANY blank base URL) are the same endpoint either way, so
+ * classifying by id alone is enough — no need to duplicate that literal
+ * here. Every OTHER provider with a blank base URL (including every custom
+ * entry) is simply not local — it's unconfigured, and treating it as
+ * loopback-probeable would be the same misleading-probe hazard
+ * `canTestConnection`'s comment documents for OmniRoute. */
 export function isLocalProvider(provider: { id: string; baseUrl: string }): boolean {
   const trimmed = provider.baseUrl.trim();
   if (!trimmed) return provider.id === "relais";
