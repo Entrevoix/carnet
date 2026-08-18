@@ -646,7 +646,5 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
 const styles = StyleSheet.create({
   section: { marginTop: spacing.lg },
   title: { paddingHorizontal: 0, paddingTop: spacing.sm },
-  subTitle: { paddingHorizontal: 0, paddingTop: spacing.lg },
   row: { paddingHorizontal: 0 },
-  dialogContent: { gap: spacing.sm },
 });
