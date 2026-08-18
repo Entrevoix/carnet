@@ -628,7 +628,20 @@ describe("SettingsScreen", () => {
         ["unsafe-url", /Not a valid local address/i],
         ["ok", /Reachable/],
       ] as const)("renders the %s message", async (result, pattern) => {
-        healthCheck.mockResolvedValueOnce(result as never);
+        // Keyed by base URL rather than call order. #85's readiness hint
+        // makes LlmProviderSection auto-probe every LOCAL provider (Relais,
+        // always present in buildDefaultProviders()) via this SAME
+        // healthCheck the moment it mounts — a plain mockResolvedValueOnce
+        // here would be racing that background probe rather than reliably
+        // landing on the manual "Test connection" click below. Only the
+        // ACTIVE provider's base URL (omniroute, set by baseSettings()) is
+        // what this test's click actually probes, so key the mock on that
+        // URL instead of on call order — deterministic regardless of
+        // whether the background probe fires before or after the click.
+        const activeBaseUrl = "https://llm.grepon.cc";
+        healthCheck.mockImplementation(async (url: string) =>
+          url === activeBaseUrl ? result : "ok",
+        );
 
         renderScreen();
 

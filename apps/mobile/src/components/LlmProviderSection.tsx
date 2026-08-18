@@ -184,20 +184,23 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
   }, []);
 
   // Fire-and-forget local-provider readiness probe (#85) — never blocks
-  // render, same pattern as CardScannerModal's preflight probe. Gated on the
-  // provider PICKER being open (not on the section merely mounting): every
-  // provider — active or not — is visible there, so that's the one place
-  // that actually needs every local entry's state at once. Probing
-  // unconditionally on mount would fire `healthCheck` for whichever local
-  // provider(s) happen to be in the list before the user ever asks to see
-  // one, which collides with `healthCheck`'s OTHER caller, "Test connection"
-  // — both share the same underlying network client, and firing this probe
-  // first would race a user-initiated Test Connection click for the exact
-  // same provider. Deferring to "picker opened" means a provider's hint is
-  // populated the first time it's actually shown in the list, and reruns if
-  // the list changes (add/delete/edit) while the picker stays open.
+  // render, same pattern as CardScannerModal's preflight probe. Runs on
+  // mount and again whenever the provider list reloads (add/delete/edit) —
+  // covers the picker's listed rows AND the active row without a separate
+  // trigger, since both read from the same `localReadiness` map. Cloud
+  // providers are never probed — Test Connection already covers them.
+  //
+  // This calls the SAME `healthCheck` the "Test connection" button calls.
+  // SettingsScreen.test.tsx's "Test connection result" suite used to rely on
+  // `healthCheck.mockResolvedValueOnce(...)` being consumed by ONLY the
+  // manual click — this mount probe would eat that queued value first
+  // (Relais ships a non-blank loopback URL, so it's always in `locals` even
+  // when some other provider is active). Fixed at the test, not routed
+  // around here: see that suite's `beforeEach` (mockResolvedValue baseline)
+  // and per-case `mockResolvedValueOnce`, which now re-arms right before the
+  // click instead of depending on call order.
   useEffect(() => {
-    if (providers === null || pickerMode === null) return;
+    if (providers === null) return;
     const locals = providers.filter((p) => isLocalProvider(p));
     if (locals.length === 0) return;
     let cancelled = false;
@@ -219,7 +222,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     return () => {
       cancelled = true;
     };
-  }, [providers, pickerMode]);
+  }, [providers]);
 
   if (providers === null) return null;
   // Narrowed local binding — the async handlers below are separate closures
