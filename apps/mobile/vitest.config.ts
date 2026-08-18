@@ -65,7 +65,6 @@ export default defineConfig({
       // unparseable by Rollup. Each gets its own stub so vitest treats them
       // as distinct modules. Tests still `vi.mock(...)` on top for
       // specific behavior.
-      "expo-sqlite": path.join(stubDir, "expo-sqlite.ts"),
       "expo-haptics": path.join(stubDir, "expo-haptics.ts"),
       // expo-file-system/legacy was previously left to vi.mock alone, but
       // its src pulls in expo-modules-core → react-native (Flow), so
