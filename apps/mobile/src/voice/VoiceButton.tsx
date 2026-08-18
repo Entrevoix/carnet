@@ -17,7 +17,7 @@ import {
   type ExpoSpeechRecognitionResultEvent,
 } from 'expo-speech-recognition';
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { Animated, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Animated, Linking, Pressable, StyleSheet, View } from 'react-native';
 import { Icon } from 'react-native-paper';
 import { MIN_TAP_TARGET, useCarnetTheme } from '../lib/theme';
 import {
@@ -55,6 +55,7 @@ import {
 } from './recognizerCatalog';
 import { collectDiagnostics, detectAvailableRecognizers, pickBestLocale } from './sttDeviceProbe';
 import { VoiceErrorSheet, type ErrAction } from './VoiceErrorSheet';
+import { VoiceRecognizerPicker } from './VoiceRecognizerPicker';
 
 export { STT_ENGINE_KEY, STT_RECOGNIZER_PKG_KEY, STT_RECOGNIZER_LABEL_KEY };
 
@@ -1096,27 +1097,13 @@ export const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(
   return (
     <View>
       {/* Recognizer picker sheet */}
-      <Modal
+      <VoiceRecognizerPicker
+        theme={theme}
         visible={pickerVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setPickerVisible(false)}
-      >
-        <Pressable style={[styles.overlay, { backgroundColor: 'rgba(0,0,0,0.7)' }]} onPress={() => setPickerVisible(false)}>
-          <View style={[styles.sheet, { backgroundColor: theme.colors.surface }]}>
-            <Text style={[styles.sheetTitle, { color: theme.colors.onSurface }]}>Choose voice recognizer</Text>
-            <Text style={[styles.sheetSub, { color: theme.colors.onSurfaceVariant }]}>Multiple speech services found on this device</Text>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {pickerOptions.map(opt => (
-                <Pressable key={opt.pkg} style={[styles.sheetOption, { marginBottom: 12, backgroundColor: theme.colors.surfaceVariant, borderColor: theme.colors.outlineVariant }]} onPress={() => handlePickRecognizer(opt)}>
-                  <Text style={[styles.sheetOptionLabel, { color: theme.colors.onSurface }]}>{opt.label}</Text>
-                  <Text style={[styles.sheetOptionPkg, { color: theme.colors.onSurfaceVariant }]}>{opt.pkg}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          </View>
-        </Pressable>
-      </Modal>
+        options={pickerOptions}
+        onDismiss={() => setPickerVisible(false)}
+        onPick={handlePickRecognizer}
+      />
 
       {/* Error / status popup sheet */}
       <VoiceErrorSheet
@@ -1182,20 +1169,4 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  overlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    borderTopLeftRadius: 16, borderTopRightRadius: 16,
-    padding: 24, paddingBottom: 40, gap: 12, maxHeight: '85%',
-  },
-  sheetTitle: { fontSize: 17, fontWeight: '700' },
-  sheetSub: { fontSize: 13, marginBottom: 4 },
-  sheetOption: {
-    borderRadius: 10, padding: 16,
-    borderWidth: 1,
-  },
-  sheetOptionLabel: { fontSize: 15, fontWeight: '600' },
-  sheetOptionPkg: { fontSize: 11, fontFamily: 'monospace', marginTop: 2 },
 });
