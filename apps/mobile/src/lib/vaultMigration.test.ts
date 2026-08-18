@@ -99,6 +99,7 @@ vi.mock("./storage", () => ({
 }));
 
 import { migratePreVaultNotes } from "./vaultMigration";
+import * as FileSystem from "expo-file-system/legacy";
 
 const INTERNAL = "file:///data/carnet";
 const TARGET = "file:///vault";
@@ -245,6 +246,33 @@ describe("migratePreVaultNotes", () => {
     // The good note still migrated normally.
     expect(has(`${INTERNAL}/Ideas/good-note.md`)).toBe(false);
     expect(has(`${TARGET}/Ideas/good-note.md`)).toBe(true);
+  });
+
+  it("fails and leaves the source intact when the target read-back doesn't match what was written", async () => {
+    // Regression guard for the delete-only-after-verified-readback contract:
+    // if the write silently truncates/corrupts (a flaky SAF write, a
+    // partial disk write), the source must NOT be deleted. Force exactly
+    // that by making the NEXT writeAsStringAsync call land 3 bytes short of
+    // what migratePreVaultNotes asked it to write.
+    const content = "# My Idea\n\nSome body text.\n";
+    seed(`${INTERNAL}/Ideas/my-idea.md`, content);
+    vi.mocked(FileSystem.writeAsStringAsync).mockImplementationOnce(
+      async (uri: string, written: string) => {
+        _files.set(uri, { content: written.slice(0, -3) });
+      },
+    );
+
+    const result = await migratePreVaultNotes();
+
+    expect(result.migrated).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0].subdir).toBe("Ideas");
+    expect(result.failures[0].name).toBe("my-idea.md");
+    expect(result.failures[0].error).toMatch(/read-back/i);
+    // Never deleted — the write was never verified successful.
+    expect(has(`${INTERNAL}/Ideas/my-idea.md`)).toBe(true);
+    expect(_files.get(`${INTERNAL}/Ideas/my-idea.md`)!.content).toBe(content);
   });
 
   it("does nothing when the target resolves to the internal root itself", async () => {

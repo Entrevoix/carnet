@@ -107,8 +107,15 @@ async function migratePairedBinaries(
     await target.fs.writeBinaryBytes(targetBinUri, base64);
 
     if (finalName !== pb.filename) {
-      // Collision forced a rename — retarget just this link, never touching
-      // frontmatter or any other line.
+      // Collision forced a rename — retarget this link with a whole-note
+      // substring replace (String.split/join over the FULL content, not a
+      // frontmatter-aware edit). Safe today because app-written frontmatter
+      // never contains a `../{subdir}/{filename}` path, so nothing in the
+      // YAML block can match `pb.rel`. Accepted hazard: if `pb.rel` were a
+      // strict prefix of another paired-binary link in the same note (e.g.
+      // `../Photos/pic.jpg` and `../Photos/pic.jpg.bak`), this would also
+      // corrupt the longer link's rewritten remainder — requires unusual
+      // paired-binary naming this codebase's own writers never produce.
       rewritten = rewritten.split(pb.rel).join(`../${pb.subdir}/${finalName}`);
     }
     // Edge case (accepted, not fixed): if a SECOND note also references this
