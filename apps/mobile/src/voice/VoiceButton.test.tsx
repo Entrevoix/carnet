@@ -284,22 +284,120 @@ describe("VoiceButton", () => {
     try {
       renderVoiceButton();
       fireEvent.click(screen.getByLabelText("Start dictation"));
-      // Flush the permission/AsyncStorage/start microtask chain under fake timers.
-      await vi.runOnlyPendingTimersAsync();
+      // Flush ONLY the permission/AsyncStorage/start microtask chain —
+      // runOnlyPendingTimersAsync() would also fire the 6s no-audio watchdog
+      // (VoiceButton.tsx watchdogRef), whose own stopListeningRef.current()
+      // call satisfies a naive "stop() was called" assertion even with the
+      // max-duration timer wiring deleted. advanceTimersByTimeAsync(0) drains
+      // the microtask queue without letting any real timer fire.
+      await vi.advanceTimersByTimeAsync(0);
       expect(mockModule.start).toHaveBeenCalledTimes(1);
+      // Suppress the watchdog for the rest of this test: `audiostart` sets
+      // audioSeenRef, so its 6s deadline no-ops instead of calling stop()
+      // itself and confounding the cap assertion below.
+      mockModule.__emit("audiostart");
 
-      await vi.advanceTimersByTimeAsync(3 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      expect(mockModule.stop).not.toHaveBeenCalled();
 
+      await vi.advanceTimersByTimeAsync(70 * 1000);
       expect(mockModule.stop).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
   });
 
+  it("a code-9 (service-not-allowed) error with no saved recognizer, seen for every enumerated pinned package, shows the mic-revoked no-service sheet", async () => {
+    renderVoiceButton();
+    await tapStart();
+
+    // First code-9: no saved pkg/label yet → decideSttErrorAction's 'detect'
+    // action runs detection, which auto-selects the other pinned recognizer
+    // (com.google.android.as) and starts a second session with it.
+    mockModule.__emit("error", { code: 9, error: "service-not-allowed" });
+    await waitFor(() => expect(mockModule.start).toHaveBeenCalledTimes(2));
+
+    // Second code-9 on that session: both pinned packages are now marked
+    // failed this session, so detection's realHits is empty and — because a
+    // code-9 was seen for a package still enumerated by
+    // getSpeechRecognitionServices() (i.e. installed, just mic-revoked) —
+    // showNoServiceSheetRef renders the 'mic-revoked' variant instead of the
+    // generic "install a service" copy.
+    mockModule.__emit("error", { code: 9, error: "service-not-allowed" });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          /is installed, but its Microphone permission is turned off, so it can't record audio for dictation\. Open its App info and enable Microphone, then try dictation again\./,
+        ),
+      ).toBeTruthy(),
+    );
+    // First action button of the mic-revoked variant: "Open <label> App info".
+    expect(screen.getByText(/^Open .+ App info$/)).toBeTruthy();
+  });
+
+  it("a code-12 (language not supported) error after detection has already run, with the failover chain exhausted, shows the language-unavailable sheet", async () => {
+    renderVoiceButton();
+    await tapStart();
+
+    // code-9 with no saved pkg runs detection (sets detectionRanRef), which
+    // auto-selects the sole remaining pinned recognizer with an empty
+    // failover chain (nothing else pinned left to queue).
+    mockModule.__emit("error", { code: 9, error: "service-not-allowed" });
+    await waitFor(() => expect(mockModule.start).toHaveBeenCalledTimes(2));
+
+    // code-12 on that session: failover chain is empty and detection already
+    // ran this session → the language-unavailable terminal sheet, not a
+    // failover attempt or another detection pass.
+    mockModule.__emit("error", { code: 12, error: "language-not-supported" });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "English voice model not installed on any speech service. Open Speech Services by Google to download it.",
+        ),
+      ).toBeTruthy(),
+    );
+    // First action button of the lang-unavailable variant.
+    expect(screen.getByText("Download voice model")).toBeTruthy();
+  });
+
+  it("persists the auto-selected recognizer to AsyncStorage only once it yields a real result", async () => {
+    renderVoiceButton();
+    await tapStart();
+    // Auto-select via detection stages the persist (pendingPersistRef) but
+    // does NOT write it yet — the write is deferred until this recognizer
+    // proves itself with a real transcript (see VoiceButton.tsx's `result`
+    // listener, ~line 814-819).
+    mockModule.__emit("error", { code: 9, error: "service-not-allowed" });
+    await waitFor(() => expect(mockModule.start).toHaveBeenCalledTimes(2));
+    expect(_store.get(STT_RECOGNIZER_PKG_KEY)).toBeUndefined();
+
+    mockModule.__emit("result", { results: [{ transcript: "it works" }], isFinal: true });
+
+    await waitFor(() => expect(_store.get(STT_RECOGNIZER_PKG_KEY)).toBe("com.google.android.as"));
+    expect(_store.get(STT_RECOGNIZER_LABEL_KEY)).toBe("Google (On-Device)");
+  });
+
   // ── Negative-control evidence ───────────────────────────────────────────
-  // For the 3 tests below, the assertion was temporarily inverted/broken to
-  // confirm it can actually fail, then restored. See PR description / commit
-  // message for which three and what was changed (result-event wiring,
-  // permission-denied sheet text, no-service sheet text) — reproducible by
-  // swapping the expected string/callback args below and re-running.
+  // For the tests below, the assertion (or, for the max-recording cap and
+  // the two error-sheet-variant tests, the PRODUCTION wiring itself, in a
+  // scratch copy — never committed) was temporarily broken to confirm the
+  // test can actually fail, then restored:
+  //  - result-event wiring: swapped the expected transcript string.
+  //  - permission-denied sheet: swapped the expected button text.
+  //  - no-service sheet: swapped the expected button text.
+  //  - max-recording cap: commented out the maxDurationTimer.current =
+  //    setTimeout(...) block in handleToggle (VoiceButton.tsx) — confirmed
+  //    the rewritten test now fails (stop() never called) where the old
+  //    runOnlyPendingTimersAsync()-based version stayed green (its "pass"
+  //    came entirely from the watchdog's own stop() call, not the cap).
+  //  - mic-revoked sheet: temporarily forced `sheet.variant` to 'default' in
+  //    showNoServiceSheetRef — confirmed the mic-revoked test fails.
+  //  - lang-unavailable sheet: temporarily changed the `code === 11 ||
+  //    code === 12` guard in sttErrorPolicy.ts to `code === 11` only —
+  //    confirmed the lang-unavailable test fails (falls through to the
+  //    no-service-sheet branch instead).
+  // See the PR description for the exact diffs; all reproducible by
+  // re-applying the same edit and re-running `vitest run VoiceButton.test`.
 });
