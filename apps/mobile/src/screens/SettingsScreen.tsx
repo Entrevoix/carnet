@@ -68,13 +68,6 @@ export default function SettingsScreen() {
    * wrote "error: ..." into the path field, which then got persisted on
    * Save as a broken capture folder. */
   const [pickerError, setPickerError] = useState<string | null>(null);
-  /** The persisted `captureFolderPath` as of the last load/save — the
-   * baseline pickCaptureFolderMigration compares against, since `form`
-   * itself changes on every keystroke/pick and isn't a safe "previous
-   * value" once the user starts editing. */
-  const [savedCaptureFolderPath, setSavedCaptureFolderPath] = useState<
-    string | null
-  >(null);
   /** Snackbar text for the pre-vault migration sweep (see vaultMigration.ts) —
    * separate from `pickerError` so a migration outcome (success or partial
    * failure) never gets mistaken for a picker error, and separate from
@@ -123,7 +116,6 @@ export default function SettingsScreen() {
         }
       }
       setForm(formStateFromSettings(s, initialNotificationEnabled));
-      setSavedCaptureFolderPath(s.captureFolderPath);
       setKarakeepKeyConfigured(hasKkKey);
       setShowBanner(banner);
     })();
@@ -166,17 +158,16 @@ export default function SettingsScreen() {
     }
     setSaved(true);
 
-    // Pre-vault migration (#172): only fires the FIRST time a real vault
-    // folder is picked — i.e. the persisted path was empty (internal
-    // storage) and this save just set a non-empty one. A later switch
-    // between two already-real vault folders never touches the internal
-    // root, so it correctly does not re-fire. Comparing against
-    // `savedCaptureFolderPath` (the last-persisted value), not `form`'s
-    // prior render, so this also fires for a hand-typed path (the TextInput
-    // above), not just the SAF picker button.
-    const previousPath = savedCaptureFolderPath ?? "";
+    // Pre-vault migration (#172): sweeps on EVERY save that leaves a real
+    // vault folder configured, not just the first — migratePreVaultNotes is
+    // cheap and self-guarding when there's nothing to do (empty internal
+    // root, or source === target when no folder is configured), so this is
+    // also the retry path for a note a PRIOR sweep failed to move (a
+    // transient read error, a revoked SAF grant that's since been re-granted,
+    // etc.) — those notes must not stay invisible forever just because the
+    // first attempt already ran once.
     const nextPath = form.captureFolderPath.trim();
-    if (!previousPath.trim() && nextPath) {
+    if (nextPath) {
       void (async () => {
         try {
           const migration = await migratePreVaultNotes();
@@ -201,7 +192,6 @@ export default function SettingsScreen() {
         }
       })();
     }
-    setSavedCaptureFolderPath(form.captureFolderPath);
   };
 
   // Clear flips UI state only AFTER the keychain write confirms — a reject
@@ -221,7 +211,6 @@ export default function SettingsScreen() {
   const reloadImportedSettings = async () => {
     const settings = await getSettings();
     setForm(formStateFromSettings(settings, settings.persistentNotificationEnabled));
-    setSavedCaptureFolderPath(settings.captureFolderPath);
   };
 
   /**
