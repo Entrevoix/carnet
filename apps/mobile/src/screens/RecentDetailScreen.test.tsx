@@ -710,4 +710,21 @@ describe("RecentDetailScreen — busy-latch release on rejection (regression)", 
     fireEvent.click(await screen.findByText("Enhance"));
     await waitFor(() => expect(enhanceNoteProse).toHaveBeenCalledTimes(2));
   });
+
+  it("a failing Attach photo does not permanently latch the actions sheet", async () => {
+    vi.mocked(attachPhotoToNote).mockRejectedValueOnce(new Error("boom"));
+    const { navigation } = renderScreen();
+    await screen.findByText(/Hello body text\./);
+    openActionsSheet(navigation);
+    fireEvent.click(await screen.findByText("Attach photo"));
+    fireEvent.click(await screen.findByText("fake-shutter"));
+    await waitFor(() => expect(attachPhotoToNote).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(unhandled).toHaveLength(1));
+
+    // The camera modal stays open after a shot (no auto-dismiss in
+    // handleAttachPhoto), so the retry re-fires the same shutter button
+    // rather than reopening the sheet + modal.
+    fireEvent.click(await screen.findByText("fake-shutter"));
+    await waitFor(() => expect(attachPhotoToNote).toHaveBeenCalledTimes(2));
+  });
 });

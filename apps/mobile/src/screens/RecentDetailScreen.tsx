@@ -392,18 +392,22 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       attachingPhotoRef.current = true;
       setAttachPhotoError(null);
       setAttachingPhoto(true);
-      const outcome = await attachPhotoToNote({
-        filepath: entry.filepath,
-        base64,
-        mime,
-        basename,
-      });
-      if (outcome.kind === "attached") {
-        setBody(outcome.nextBody);
-        setPhotoAttached(true);
-      } else setAttachPhotoError(outcome.reason);
-      attachingPhotoRef.current = false;
-      setAttachingPhoto(false);
+      try {
+        const outcome = await attachPhotoToNote({
+          filepath: entry.filepath,
+          base64,
+          mime,
+          basename,
+        });
+        if (outcome.kind === "attached") {
+          setBody(outcome.nextBody);
+          setPhotoAttached(true);
+        } else setAttachPhotoError(outcome.reason);
+      } finally {
+        // Explicit release (#114 pattern, see handleDelete) — see handleReEnrich.
+        attachingPhotoRef.current = false;
+        setAttachingPhoto(false);
+      }
     },
     [entry.filepath],
   );
