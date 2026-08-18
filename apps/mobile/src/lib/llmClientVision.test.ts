@@ -123,6 +123,40 @@ describe("ocrCardViaVision", () => {
     ).rejects.toThrow("OmniRoute response contained no OCR text");
   });
 
+  it("uses the long local-inference timeout tier for a local baseUrl, not the short reachability tier (#179)", async () => {
+    // ocrCardViaVision used to hardcode FETCH_TIMEOUT_MS regardless of
+    // provider — vision OCR against a cold local model has the same
+    // slow-generation shape as text enrichment, so it now goes through
+    // resolveEnrichmentTimeoutMs (./llmHttp) like the rest of enrichment.
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockReturnValueOnce(new Promise<Response>(() => {}));
+      let settled = false;
+      let err: unknown;
+      void ocrCardViaVision({ base64: "abc", mimeType: "image/jpeg" }, LOCAL_CONFIG).then(
+        (v) => {
+          settled = true;
+          return v;
+        },
+        (e: unknown) => {
+          settled = true;
+          err = e;
+        },
+      );
+      // Well past the old 20s short tier — must NOT have settled yet.
+      await vi.advanceTimersByTimeAsync(21_000);
+      expect(settled).toBe(false);
+      // Advance to just past the 120s long tier and confirm it now has.
+      await vi.advanceTimersByTimeAsync(100_000);
+      expect(settled).toBe(true);
+      expect((err as Error).message).toBe(
+        "Local LLM unreachable — timed out after 120s.",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("surfaces a permanent LlmClientError on a 4xx response", async () => {
     fetchMock.mockResolvedValueOnce(makeErrorResponse(401, "Invalid API key"));
     let caught: unknown;

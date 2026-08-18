@@ -70,6 +70,7 @@ import {
   guardedFetch,
   FETCH_TIMEOUT_MS,
   ENHANCE_TIMEOUT_MS,
+  resolveEnrichmentTimeoutMs,
   type OpenAIMessage,
   type OpenAIResponse,
 } from "./llmHttp";
@@ -255,7 +256,15 @@ export async function enrichIdea(
 ): Promise<EnrichResult> {
   const model = assertModelConfigured(config.model, config.label);
   const pair = withSystemOverride(buildIdeaPrompt(text), override);
-  return chatCompletion(config.baseUrl, config.apiKey, model, pair, "idea", config.label);
+  return chatCompletion(
+    config.baseUrl,
+    config.apiKey,
+    model,
+    pair,
+    "idea",
+    config.label,
+    resolveEnrichmentTimeoutMs(config.baseUrl),
+  );
 }
 
 /** Enrich a journal voice transcript (plus optional notes) into a journal entry. */
@@ -269,7 +278,15 @@ export async function enrichJournal(
     buildJournalPrompt(input.transcript, input.notes),
     override,
   );
-  return chatCompletion(config.baseUrl, config.apiKey, model, pair, "journal", config.label);
+  return chatCompletion(
+    config.baseUrl,
+    config.apiKey,
+    model,
+    pair,
+    "journal",
+    config.label,
+    resolveEnrichmentTimeoutMs(config.baseUrl),
+  );
 }
 
 /** Enrich a business card OCR result + context into a contact note. */
@@ -283,7 +300,15 @@ export async function enrichPerson(
     buildPersonPrompt(input.ocrResult, input.context),
     override,
   );
-  return chatCompletion(config.baseUrl, config.apiKey, model, pair, "person", config.label);
+  return chatCompletion(
+    config.baseUrl,
+    config.apiKey,
+    model,
+    pair,
+    "person",
+    config.label,
+    resolveEnrichmentTimeoutMs(config.baseUrl),
+  );
 }
 
 /**
@@ -324,7 +349,15 @@ export async function enrichSharedImage(
       ],
     },
   ];
-  return executeChat(config.baseUrl, config.apiKey, model, messages, "shared", config.label);
+  return executeChat(
+    config.baseUrl,
+    config.apiKey,
+    model,
+    messages,
+    "shared",
+    config.label,
+    resolveEnrichmentTimeoutMs(config.baseUrl),
+  );
 }
 
 /**
@@ -352,6 +385,13 @@ const OCR_CARD_PROMPT =
  * "no OCR text" LlmClientError on empty content so the caller's existing
  * failure UX (and the person degraded-save path downstream) behaves identically
  * to the old `/v1/ocr` client.
+ *
+ * Uses {@link resolveEnrichmentTimeoutMs}, not a hardcoded `FETCH_TIMEOUT_MS`
+ * (issue #179) — a vision model running cold inference on a local provider
+ * has the exact same slow-generation shape the enrichment/chat paths do; a
+ * card photo is no smaller a prompt than a typed idea. This is a call-time
+ * inference request, not a reachability probe, so it belongs on the same
+ * tier as the rest of enrichment, not with healthCheck/listModels.
  */
 export async function ocrCardViaVision(
   input: { base64: string; mimeType: string },
@@ -391,7 +431,7 @@ export async function ocrCardViaVision(
       body,
     },
     config.label,
-    FETCH_TIMEOUT_MS,
+    resolveEnrichmentTimeoutMs(config.baseUrl),
     async (response) => {
       const json = (await response.json()) as OpenAIResponse;
       const content = json.choices?.[0]?.message?.content;
@@ -460,7 +500,15 @@ export async function enrichSharedLink(
     buildSharedLinkPrompt(input.url, input.text, input.context, preview),
     override,
   );
-  return chatCompletion(config.baseUrl, config.apiKey, model, pair, "shared", config.label);
+  return chatCompletion(
+    config.baseUrl,
+    config.apiKey,
+    model,
+    pair,
+    "shared",
+    config.label,
+    resolveEnrichmentTimeoutMs(config.baseUrl),
+  );
 }
 
 /**
@@ -480,6 +528,7 @@ export async function promoteIdea(
     buildPromoteIdeaPrompt(currentMarkdown, target),
     "idea",
     config.label,
+    resolveEnrichmentTimeoutMs(config.baseUrl),
   );
 }
 
