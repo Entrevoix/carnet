@@ -37,6 +37,7 @@ import {
   saveSettingsWithKeys,
   toggleNotification,
 } from "../lib/settingsPersistence";
+import { migratePreVaultNotes } from "../lib/vaultMigration";
 import { PromptOverridesSection } from "../components/PromptOverridesSection";
 import { DiagnosticsSection } from "../components/DiagnosticsSection";
 import { SettingsTransferSection } from "../components/SettingsTransferSection";
@@ -67,6 +68,20 @@ export default function SettingsScreen() {
    * wrote "error: ..." into the path field, which then got persisted on
    * Save as a broken capture folder. */
   const [pickerError, setPickerError] = useState<string | null>(null);
+  /** The persisted `captureFolderPath` as of the last load/save — the
+   * baseline pickCaptureFolderMigration compares against, since `form`
+   * itself changes on every keystroke/pick and isn't a safe "previous
+   * value" once the user starts editing. */
+  const [savedCaptureFolderPath, setSavedCaptureFolderPath] = useState<
+    string | null
+  >(null);
+  /** Snackbar text for the pre-vault migration sweep (see vaultMigration.ts) —
+   * separate from `pickerError` so a migration outcome (success or partial
+   * failure) never gets mistaken for a picker error, and separate from
+   * `saved` so it can outlive that Snackbar's shorter duration. */
+  const [migrationMessage, setMigrationMessage] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     void (async () => {
@@ -108,6 +123,7 @@ export default function SettingsScreen() {
         }
       }
       setForm(formStateFromSettings(s, initialNotificationEnabled));
+      setSavedCaptureFolderPath(s.captureFolderPath);
       setKarakeepKeyConfigured(hasKkKey);
       setShowBanner(banner);
     })();
@@ -149,6 +165,43 @@ export default function SettingsScreen() {
       return;
     }
     setSaved(true);
+
+    // Pre-vault migration (#172): only fires the FIRST time a real vault
+    // folder is picked — i.e. the persisted path was empty (internal
+    // storage) and this save just set a non-empty one. A later switch
+    // between two already-real vault folders never touches the internal
+    // root, so it correctly does not re-fire. Comparing against
+    // `savedCaptureFolderPath` (the last-persisted value), not `form`'s
+    // prior render, so this also fires for a hand-typed path (the TextInput
+    // above), not just the SAF picker button.
+    const previousPath = savedCaptureFolderPath ?? "";
+    const nextPath = form.captureFolderPath.trim();
+    if (!previousPath.trim() && nextPath) {
+      void (async () => {
+        try {
+          const migration = await migratePreVaultNotes();
+          if (migration.migrated > 0 || migration.failed > 0) {
+            const parts: string[] = [];
+            if (migration.migrated > 0) {
+              parts.push(
+                `Moved ${migration.migrated} earlier capture${migration.migrated === 1 ? "" : "s"} into your vault`,
+              );
+            }
+            if (migration.failed > 0) {
+              parts.push(
+                `${migration.failed} couldn't be moved and stayed on-device`,
+              );
+            }
+            setMigrationMessage(parts.join(" — "));
+          }
+        } catch (e: unknown) {
+          setMigrationMessage(
+            errorMessage(e, "Couldn't check for earlier captures to migrate"),
+          );
+        }
+      })();
+    }
+    setSavedCaptureFolderPath(form.captureFolderPath);
   };
 
   // Clear flips UI state only AFTER the keychain write confirms — a reject
@@ -168,6 +221,7 @@ export default function SettingsScreen() {
   const reloadImportedSettings = async () => {
     const settings = await getSettings();
     setForm(formStateFromSettings(settings, settings.persistentNotificationEnabled));
+    setSavedCaptureFolderPath(settings.captureFolderPath);
   };
 
   /**
@@ -471,6 +525,14 @@ export default function SettingsScreen() {
         duration={5000}
       >
         {pickerError ?? ""}
+      </Snackbar>
+
+      <Snackbar
+        visible={migrationMessage !== null}
+        onDismiss={() => setMigrationMessage(null)}
+        duration={6000}
+      >
+        {migrationMessage ?? ""}
       </Snackbar>
 
     </ScrollView>
