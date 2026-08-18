@@ -23,11 +23,13 @@ import {
   applyPickedModelToBuffer,
   editBufferFromProvider,
   reassignIdentityAfterDelete,
+  type EditBuffer,
+} from "../lib/llmProviderForm";
+import {
   resolveBrowseSource,
   resolvePickerPresentation,
-  type EditBuffer,
   type PickerMode,
-} from "../lib/llmProviderForm";
+} from "../lib/llmProviderPicker";
 import { errorMessage } from "../lib/settingsForm";
 import { useProviderWriteChain } from "../lib/useProviderWriteChain";
 import { ModelBrowserModal } from "./ModelBrowserModal";
@@ -646,7 +648,5 @@ const styles = StyleSheet.create({
   title: { paddingHorizontal: 0, paddingTop: spacing.sm },
   subTitle: { paddingHorizontal: 0, paddingTop: spacing.lg },
   row: { paddingHorizontal: 0 },
-  inlineBtn: { alignSelf: "flex-start", marginTop: spacing.xs },
-  saveEntry: { alignSelf: "flex-start", marginTop: spacing.sm },
   dialogContent: { gap: spacing.sm },
 });
