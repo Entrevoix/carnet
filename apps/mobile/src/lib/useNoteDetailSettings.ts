@@ -39,5 +39,7 @@ export function useNoteDetailSettings(): NoteDetailSettings {
     };
   }, []);
 
+  // Fresh object every render — callers must destructure (as RecentDetailScreen
+  // does) rather than put the returned object itself in a dep array.
   return { karakeepConfigured, richEditorEnabled };
 }

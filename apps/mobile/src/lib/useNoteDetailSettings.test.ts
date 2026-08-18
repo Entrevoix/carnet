@@ -56,6 +56,12 @@ describe("useNoteDetailSettings", () => {
     await waitFor(() => expect(result.current.richEditorEnabled).toBe(false));
   });
 
+  // The effect's `active` unmount guard is deliberately untested: React 18
+  // makes post-unmount setState a silent no-op, so a renderHook assertion on
+  // result.current passes with or without the guard (verified by negative
+  // control — commenting the guard out changes nothing observable here). The
+  // guard stays as documentation of intent, not as testable behavior.
+
   it("keeps the defaults when the settings read rejects", async () => {
     vi.mocked(getSettings).mockRejectedValue(new Error("storage gone"));
 
