@@ -6,7 +6,7 @@
 // refactor unchanged. Renders the REAL component tree (react-native aliased
 // to react-native-web, real react-native-paper) under PaperProvider, per the
 // TagBrowserScreen.test.tsx pattern. expo-speech-recognition has no vitest
-// stub (unlike expo-haptics/expo-sqlite/etc in vitest.config.ts), so it's
+// stub (unlike expo-haptics/etc in vitest.config.ts), so it's
 // fully vi.mock'd here with a tiny event-bus so tests can fire native
 // lifecycle events (`result`, `error`, `end`) exactly like the OS would.
 //
@@ -52,7 +52,7 @@ vi.mock("expo", () => ({
 }));
 
 // expo-speech-recognition: no vitest.config.ts alias exists for it (unlike
-// expo-haptics/expo-sqlite/etc), so it's fully replaced here. `__emit` is a
+// expo-haptics/etc), so it's fully replaced here. `__emit` is a
 // test-only escape hatch letting tests fire the exact native events
 // (`result`, `error`, `end`, `start`, `audiostart`, ...) VoiceButton
 // subscribes to via addListener.

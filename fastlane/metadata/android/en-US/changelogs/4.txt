@@ -1,0 +1,6 @@
+v0.6.0: Attach multiple named places to a journal entry. Attach a camera
+photo to a saved note. Edit a capture before enrichment runs, and re-enrich
+any note afterward. Settings warns about duplicate or unreachable LLM
+providers. Existing captures outside the vault folder migrate in
+automatically once you pick a folder. Various fixes: diacritic folding,
+model-browser flicker, and a busy-state bug on the note-detail screen.

@@ -115,7 +115,8 @@ tampering.
   app*: an existing install cannot upgrade in place, and uninstalling to cross over clears
   AsyncStorage, the offline queue, and every `expo-secure-store` key. Archived plans and
   dated session handoffs still say `com.ventoux.carnet` — that is correct history, not drift.
-- **No SQLite.** `expo-sqlite@55` is ABI-broken on Expo SDK 54. All persistence goes through
+- **No SQLite.** `expo-sqlite@55` was ABI-broken on Expo SDK 54 and the dependency was
+  removed entirely in 2026-08 (#182) — do not re-add it. All persistence goes through
   AsyncStorage (`lib/queue.ts`, `lib/storage.ts`).
 - **No `.env` files anywhere.** All runtime config (OmniRoute URL/key, Karakeep URL/key) is
   entered in-app via the Settings screen. API keys live in `expo-secure-store`, never

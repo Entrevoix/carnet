@@ -1,0 +1,2 @@
+v0.7.0: LLM enrichment now uses a much longer timeout for local/on-device
+providers, so slower local models have time to finish instead of timing out.
