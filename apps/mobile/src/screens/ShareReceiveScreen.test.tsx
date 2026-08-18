@@ -10,7 +10,7 @@
 //     the "opened empty" bail effect must not fire a second pop;
 //   - the golden text-share save path.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PaperProvider } from "react-native-paper";
 
 import { carnetLight } from "../lib/theme";
@@ -100,6 +100,7 @@ vi.mock("../voice/VoiceButton", () => ({ VoiceButton: () => null }));
 import ShareReceiveScreen from "./ShareReceiveScreen";
 import { enrichSharedLink } from "../lib/dispatcher";
 import { writeIdea } from "../lib/writer";
+import { getSettings } from "../lib/settings";
 
 type ScreenProps = Parameters<typeof ShareReceiveScreen>[0];
 
@@ -189,5 +190,44 @@ describe("ShareReceiveScreen", () => {
     shareCtx.hasShareIntent = false;
     const { navigation } = renderScreen();
     await waitFor(() => expect(navigation.goBack).toHaveBeenCalledTimes(1));
+  });
+
+  it("names the active provider (not a hardcoded default) in the saving-phase label", async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      activeProviderId: "groq",
+      llmProviders: [
+        {
+          id: "groq",
+          label: "Groq",
+          baseUrl: "https://api.groq.com/openai",
+          model: "llama-3.3-70b",
+          visionModel: "",
+          preset: "groq",
+        },
+      ],
+    } as Awaited<ReturnType<typeof getSettings>>);
+    let resolveEnrich!: (v: Awaited<ReturnType<typeof enrichSharedLink>>) => void;
+    vi.mocked(enrichSharedLink).mockReturnValueOnce(
+      new Promise((res) => {
+        resolveEnrich = res;
+      }),
+    );
+
+    renderScreen();
+    await screen.findByText("Save to vault");
+    // Let the mount-time getSettings().then() (which resolves providerLabel)
+    // settle before clicking — otherwise save() reads the still-default
+    // UNKNOWN_PROVIDER_LABEL from the same render tick as the click.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByText("Save to vault"));
+
+    expect(await screen.findByText("Groq is enriching + saving…")).toBeTruthy();
+
+    resolveEnrich({
+      markdown: "---\nkind: shared-text\n---\n# Enriched\n\nbody\n",
+    } as Awaited<ReturnType<typeof enrichSharedLink>>);
+    await waitFor(() => expect(writeIdea).toHaveBeenCalledTimes(1));
   });
 });

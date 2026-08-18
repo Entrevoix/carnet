@@ -248,10 +248,12 @@ export default function CaptureScreen({ route, navigation }: Props) {
       .then((s) => {
         setPreviewBeforeSave(s.previewBeforeSave);
         setLlmBackend(s.activeProviderId === "relais" ? "local" : "omniroute");
-        // Defensive: some test doubles for getSettings() return a partial
-        // Settings without llmProviders. Real Settings always includes it
-        // (buildDefaultProviders() seeds it), so this only guards test mocks
-        // — never silently mask a real missing-providers bug.
+        // Defensive on two counts: some test doubles for getSettings() return
+        // a partial Settings without llmProviders, AND a genuinely empty list
+        // is a real (if unexpected) state. Either way there's nothing to
+        // resolve a label from, so providerLabel just keeps its
+        // UNKNOWN_PROVIDER_LABEL default rather than calling
+        // resolveActiveProvider on an empty array.
         if (Array.isArray(s.llmProviders) && s.llmProviders.length > 0) {
           setProviderLabel(
             resolveActiveProvider(s.llmProviders, s.activeProviderId).label,

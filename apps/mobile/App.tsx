@@ -43,7 +43,10 @@ import {
 } from "./src/lib/themePreference";
 import { drainPendingKarakeepExports } from "./src/lib/pendingSyncRunner";
 import { drainQueue } from "./src/lib/queue";
-import { createForegroundDrainTrigger } from "./src/lib/foregroundDrainTrigger";
+import {
+  createForegroundDrainTrigger,
+  type ForegroundDrainTrigger,
+} from "./src/lib/foregroundDrainTrigger";
 
 // Installed once at module load, as early as possible — chains onto RN's
 // default handler so every uncaught JS exception lands in the local crash
@@ -209,9 +212,16 @@ export default function App() {
   // "will finish automatically when reachable" wasn't true. drainQueue()
   // itself is single-flight (lib/queue.ts's `_draining` guard) and a cheap
   // no-op on an empty queue, so this only decides WHEN to kick it.
-  const queueDrainTrigger = useRef(
-    createForegroundDrainTrigger(drainQueue, 30_000, "App:queue"),
-  ).current;
+  // useRef(factory()) would call the factory on EVERY render (only the ref
+  // object itself is stable, not its initializer argument) — lazy-init via
+  // ??= so createForegroundDrainTrigger runs exactly once.
+  const queueDrainTriggerRef = useRef<ForegroundDrainTrigger | null>(null);
+  queueDrainTriggerRef.current ??= createForegroundDrainTrigger(
+    drainQueue,
+    30_000,
+    "App:queue",
+  );
+  const queueDrainTrigger = queueDrainTriggerRef.current;
   useEffect(() => {
     queueDrainTrigger.kick();
     const sub = AppState.addEventListener("change", (state) => {
