@@ -4,9 +4,10 @@
  * The screen itself is a composition layer: it owns the note's `body` (the
  * single source of truth every action reads and rewrites), the load/missing
  * state, and the navigation wiring. Everything decidable in isolation lives in
- * lib/ (recentDetailView, karakeepExportUi, markdownStyle, plus the
- * useNoteEditSession / useKarakeepExport / useNoteAudioPlayer hooks), and each
- * self-contained UI block lives in components/.
+ * lib/ (recentDetailView, noteAttachments, noteRelated, karakeepExportUi,
+ * markdownStyle, plus the useNoteDetailSettings / useNoteEditSession /
+ * useKarakeepExport / useNoteAudioPlayer hooks), and each self-contained UI
+ * block lives in components/.
  *
  * Frontmatter never round-trips through the editor: it is split off on enter
  * and reattached byte-exact on save — see lib/useNoteEditSession.ts.
@@ -14,14 +15,12 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Linking, ScrollView, StyleSheet, View } from "react-native";
-import * as Sharing from "expo-sharing";
 import {
   ActivityIndicator,
   Banner,
   FAB,
   IconButton,
   Portal,
-  Snackbar,
   Text,
 } from "react-native-paper";
 import Markdown from "react-native-markdown-display";
@@ -31,10 +30,8 @@ import { deriveTitle } from "@carnet/shared";
 import type { RootStackParamList } from "../../App";
 import {
   extractFrontmatterField,
-  listPairedBinaries,
   moveToArchive,
   readNote,
-  resolvePairedUri,
   stripFrontmatter,
   stripPairedBinaryLinks,
   updateNote,
@@ -55,19 +52,24 @@ import { NoteMarkdownEditCard } from "../components/NoteMarkdownEditCard";
 import { NoteMetaRow } from "../components/NoteMetaRow";
 import { NoteMissingState } from "../components/NoteMissingState";
 import { RelatedNotesCard } from "../components/RelatedNotesCard";
+import { RecentDetailSnackbars } from "../components/RecentDetailSnackbars";
 import { RichNoteEditor } from "../components/RichNoteEditor";
 import { markdownStyle } from "../lib/markdownStyle";
+import {
+  imageUrisByRel,
+  openAttachment,
+  resolveNoteAttachments,
+} from "../lib/noteAttachments";
+import { computeRelatedNotes } from "../lib/noteRelated";
 import {
   activeIssueMessage,
   busyLabel,
   formatDate,
   formatMode,
   isActionsBusy,
-  karakeepSnackbarMessage,
   noteCapabilities,
-  relatedSubdirForMode,
 } from "../lib/recentDetailView";
-import { findRelatedNotes, insertRelatedLink } from "../lib/relatedNotes";
+import { insertRelatedLink } from "../lib/relatedNotes";
 import { reEnrichNote, transcribeNote } from "../lib/noteReprocess";
 import {
   finishPendingEnrichment,
@@ -94,7 +96,7 @@ import {
   removeFromHistoryByFilepath,
   updateCaptureTitleByFilepath,
 } from "../lib/storage";
-import { getSettings } from "../lib/settings";
+import { useNoteDetailSettings } from "../lib/useNoteDetailSettings";
 
 type Props = NativeStackScreenProps<RootStackParamList, "RecentDetail">;
 
@@ -122,11 +124,7 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   const [attachingPhoto, setAttachingPhoto] = useState(false);
   const [attachPhotoError, setAttachPhotoError] = useState<string | null>(null);
   const [photoAttached, setPhotoAttached] = useState(false);
-  // Both read once on mount from the persisted settings: the Karakeep action is
-  // gated on a non-blank instance URL, and the rich editor is the default (kept
-  // behind a flag so a future gate can flip it off without re-plumbing).
-  const [karakeepConfigured, setKarakeepConfigured] = useState(false);
-  const [richEditorEnabled, setRichEditorEnabled] = useState(true);
+  const { karakeepConfigured, richEditorEnabled } = useNoteDetailSettings();
   // Guard against fast double-taps on Delete — the in-flight archive can
   // race with a second handler call and produce a confusing UI state.
   const deletingRef = useRef(false);
@@ -188,22 +186,6 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           ),
     });
   }, [navigation, edit.editMode]);
-
-  // Reconcile with the persisted settings once on mount. Best-effort: the
-  // defaults above already give a usable screen.
-  useEffect(() => {
-    let active = true;
-    getSettings()
-      .then((s) => {
-        if (!active) return;
-        setRichEditorEnabled(s.richEditorEnabled);
-        setKarakeepConfigured(s.karakeepUrl.trim().length > 0);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -414,25 +396,14 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     // Best-effort: a resolution failure (SAF permission hiccup) degrades to
     // "no attachment rows" — the note body still renders. Previously a
     // reject here escaped as an unhandled rejection (lint find, 2026-07-18).
-    void (async () => {
-      const links = listPairedBinaries(body).filter((b) => b.subdir !== "Audio");
-      const resolved: ResolvedAttachment[] = [];
-      for (const link of links) {
-        const r = await resolvePairedUri(link.subdir, link.filename);
-        if (r) {
-          resolved.push({
-            rel: link.rel,
-            filename: link.filename,
-            uri: r.uri,
-            mime: r.mime,
-          });
-        }
-      }
-      if (active) setAttachments(resolved);
-    })().catch((e: unknown) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn("[RecentDetail] attachment resolution failed:", msg);
-    });
+    resolveNoteAttachments(body)
+      .then((resolved) => {
+        if (active) setAttachments(resolved);
+      })
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("[RecentDetail] attachment resolution failed:", msg);
+      });
     return () => {
       active = false;
     };
@@ -453,13 +424,9 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
       .then((index) => {
         if (!active || !index) return;
         setRelated(
-          findRelatedNotes(
-            {
-              uri: entry.filepath,
-              subdir: relatedSubdirForMode(entry.mode),
-              title: deriveTitle(body) || entry.title,
-              tags: tagsForNote(body),
-            },
+          computeRelatedNotes(
+            body,
+            { filepath: entry.filepath, title: entry.title, mode: entry.mode },
             index,
           ),
         );
@@ -521,39 +488,15 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
     [navigation],
   );
 
-  // Map each resolved IMAGE embed's relative link (`../Photos/x.jpg`) to its
-  // device URI so the markdown renderer can draw it inline (see makeImageRule).
-  // Non-image files stay out — they render as tappable rows in the card below.
-  const imageUriByRel = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const a of attachments) {
-      if (a.mime.startsWith("image/")) m.set(a.rel, a.uri);
-    }
-    return m;
-  }, [attachments]);
   const markdownRules = useMemo(
     () => ({
-      image: makeImageRule(imageUriByRel, [
+      image: makeImageRule(imageUrisByRel(attachments), [
         styles.inlineImage,
         { backgroundColor: theme.colors.surfaceVariant },
       ]),
     }),
-    [imageUriByRel, theme.colors.surfaceVariant],
+    [attachments, theme.colors.surfaceVariant],
   );
-
-  // Open a non-image attachment via the system share sheet. shareAsync wants a
-  // file:// path; SAF content:// may not open on every device — surface the
-  // failure rather than crash. (No-ops silently when sharing is unavailable.)
-  const openAttachment = useCallback(async (uri: string): Promise<void> => {
-    try {
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri);
-      }
-    } catch (e: unknown) {
-      const reason = e instanceof Error ? e.message : String(e);
-      console.warn("[RecentDetail] open attachment failed:", reason);
-    }
-  }, []);
 
   const { canReEnrich, canTranscribe, canEnhance, showAudioPlayer } = noteCapabilities(
     extractFrontmatterField(body, "kind") ?? "",
@@ -590,6 +533,12 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
   });
   const inlineBusyLabel = busyLabel(busy);
   const actionsBusy = isActionsBusy(busy);
+  // Every secondary action dismisses the sheet first, then dispatches — the
+  // sheet is a menu, not a surface any of these report progress back into.
+  const fromSheet = (action: () => void) => () => {
+    setActionsOpen(false);
+    action();
+  };
 
   // Rich (WYSIWYG) editing takes the whole screen so TenTap's formatting toolbar
   // can dock above the keyboard.
@@ -740,52 +689,20 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
         />
       ) : null}
 
-      <Snackbar
-        visible={karakeep.karakeepDone}
-        onDismiss={karakeep.dismissKarakeepDone}
-        // The skip notice names files — give it time to be read.
-        duration={karakeep.karakeepSkipNote ? 7000 : 2500}
-      >
-        {karakeepSnackbarMessage(
-          karakeep.karakeepUpdated,
-          karakeep.karakeepSkipNote,
-        )}
-      </Snackbar>
-
-      <Snackbar
-        visible={relatedLinked !== null}
-        onDismiss={() => setRelatedLinked(null)}
-        duration={2500}
-      >
-        {relatedLinked ?? ""}
-      </Snackbar>
-
-      <Snackbar
-        visible={photoAttached}
-        onDismiss={() => setPhotoAttached(false)}
-        duration={2500}
-      >
-        Photo attached.
-      </Snackbar>
-
-      <Snackbar
-        visible={enhancedWith !== null}
-        onDismiss={() => setEnhancedWith(null)}
-        duration={2500}
-      >
-        {enhancedWith ? `Enhanced with ${enhancedWith}.` : ""}
-      </Snackbar>
-
-      <Snackbar
-        visible={karakeep.karakeepQueued}
-        onDismiss={karakeep.dismissKarakeepQueued}
-        // Informational, not an error — the export will send itself; give the
-        // VPN hint time to be read.
-        duration={6000}
-      >
-        Karakeep is unreachable — export queued, it will send when the server is
-        reachable. Check VPN/Tailscale.
-      </Snackbar>
+      <RecentDetailSnackbars
+        karakeepDone={karakeep.karakeepDone}
+        karakeepUpdated={karakeep.karakeepUpdated}
+        karakeepSkipNote={karakeep.karakeepSkipNote}
+        onDismissKarakeepDone={karakeep.dismissKarakeepDone}
+        karakeepQueued={karakeep.karakeepQueued}
+        onDismissKarakeepQueued={karakeep.dismissKarakeepQueued}
+        relatedLinked={relatedLinked}
+        onDismissRelatedLinked={() => setRelatedLinked(null)}
+        photoAttached={photoAttached}
+        onDismissPhotoAttached={() => setPhotoAttached(false)}
+        enhancedWith={enhancedWith}
+        onDismissEnhancedWith={() => setEnhancedWith(null)}
+      />
 
       <Portal>
         <NoteActionsSheet
@@ -794,48 +711,21 @@ export default function RecentDetailScreen({ route, navigation }: Props) {
           onDismiss={() => setActionsOpen(false)}
           canReEnrich={canReEnrich}
           canFinishEnrichment={!missing && isPendingEnrich(body)}
-          onFinishEnrichment={() => {
-            setActionsOpen(false);
-            void handleFinishEnrichment();
-          }}
+          onFinishEnrichment={fromSheet(() => void handleFinishEnrichment())}
           canReEnrichGeneral={!missing && isReEnrichableMode(entry.mode)}
-          onGeneralReEnrich={() => {
-            setActionsOpen(false);
-            void handleGeneralReEnrich();
-          }}
+          onGeneralReEnrich={fromSheet(() => void handleGeneralReEnrich())}
           canTranscribe={canTranscribe}
           canEnhance={canEnhance}
           karakeepConfigured={karakeepConfigured}
           actionsBusy={actionsBusy}
           missing={missing}
-          onEnhance={() => {
-            setActionsOpen(false);
-            void handleEnhance();
-          }}
-          onAttachPhoto={() => {
-            setActionsOpen(false);
-            setAttachOpen(true);
-          }}
-          onReEnrich={() => {
-            setActionsOpen(false);
-            void handleReEnrich();
-          }}
-          onTranscribe={() => {
-            setActionsOpen(false);
-            void handleTranscribe();
-          }}
-          onSendToKarakeep={() => {
-            setActionsOpen(false);
-            karakeep.handleSendToKarakeep();
-          }}
-          onFileInfo={() => {
-            setActionsOpen(false);
-            setFileInfoOpen(true);
-          }}
-          onDelete={() => {
-            setActionsOpen(false);
-            setConfirmVisible(true);
-          }}
+          onEnhance={fromSheet(() => void handleEnhance())}
+          onAttachPhoto={fromSheet(() => setAttachOpen(true))}
+          onReEnrich={fromSheet(() => void handleReEnrich())}
+          onTranscribe={fromSheet(() => void handleTranscribe())}
+          onSendToKarakeep={fromSheet(() => karakeep.handleSendToKarakeep())}
+          onFileInfo={fromSheet(() => setFileInfoOpen(true))}
+          onDelete={fromSheet(() => setConfirmVisible(true))}
         />
 
         <PhotoAttachModal
