@@ -29,6 +29,79 @@ describe("listModels", () => {
 
     expect(models).toEqual(["a-model", "b-model"]);
   });
+
+  // #176 — probe-only classification: no note content ever crosses this
+  // call, so a BLANK key means the transport gate protects nothing.
+  it("allows a keyless catalog browse against a plaintext public host", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: "m" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const models = await listModels("http://public.example.com", "");
+    expect(models).toEqual(["m"]);
+  });
+
+  it("still rejects a plaintext public host when a real key would be sent", async () => {
+    await expect(
+      listModels("http://public.example.com", "sk-test"),
+    ).rejects.toThrow(/https:\/\//);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // #176 HIGH fix: a KEYED catalog browse against a provider the user has
+  // already consented to (Settings' cleartext-consent toggle) must proceed —
+  // without this, "Browse Models" would throw for a consented http:// entry
+  // even though enrichment against that same entry succeeds.
+  it("allows a KEYED catalog browse when allowInsecureTransport is true", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: "m" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const models = await listModels("http://public.example.com", "sk-test", true);
+    expect(models).toEqual(["m"]);
+  });
+
+  // Re-verification (explicit false, not just the default) — a NON-consented
+  // KEYED probe must still be refused. Pairs with the "true" case above so
+  // both sides of the consent bypass are directly exercised.
+  it("still rejects a KEYED catalog browse when allowInsecureTransport is explicitly false", async () => {
+    await expect(
+      listModels("http://public.example.com", "sk-test", false),
+    ).rejects.toThrow(/https:\/\//);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // #176 LOW fix: assertHttpsOrLocalForProbe skips the gate on
+  // `!apiKey.trim()`, treating a whitespace-only key as "no credential" —
+  // the header must agree, both in whether it's sent (an all-whitespace key
+  // must NOT reach a public plaintext host as "Bearer    ") and in what it
+  // sends for a genuine key with incidental padding.
+  it("treats a whitespace-only key as blank: gate skips AND no Authorization header is sent", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: "m" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const models = await listModels("http://public.example.com", "   ");
+    expect(models).toEqual(["m"]);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it("trims a genuine key before sending it in the Authorization header", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await listModels("http://127.0.0.1:8080", "  sk-test  ");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
+  });
 });
 
 // ── healthCheck ───────────────────────────────────────────────────────────────
@@ -104,6 +177,60 @@ describe("healthCheck", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // #176 — probe-only classification: healthCheck sends no note content, and
+  // its Authorization header is already key-conditional (see the "omits the
+  // Authorization header" case above), so a blank key never transmits a
+  // credential. A keyless "Test Connection" against a plaintext public host
+  // now probes instead of short-circuiting to "unsafe-url".
+  it("probes (does not short-circuit) a plaintext public host when no key is set", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 200 }));
+    expect(await healthCheck("http://example.com:8080", "")).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still returns 'unsafe-url' for a plaintext public host when a key IS set", async () => {
+    expect(await healthCheck("http://example.com:8080", "sk-test")).toBe(
+      "unsafe-url",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // #176 HIGH fix: consent (Settings' cleartext-consent toggle, threaded in
+  // from the resolved provider) is a second, independent escape hatch — a
+  // KEYED "Test Connection" against a consented plaintext public host must
+  // proceed, not short-circuit to "unsafe-url".
+  it("probes a keyed plaintext public host when allowInsecureTransport is true", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 200 }));
+    expect(
+      await healthCheck("http://example.com:8080", "sk-test", true),
+    ).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still returns 'unsafe-url' for a keyed plaintext public host when allowInsecureTransport is false", async () => {
+    expect(
+      await healthCheck("http://example.com:8080", "sk-test", false),
+    ).toBe("unsafe-url");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Team-lead's note: confirm the TLS-trust classification (merged in #186,
+  // main 73f5441) still runs BEFORE any of the new probe-consent logic —
+  // this is the catch block, entirely downstream of the pre-fetch gate
+  // check this fix touches, so it must be unaffected. Exercised here with
+  // allowInsecureTransport explicitly set (both values) as a direct
+  // regression guard, not just via the untouched-code argument.
+  it("still classifies untrusted-tls correctly regardless of allowInsecureTransport", async () => {
+    fetchMock.mockRejectedValueOnce(
+      new TypeError(
+        "javax.net.ssl.SSLHandshakeException: java.security.cert.CertPathValidatorException: Trust anchor for certification path not found",
+      ),
+    );
+    expect(
+      await healthCheck("https://192.168.1.5:8443", "sk-test", true),
+    ).toBe("untrusted-tls");
+  });
+
   // Device-verified 2026-08-17: Relais's self-signed cert on its https://
   // port (8443) throws a plain TypeError on Android whose message is the
   // Java exception text — these are the real Conscrypt/BoringSSL strings,
@@ -125,5 +252,23 @@ describe("healthCheck", () => {
     expect(await healthCheck("https://192.168.1.5:8443", "sk-test")).toBe(
       "unreachable",
     );
+  });
+
+  // #176 LOW fix: isCredentialSafeUrlForProbe skips the gate on
+  // `!apiKey.trim()` — the header must agree, both in whether it's sent (an
+  // all-whitespace key must not reach a public plaintext host as
+  // "Bearer    ") and in what it sends for a genuine key with padding.
+  it("treats a whitespace-only key as blank: gate skips (probes) AND no Authorization header is sent", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 200 }));
+    expect(await healthCheck("http://example.com:8080", "   ")).toBe("ok");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it("trims a genuine key before sending it in the Authorization header", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 200 }));
+    await healthCheck("http://127.0.0.1:8080", "  sk-test  ");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
   });
 });

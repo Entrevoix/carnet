@@ -439,3 +439,101 @@ describe("insecure-transport errors and the fallback chain", () => {
     expect(fetchMock).toHaveBeenCalledTimes(0);
   });
 });
+
+// #176 — per-provider consent (LlmProvider.allowInsecureTransport) bypasses
+// the transport gate for THAT provider's baseUrl, threaded through
+// dispatcher.ts's buildConfig into ProviderConfig.
+describe("allowInsecureTransport consent (#176)", () => {
+  const TAILNET_REMOTE = {
+    id: "custom-tailnet",
+    label: "Tailnet box",
+    baseUrl: "http://my-box.tailnet.ts.net",
+    model: "m",
+    visionModel: "vm",
+    preset: "custom",
+  };
+
+  it("consent off: the gate still blocks an http:// tailnet-hostname primary", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ...BASE_SETTINGS,
+      llmProviders: [...BASE_SETTINGS.llmProviders, TAILNET_REMOTE],
+      activeProviderId: TAILNET_REMOTE.id,
+    });
+
+    await expect(enrichIdea("consent off")).rejects.toSatisfy(
+      (e: unknown) => isInsecureTransportError(e),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+  });
+
+  it("consent on: an http:// tailnet-hostname primary passes the enrichment gate", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ...BASE_SETTINGS,
+      llmProviders: [
+        ...BASE_SETTINGS.llmProviders,
+        { ...TAILNET_REMOTE, allowInsecureTransport: true },
+      ],
+      activeProviderId: TAILNET_REMOTE.id,
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("# consented\n"));
+
+    const result = await enrichIdea("consent on");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://my-box.tailnet.ts.net/v1/chat/completions");
+    expect(result.markdown).toContain("consented");
+  });
+
+  // Devil's-advocate MEDIUM finding: buildConfig resolves the primary's and
+  // the fallback's ProviderConfig from TWO SEPARATE provider entries
+  // (withFallbackChain calls buildConfig once per id), so consent must never
+  // bleed from one into the other — but that property was previously
+  // unverified by any test. This locks it down: a CONSENTED primary that
+  // fails with an unreachable-class error must still hit the transport gate
+  // on a NON-consented fallback, and the resulting error must be the
+  // fallback's OWN insecure-transport rejection, not a silent pass-through
+  // of the primary's consent.
+  it("does not bleed a consented primary's allowInsecureTransport into a non-consented fallback", async () => {
+    const CONSENTED_PRIMARY = {
+      id: "custom-consented-primary",
+      label: "Consented primary",
+      baseUrl: "http://primary.example.com",
+      model: "m",
+      visionModel: "vm",
+      preset: "custom",
+      allowInsecureTransport: true,
+    };
+    const NON_CONSENTED_FALLBACK = {
+      id: "custom-non-consented-fallback",
+      label: "Non-consented fallback",
+      baseUrl: "http://fallback.example.com",
+      model: "m",
+      visionModel: "vm",
+      preset: "custom",
+      // allowInsecureTransport intentionally absent — must default to false.
+    };
+    vi.mocked(getSettings).mockResolvedValue({
+      ...BASE_SETTINGS,
+      llmProviders: [
+        ...BASE_SETTINGS.llmProviders,
+        CONSENTED_PRIMARY,
+        NON_CONSENTED_FALLBACK,
+      ],
+      activeProviderId: CONSENTED_PRIMARY.id,
+      fallbackProviderId: NON_CONSENTED_FALLBACK.id,
+    });
+    // Primary is consented, so it clears the transport gate and reaches the
+    // network — where it fails with an unreachable-class (network) error,
+    // the one failure class that triggers a fallback retry.
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+
+    await expect(enrichIdea("no-bleed check")).rejects.toSatisfy(
+      (e: unknown) => isInsecureTransportError(e),
+    );
+    // Exactly one fetch: the primary's failed attempt. The fallback never
+    // reaches the network at all — assertHttpsOrLocal rejects it before any
+    // fetch, because ITS OWN allowInsecureTransport is false/absent.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

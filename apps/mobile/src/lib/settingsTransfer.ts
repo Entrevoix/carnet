@@ -95,7 +95,15 @@ export function parseSettingsTransfer(raw: string): ImportedSettings {
   validateProvidersAndReferences(settings);
 
   return {
-    llmProviders: settings.llmProviders.map((provider) => ({ ...provider })),
+    // Strip allowInsecureTransport (#176) on import — a receiving device
+    // must re-consent explicitly rather than silently inherit another
+    // device's cleartext opt-in for a provider it may resolve to a
+    // different address on THIS network. Consent is a per-device trust
+    // decision, not a portable setting.
+    llmProviders: settings.llmProviders.map((provider) => ({
+      ...provider,
+      allowInsecureTransport: false,
+    })),
     activeProviderId: settings.activeProviderId,
     nextCustomSeq: settings.nextCustomSeq,
     fallbackProviderId: settings.fallbackProviderId,

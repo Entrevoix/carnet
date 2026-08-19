@@ -162,6 +162,15 @@ export async function guardedFetch<T>(
  * proxies) default to text/event-stream even when stream is omitted. RN's
  * fetch then hangs on `await response.json()` because the SSE body never
  * closes into a parseable JSON document.
+ *
+ * CONTENT-BEARING classification (#176 security review): `messages` always
+ * carries the user's note text (or an image data URL), regardless of
+ * whether `apiKey` is blank — so `assertHttpsOrLocal` below stays
+ * UNCONDITIONAL BY DEFAULT, unlike the probe-only sites in llmClient.ts
+ * (listModels/healthCheck), which skip the gate entirely for a keyless
+ * call. A keyless `http://public-host` must still be refused here — UNLESS
+ * the caller's resolved provider has explicit consent
+ * (`allowInsecureTransport`, default false), threaded straight through.
  */
 export async function executeChat(
   baseUrl: string,
@@ -171,10 +180,11 @@ export async function executeChat(
   noteType: NoteType,
   label: string,
   timeoutMs: number = FETCH_TIMEOUT_MS,
+  allowInsecureTransport = false,
 ): Promise<EnrichResult> {
   const trimmed = assertUrlConfigured(baseUrl, label);
   const trimmedUrl = trimmed.replace(/\/+$/, "");
-  assertHttpsOrLocal(trimmedUrl, label);
+  assertHttpsOrLocal(trimmedUrl, label, allowInsecureTransport);
 
   const url = `${trimmedUrl}/v1/chat/completions`;
   const body = JSON.stringify({ model, messages, stream: false });
@@ -227,12 +237,22 @@ export async function chatCompletion(
   noteType: NoteType,
   label: string,
   timeoutMs?: number,
+  allowInsecureTransport = false,
 ): Promise<EnrichResult> {
   const messages: OpenAIMessage[] = [
     { role: "system", content: prompt.system },
     { role: "user", content: prompt.user },
   ];
-  return executeChat(baseUrl, apiKey, model, messages, noteType, label, timeoutMs);
+  return executeChat(
+    baseUrl,
+    apiKey,
+    model,
+    messages,
+    noteType,
+    label,
+    timeoutMs,
+    allowInsecureTransport,
+  );
 }
 
 /** Strip a leading ``` fence (and matching trailer). Does not trim unfenced content. */

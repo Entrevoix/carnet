@@ -113,3 +113,34 @@ describe("isLocalNetworkUrl", () => {
     expect(isLocalNetworkUrl("not a url")).toBe(false);
   });
 });
+
+// #176 security review: isLocalNetworkUrl (UX-only — timeout tier, readiness
+// hint, keyless-provider banner) was widened to Tailscale's CGNAT range;
+// isAllowedPlaintextHost/isCredentialSafeUrl (the CREDENTIAL gate) were
+// deliberately left untouched. Both directions are asserted below so a
+// future edit that accidentally widens the gate too gets caught here.
+describe("100.64.0.0/10 (Tailscale CGNAT) — UX predicate only", () => {
+  it("isLocalNetworkUrl accepts the whole range, either scheme", () => {
+    expect(isLocalNetworkUrl("http://100.64.0.0:8080")).toBe(true);
+    expect(isLocalNetworkUrl("http://100.100.50.1:8080")).toBe(true);
+    expect(isLocalNetworkUrl("https://100.127.255.255")).toBe(true);
+  });
+
+  it("isLocalNetworkUrl rejects addresses just outside the range", () => {
+    expect(isLocalNetworkUrl("http://100.63.255.255:8080")).toBe(false);
+    expect(isLocalNetworkUrl("http://100.128.0.0:8080")).toBe(false);
+    expect(isLocalNetworkUrl("http://100.0.0.1:8080")).toBe(false);
+    expect(isLocalNetworkUrl("http://100.255.0.1:8080")).toBe(false);
+  });
+
+  // Negative control: the credential gate must NOT follow isLocalNetworkUrl's
+  // widening — a Tailscale address is still an unsafe host to send a Bearer
+  // key to over plain http://, in both directions of the boundary.
+  it("does NOT widen isAllowedPlaintextHost / isCredentialSafeUrl", () => {
+    expect(isAllowedPlaintextHost("http://100.64.0.0:8080")).toBe(false);
+    expect(isAllowedPlaintextHost("http://100.100.50.1:8080")).toBe(false);
+    expect(isAllowedPlaintextHost("http://100.127.255.255:8080")).toBe(false);
+    expect(isCredentialSafeUrl("http://100.64.0.0:8080")).toBe(false);
+    expect(isCredentialSafeUrl("http://100.100.50.1:8080")).toBe(false);
+  });
+});

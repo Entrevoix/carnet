@@ -74,6 +74,25 @@ describe("settings transfer", () => {
     expect(() => parseSettingsTransfer(JSON.stringify(parsed))).toThrow("missing provider");
   });
 
+  // #176 — allowInsecureTransport is a per-device trust decision, not a
+  // portable setting: an imported provider must land with consent CLEARED,
+  // even if the source device had it enabled.
+  it("strips allowInsecureTransport on import", () => {
+    const imported = parseSettingsTransfer(
+      serializeSettingsTransfer(
+        settings({
+          llmProviders: [
+            ...buildDefaultProviders().map((p) =>
+              p.id === "omniroute" ? { ...p, allowInsecureTransport: true } : p,
+            ),
+          ],
+        }),
+      ),
+    );
+    const omniroute = imported.llmProviders.find((p) => p.id === "omniroute");
+    expect(omniroute?.allowInsecureTransport).toBe(false);
+  });
+
   it("reissues custom ids so an imported endpoint cannot inherit a local key", () => {
     const imported = parseSettingsTransfer(
       serializeSettingsTransfer(

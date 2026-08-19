@@ -1,8 +1,8 @@
 import { StyleSheet } from "react-native";
-import { Button, HelperText, TextInput } from "react-native-paper";
+import { Button, HelperText, List, Switch, TextInput } from "react-native-paper";
 
 import type { HealthResult } from "../lib/llmClient";
-import type { EditBuffer } from "../lib/llmProviderForm";
+import { shouldShowInsecureTransportToggle, type EditBuffer } from "../lib/llmProviderForm";
 import { apiKeyFieldLabel, apiKeyFieldPlaceholder } from "../lib/settingsForm";
 import { caretProps, spacing, type CarnetTheme } from "../lib/theme";
 
@@ -13,6 +13,7 @@ interface ProviderEditFormProps {
   onBaseUrlChange: (v: string) => void;
   onModelChange: (v: string) => void;
   onVisionModelChange: (v: string) => void;
+  onAllowInsecureTransportChange: (v: boolean) => void;
   isCustom: boolean;
   isRelais: boolean;
   keyConfigured: boolean;
@@ -49,6 +50,7 @@ export function ProviderEditForm({
   onBaseUrlChange,
   onModelChange,
   onVisionModelChange,
+  onAllowInsecureTransportChange,
   isCustom,
   isRelais,
   keyConfigured,
@@ -105,6 +107,35 @@ export function ProviderEditForm({
         other provider must serve https:// so your API key is never sent in
         the clear.
       </HelperText>
+
+      {shouldShowInsecureTransportToggle(editBuffer.baseUrl) && (
+        <>
+          {/* #176: this address is plain http:// and NOT one of the
+              loopback/RFC1918 hosts the transport gate already allows
+              (netAllowlist.ts) — e.g. a Tailscale/VPN hostname. Off by
+              default; consenting here sets LlmProvider.allowInsecureTransport
+              for THIS entry only, and the consent is stripped on settings
+              import (see settingsTransfer.ts) so a receiving device must
+              re-consent explicitly. */}
+          <List.Item
+            title="Send unencrypted to this address"
+            description="This address looks like a private network (VPN/LAN). Send the API key and note text unencrypted to it?"
+            descriptionNumberOfLines={3}
+            left={(p) => <List.Icon {...p} icon="lock-open-alert-outline" />}
+            right={() => (
+              <Switch
+                value={editBuffer.allowInsecureTransport}
+                onValueChange={onAllowInsecureTransportChange}
+              />
+            )}
+            style={styles.insecureTransportRow}
+          />
+          <HelperText type="error" visible={editBuffer.allowInsecureTransport}>
+            Both your API key and the note's full text will cross this
+            connection unencrypted. Only enable this for a network you trust.
+          </HelperText>
+        </>
+      )}
 
       <TextInput
         {...caretProps(theme)}
@@ -264,4 +295,5 @@ export function ProviderEditForm({
 const styles = StyleSheet.create({
   inlineBtn: { alignSelf: "flex-start", marginTop: spacing.xs },
   saveEntry: { alignSelf: "flex-start", marginTop: spacing.sm },
+  insecureTransportRow: { paddingHorizontal: 0 },
 });

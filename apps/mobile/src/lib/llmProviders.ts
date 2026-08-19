@@ -30,6 +30,21 @@ export interface LlmProvider {
    * only check anywhere is `preset === null` ("is this user-created?"),
    * rather than matching ids against the preset table. */
   preset: string | null;
+  /** Per-provider opt-in (#176 security review) to send the API key AND
+   * note content over plain http:// to a URL the credential gate
+   * (netAllowlist.ts's isAllowedPlaintextHost/isCredentialSafeUrl) would
+   * otherwise refuse — e.g. a Tailscale/VPN hostname or IP that isn't a
+   * literal loopback/RFC1918 dotted-quad. Optional and defaults to
+   * off/absent: every existing persisted entry and test fixture predates
+   * this field, so `undefined` must read the same as `false` everywhere
+   * (dispatcher.ts's buildConfig, ProviderEditForm.tsx's visibility check).
+   * Surfaced in the UI ONLY when the entry's base URL is http:// and not
+   * already covered by the gate — see llmProviderForm.ts's
+   * shouldShowInsecureTransportToggle. Has NO Karakeep equivalent: Karakeep
+   * is out of scope for this consent mechanism (karakeep.ts's
+   * assertHttpsOrLocal doc). Stripped on settings IMPORT — see
+   * settingsTransfer.ts. */
+  allowInsecureTransport?: boolean;
 }
 
 /**
@@ -314,7 +329,9 @@ export function isLlmProvider(x: unknown): x is LlmProvider {
     typeof o.baseUrl === "string" &&
     typeof o.model === "string" &&
     typeof o.visionModel === "string" &&
-    (o.preset === null || typeof o.preset === "string")
+    (o.preset === null || typeof o.preset === "string") &&
+    (o.allowInsecureTransport === undefined ||
+      typeof o.allowInsecureTransport === "boolean")
   );
 }
 

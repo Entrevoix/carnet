@@ -3,10 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // llmClient.ts pulls in the fetch/timeout machinery this module doesn't need
 // to exercise directly — mock healthCheck at the boundary, same seam
 // cardScanOutcome.test.ts uses for dispatcher.
-const healthCheckMock = vi.fn<(baseUrl: string, apiKey: string) => Promise<string>>();
+const healthCheckMock =
+  vi.fn<(baseUrl: string, apiKey: string, allowInsecureTransport?: boolean) => Promise<string>>();
 
 vi.mock("./llmClient", () => ({
-  healthCheck: (...args: unknown[]) => healthCheckMock(...(args as [string, string])),
+  healthCheck: (...args: unknown[]) =>
+    healthCheckMock(...(args as [string, string, boolean?])),
 }));
 
 import {
@@ -101,10 +103,27 @@ describe("probeLocalProviderReachability", () => {
     ).resolves.toBe("unreachable");
   });
 
-  it("passes the base URL and api key straight through to healthCheck", async () => {
+  it("passes the base URL and api key straight through to healthCheck, allowInsecureTransport defaulted false", async () => {
     healthCheckMock.mockResolvedValue("ok");
     await probeLocalProviderReachability("http://127.0.0.1:8080", "secret-key");
-    expect(healthCheckMock).toHaveBeenCalledWith("http://127.0.0.1:8080", "secret-key");
+    expect(healthCheckMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8080",
+      "secret-key",
+      false,
+    );
+  });
+
+  // #176 HIGH fix: without forwarding this, a provider the user consented to
+  // for enrichment would still fail its OWN readiness probe and show a
+  // permanent "Not reachable" hint even while enrichment succeeded.
+  it("forwards an explicit allowInsecureTransport: true to healthCheck", async () => {
+    healthCheckMock.mockResolvedValue("ok");
+    await probeLocalProviderReachability("http://tailnet.example:8080", "secret-key", true);
+    expect(healthCheckMock).toHaveBeenCalledWith(
+      "http://tailnet.example:8080",
+      "secret-key",
+      true,
+    );
   });
 });
 

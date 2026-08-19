@@ -51,17 +51,17 @@ import {
   buildSharedLinkPrompt,
   type PromptPair,
 } from "./prompts";
-import { isCredentialSafeUrl } from "./netAllowlist";
 import { withTimeout } from "./httpClient";
 import { fetchUrlPreview, type UrlPreview } from "./urlpreview";
 import type { IdeaStatus } from "@carnet/shared";
 import { LlmClientError, timeoutError } from "./llmErrors";
 import {
-  assertHttpsOrLocal,
+  assertHttpsOrLocalForProbe,
   assertModelConfigured,
   assertUrlConfigured,
   assertVisionModelConfigured,
   assertVisionReady,
+  isCredentialSafeUrlForProbe,
   type VisionReadyConfig,
 } from "./llmGuards";
 import {
@@ -129,15 +129,37 @@ export function withSystemOverride(
 
 /**
  * Fetch the available model catalog from `${baseUrl}/v1/models`. Returns
- * the sorted list of model IDs. Same auth + HTTPS rules as chatCompletion.
+ * the sorted list of model IDs. Same auth + HTTPS rules as chatCompletion —
+ * WITH one exception: see the classification note below.
  *
  * This is the network primitive behind the Settings screen's "Browse
  * models" picker — so the user can see what's actually available on their
  * configured provider instead of guessing a model name.
+ *
+ * PROBE-ONLY classification (#176): this call sends no note content, only a
+ * catalog GET — every Authorization header this codebase builds is already
+ * key-conditional (`apiKey ? {...} : {}`), so a blank `apiKey` means nothing
+ * secret is ever in flight here. The transport gate is therefore only
+ * enforced when `apiKey` is actually present AND the caller hasn't passed
+ * `allowInsecureTransport: true` (`assertHttpsOrLocalForProbe`) — a keyless
+ * catalog browse against a plaintext public gateway is allowed, and so is a
+ * keyed one against a provider the user has explicitly consented to
+ * (Settings → LLM provider's cleartext-consent toggle — see
+ * llmProviders.ts's `allowInsecureTransport`). Content-bearing calls
+ * (executeChat, ocrCardViaVision) are NOT narrowed this way — see
+ * llmGuards.ts's assertHttpsOrLocal doc.
+ *
+ * `allowInsecureTransport` defaults to `false` so every pre-#176 caller (and
+ * every existing call in this codebase that doesn't have a resolved provider
+ * in hand) is unaffected; callers that DO have the provider — the Settings
+ * screen's model browser — must pass its `allowInsecureTransport` field
+ * through explicitly, since a raw baseUrl/apiKey pair carries no consent
+ * information on its own.
  */
 export async function listModels(
   baseUrl: string,
   apiKey: string,
+  allowInsecureTransport = false,
 ): Promise<string[]> {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   // No ProviderConfig (and therefore no label) at this call site — the model
@@ -150,7 +172,7 @@ export async function listModels(
   // its listModels re-export) — the only real caller (SettingsScreen) always
   // passes an explicit URL, so the blank-default path was already dead for
   // this call, and the message branding was never asserted by any test.
-  assertHttpsOrLocal(trimmed, "LLM provider");
+  assertHttpsOrLocalForProbe(trimmed, apiKey, "LLM provider", allowInsecureTransport);
 
   const url = `${trimmed}/v1/models`;
 
@@ -159,7 +181,12 @@ export async function listModels(
     {
       method: "GET",
       headers: {
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        // Trimmed truthiness (#176 LOW fix) — MUST match
+        // assertHttpsOrLocalForProbe's `!apiKey.trim()` gate-skip check
+        // above. A whitespace-only key is treated as "no credential" for
+        // the gate; sending `Authorization: Bearer    ` here would
+        // contradict that by putting key-shaped content on the wire anyway.
+        ...(apiKey.trim() ? { Authorization: `Bearer ${apiKey.trim()}` } : {}),
       },
     },
     "LLM provider",
@@ -209,13 +236,29 @@ export type HealthResult =
  * calls were succeeding. Probing an endpoint nothing else uses cannot tell the
  * user whether the thing they care about works; probing `/v1/models` can, and
  * it validates the API key besides.
+ *
+ * PROBE-ONLY classification (#176): same reasoning as `listModels` above —
+ * this call carries no note content, and the Authorization header is
+ * key-conditional (line below), so a blank `apiKey` never transmits a
+ * credential. The transport gate is therefore only enforced when `apiKey`
+ * is non-blank AND `allowInsecureTransport` is false
+ * (`isCredentialSafeUrlForProbe`) — "Test Connection" against a keyless
+ * plaintext public host now probes instead of short-circuiting to
+ * "unsafe-url", and so does a keyed probe against a provider the user has
+ * explicitly consented to for this endpoint (Settings → LLM provider's
+ * cleartext-consent toggle). Defaults to `false` so every caller without a
+ * resolved provider in hand is unaffected; the Settings screen's Test
+ * Connection button passes the entry's `allowInsecureTransport` explicitly.
  */
 export async function healthCheck(
   baseUrl: string,
   apiKey: string,
+  allowInsecureTransport = false,
 ): Promise<HealthResult> {
   const trimmed = (baseUrl.trim() || DEFAULT_LOCAL_LLM_URL).replace(/\/+$/, "");
-  if (!isCredentialSafeUrl(trimmed)) return "unsafe-url";
+  if (!isCredentialSafeUrlForProbe(trimmed, apiKey, allowInsecureTransport)) {
+    return "unsafe-url";
+  }
   try {
     return await withTimeout(
       FETCH_TIMEOUT_MS,
@@ -224,7 +267,10 @@ export async function healthCheck(
         const response = await fetch(`${trimmed}/v1/models`, {
           method: "GET",
           headers: {
-            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+            // Trimmed truthiness (#176 LOW fix) — MUST match
+            // isCredentialSafeUrlForProbe's `!apiKey.trim()` gate-skip check
+            // above. See listModels's identical fix for the rationale.
+            ...(apiKey.trim() ? { Authorization: `Bearer ${apiKey.trim()}` } : {}),
           },
           signal,
         });
@@ -284,6 +330,7 @@ export async function enrichIdea(
     "idea",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -306,6 +353,7 @@ export async function enrichJournal(
     "journal",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -328,6 +376,7 @@ export async function enrichPerson(
     "person",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -377,6 +426,7 @@ export async function enrichSharedImage(
     "shared",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -528,6 +578,7 @@ export async function enrichSharedLink(
     "shared",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -549,6 +600,7 @@ export async function promoteIdea(
     "idea",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -586,6 +638,7 @@ export async function enhanceProse(
     "journal",
     config.label,
     ENHANCE_TIMEOUT_MS,
+    config.allowInsecureTransport ?? false,
   );
 }
 

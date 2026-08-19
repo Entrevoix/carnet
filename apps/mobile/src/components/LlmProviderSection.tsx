@@ -109,6 +109,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     baseUrl: "",
     model: "",
     visionModel: "",
+    allowInsecureTransport: false,
   });
   const [keyConfigured, setKeyConfigured] = useState(false);
   const [pendingKey, setPendingKey] = useState("");
@@ -208,7 +209,11 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       const entries = await Promise.all(
         locals.map(async (p) => {
           const key = await providerKeys.getKey(p.id);
-          const state = await probeLocalProviderReachability(p.baseUrl, key);
+          const state = await probeLocalProviderReachability(
+            p.baseUrl,
+            key,
+            p.allowInsecureTransport ?? false,
+          );
           return [p.id, state] as const;
         }),
       );
@@ -474,9 +479,14 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     // Probe with the key the real calls would use — an unsaved key typed into
     // the field wins over the stored one, same precedence as Browse models.
     const stored = await providerKeys.getKey(active.id);
+    // allowInsecureTransport comes from editBuffer, not the saved `active`
+    // entry — Test Connection probes the URL the user is CURRENTLY editing,
+    // so it must honor a not-yet-saved toggle flip the same way it already
+    // honors a not-yet-saved URL edit.
     const result = await healthCheck(
       editBuffer.baseUrl,
       resolveBrowseApiKey(pendingKey, stored),
+      editBuffer.allowInsecureTransport,
     );
     if (!mountedRef.current) return;
     setTestingConnection(false);
@@ -510,7 +520,17 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
       );
       const stored = await providerKeys.getKey(keyOwnerId);
       const key = src ? stored : resolveBrowseApiKey(pendingKey, stored);
-      const list = await listModels(src ? src.baseUrl : editBuffer.baseUrl, key);
+      // allowInsecureTransport mirrors the same src-vs-editBuffer split as
+      // baseUrl/key just above: "enhance" reads the resolved SAVED provider's
+      // consent, chat/vision read the not-yet-saved edit buffer's.
+      const allowInsecureTransport = src
+        ? (src.allowInsecureTransport ?? false)
+        : editBuffer.allowInsecureTransport;
+      const list = await listModels(
+        src ? src.baseUrl : editBuffer.baseUrl,
+        key,
+        allowInsecureTransport,
+      );
       // One-shot diagnostic, console-only: filterAndSplitModels collapses
       // repeated ids to stop the browser flickering (#148), which also silences
       // the only symptom of a gateway serving duplicates. Log it here — once
@@ -619,6 +639,9 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         onBaseUrlChange={(v) => setEditBuffer({ ...editBuffer, baseUrl: v })}
         onModelChange={(v) => setEditBuffer({ ...editBuffer, model: v })}
         onVisionModelChange={(v) => setEditBuffer({ ...editBuffer, visionModel: v })}
+        onAllowInsecureTransportChange={(v) =>
+          setEditBuffer({ ...editBuffer, allowInsecureTransport: v })
+        }
         isCustom={isCustom}
         isRelais={isRelais}
         keyConfigured={keyConfigured}

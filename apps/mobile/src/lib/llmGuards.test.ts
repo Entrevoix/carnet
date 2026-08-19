@@ -4,7 +4,14 @@
 // llmClient.test.ts's header comment for the origin of this suite.
 
 import { describe, expect, it } from "vitest";
-import { assertBase64UnderLimit, assertVisionReady, MAX_SHARED_IMAGE_BYTES } from "./llmGuards";
+import {
+  assertBase64UnderLimit,
+  assertHttpsOrLocal,
+  assertHttpsOrLocalForProbe,
+  assertVisionReady,
+  isCredentialSafeUrlForProbe,
+  MAX_SHARED_IMAGE_BYTES,
+} from "./llmGuards";
 import {
   isInsecureTransportError,
   isNotConfiguredError,
@@ -128,5 +135,114 @@ describe("assertVisionReady", () => {
     // message a user sees must not change with the extraction.
     expect(() => assertVisionReady({ ...ready, baseUrl: "", visionModel: "" }))
       .toThrow(/vision model/i);
+  });
+});
+
+// #176 security review: content-bearing calls (executeChat, assertVisionReady
+// -> ocrCardViaVision) keep the UNCONDITIONAL gate regardless of key
+// presence — a keyless http://public-host must still be refused because note
+// content, not just a credential, would leak.
+describe("assertHttpsOrLocal (content-bearing, unconditional)", () => {
+  it("throws for a plaintext public host even with no apiKey involved", () => {
+    // assertHttpsOrLocal takes no apiKey parameter at all — it never had one
+    // to condition on, which is the point: it doesn't know or care whether a
+    // key is present, because content is sent regardless.
+    expect(() => assertHttpsOrLocal("http://public.example.com", "Test")).toThrow(
+      LlmClientError,
+    );
+  });
+
+  it("allows https:// and loopback/LAN http:// as before", () => {
+    expect(() => assertHttpsOrLocal("https://public.example.com", "Test")).not.toThrow();
+    expect(() => assertHttpsOrLocal("http://127.0.0.1:8080", "Test")).not.toThrow();
+  });
+});
+
+// #176: probe-only sites (listModels/healthCheck) skip the gate when no
+// credential would actually be transmitted.
+describe("assertHttpsOrLocalForProbe (probe-only, key-conditional)", () => {
+  it("does NOT throw for a plaintext public host when apiKey is blank", () => {
+    expect(() =>
+      assertHttpsOrLocalForProbe("http://public.example.com", "", "LLM provider"),
+    ).not.toThrow();
+  });
+
+  it("still throws for a plaintext public host when apiKey is present", () => {
+    expect(() =>
+      assertHttpsOrLocalForProbe("http://public.example.com", "sk-test", "LLM provider"),
+    ).toThrow(LlmClientError);
+  });
+
+  it("treats a whitespace-only apiKey the same as blank", () => {
+    expect(() =>
+      assertHttpsOrLocalForProbe("http://public.example.com", "   ", "LLM provider"),
+    ).not.toThrow();
+  });
+
+  it("still allows https:// and loopback/LAN http:// regardless of key", () => {
+    expect(() =>
+      assertHttpsOrLocalForProbe("https://public.example.com", "sk-test", "LLM provider"),
+    ).not.toThrow();
+    expect(() =>
+      assertHttpsOrLocalForProbe("http://127.0.0.1:8080", "sk-test", "LLM provider"),
+    ).not.toThrow();
+  });
+
+  // #176 HIGH fix: a KEYED probe (Test Connection / Browse Models with a real
+  // key configured) against a provider the user already consented to for
+  // enrichment must not still hit this gate.
+  it("does NOT throw for a plaintext public host with a key WHEN allowInsecureTransport is true", () => {
+    expect(() =>
+      assertHttpsOrLocalForProbe(
+        "http://public.example.com",
+        "sk-test",
+        "LLM provider",
+        true,
+      ),
+    ).not.toThrow();
+  });
+
+  it("still throws when allowInsecureTransport is explicitly false", () => {
+    expect(() =>
+      assertHttpsOrLocalForProbe(
+        "http://public.example.com",
+        "sk-test",
+        "LLM provider",
+        false,
+      ),
+    ).toThrow(LlmClientError);
+  });
+});
+
+describe("isCredentialSafeUrlForProbe (non-throwing sibling for healthCheck)", () => {
+  it("returns true for a plaintext public host when apiKey is blank", () => {
+    expect(isCredentialSafeUrlForProbe("http://public.example.com", "")).toBe(true);
+  });
+
+  it("returns false for a plaintext public host when apiKey is present", () => {
+    expect(isCredentialSafeUrlForProbe("http://public.example.com", "sk-test")).toBe(
+      false,
+    );
+  });
+
+  it("returns true for https:// and loopback/LAN http:// regardless of key", () => {
+    expect(isCredentialSafeUrlForProbe("https://public.example.com", "sk-test")).toBe(
+      true,
+    );
+    expect(isCredentialSafeUrlForProbe("http://127.0.0.1:8080", "sk-test")).toBe(true);
+  });
+
+  // #176 HIGH fix: consent is a second, independent escape hatch alongside
+  // the blank-key one — either being true skips the gate.
+  it("returns true for a keyed plaintext public host when allowInsecureTransport is true", () => {
+    expect(
+      isCredentialSafeUrlForProbe("http://public.example.com", "sk-test", true),
+    ).toBe(true);
+  });
+
+  it("returns false for a keyed plaintext public host when allowInsecureTransport is false", () => {
+    expect(
+      isCredentialSafeUrlForProbe("http://public.example.com", "sk-test", false),
+    ).toBe(false);
   });
 });

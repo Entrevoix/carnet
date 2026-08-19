@@ -7,6 +7,7 @@
  * coverage — same split as settingsForm.ts / modelBrowser.ts.
  */
 
+import { isAllowedPlaintextHost } from "./netAllowlist";
 import type { LlmProvider } from "./llmProviders";
 
 /** The editable text fields of one {@link LlmProvider}, held as local
@@ -18,6 +19,12 @@ export interface EditBuffer {
   baseUrl: string;
   model: string;
   visionModel: string;
+  /** Mirrors {@link LlmProvider.allowInsecureTransport} (#176) — the
+   * cleartext-consent toggle's local, not-yet-saved value. Unlike the other
+   * three text fields, this is a boolean the toggle writes directly rather
+   * than a TextInput's onChangeText, but it follows the exact same "typed
+   * but not saved until Save provider" lifecycle. */
+  allowInsecureTransport: boolean;
 }
 
 /** Seed an {@link EditBuffer} from a provider entry — the starting point
@@ -29,18 +36,44 @@ export function editBufferFromProvider(provider: LlmProvider): EditBuffer {
     baseUrl: provider.baseUrl,
     model: provider.model,
     visionModel: provider.visionModel,
+    allowInsecureTransport: provider.allowInsecureTransport ?? false,
   };
+}
+
+/**
+ * True when the cleartext-consent toggle (#176) is relevant for the base URL
+ * currently in the edit buffer: it must be plain `http://`, AND not already
+ * covered by the credential gate ({@link isAllowedPlaintextHost} — loopback/
+ * RFC1918). An `https://` URL, or an `http://` URL the gate already allows
+ * without consent, makes the toggle a no-op — showing it there would offer a
+ * checkbox that does nothing, which is worse than not showing it. Blank/
+ * unparseable URLs also resolve to `false` (nothing to consent to yet). */
+export function shouldShowInsecureTransportToggle(baseUrl: string): boolean {
+  const trimmed = baseUrl.trim();
+  if (!trimmed.toLowerCase().startsWith("http://")) return false;
+  return !isAllowedPlaintextHost(trimmed);
 }
 
 /**
  * Apply an {@link EditBuffer} onto the matching entry in `providers`,
  * returning a new array (`providers` is untouched). `id`/`preset` are never
- * touched by this function — only the editable text fields move. A preset
+ * touched by this function — only the editable fields move, including
+ * `allowInsecureTransport` (#176), applied to every entry (preset or
+ * custom) the same way baseUrl/model/visionModel already are. A preset
  * entry's label is NOT overwritten even if the buffer carries an edited
  * value: labels are only editable for custom entries (`preset === null`) —
  * the caller's UI hides the label field for a preset, but this function
  * enforces the same rule at the data layer so a bug in the UI can't rename a
  * preset out from under `PROVIDER_PRESETS`-keyed lookups elsewhere.
+ *
+ * `allowInsecureTransport` is reset to `false` whenever `buffer.baseUrl`
+ * (trimmed) differs from the STORED entry's baseUrl (`p.baseUrl`, trimmed) —
+ * consent (#176) is granted to a specific host, not to "whatever URL this
+ * entry happens to hold." Without this, editing a consented Tailscale
+ * entry's URL to point at a different, unvetted http:// host would silently
+ * carry the old host's consent over to the new one. A save that leaves the
+ * URL unchanged (including a no-op edit that round-trips to the same
+ * trimmed value) preserves whatever the buffer's own toggle says.
  */
 export function applyEditBuffer(
   providers: readonly LlmProvider[],
@@ -49,12 +82,14 @@ export function applyEditBuffer(
 ): LlmProvider[] {
   return providers.map((p) => {
     if (p.id !== id) return p;
+    const urlChanged = p.baseUrl.trim() !== buffer.baseUrl.trim();
     return {
       ...p,
       label: p.preset === null ? buffer.label : p.label,
       baseUrl: buffer.baseUrl,
       model: buffer.model,
       visionModel: buffer.visionModel,
+      allowInsecureTransport: urlChanged ? false : buffer.allowInsecureTransport,
     };
   });
 }
