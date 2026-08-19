@@ -113,6 +113,13 @@ async function buildConfig(settings: Settings, providerId: string): Promise<Prov
   const provider = resolveActiveProvider(settings.llmProviders, providerId);
   const apiKey = await providerKeys.getKey(provider.id);
 
+  // allowInsecureTransport (#176): threaded through unconditionally,
+  // regardless of which id-specific branch resolves — it is a per-entry
+  // consent flag (llmProviders.ts), not something any preset's defaulting
+  // logic should special-case. `?? false` covers every entry persisted
+  // before this field existed.
+  const allowInsecureTransport = provider.allowInsecureTransport ?? false;
+
   if (provider.id === "relais") {
     return {
       baseUrl: provider.baseUrl.trim() || llmClient.DEFAULT_LOCAL_LLM_URL,
@@ -120,6 +127,7 @@ async function buildConfig(settings: Settings, providerId: string): Promise<Prov
       model: provider.model.trim(),
       visionModel: provider.model.trim(),
       label: provider.label,
+      allowInsecureTransport,
     };
   }
   if (provider.id === "omniroute") {
@@ -129,6 +137,7 @@ async function buildConfig(settings: Settings, providerId: string): Promise<Prov
       model: provider.model.trim() || DEFAULT_OMNIROUTE_MODEL,
       visionModel: provider.visionModel.trim(),
       label: provider.label,
+      allowInsecureTransport,
     };
   }
   return {
@@ -137,6 +146,7 @@ async function buildConfig(settings: Settings, providerId: string): Promise<Prov
     model: provider.model.trim(),
     visionModel: provider.visionModel.trim(),
     label: provider.label,
+    allowInsecureTransport,
   };
 }
 

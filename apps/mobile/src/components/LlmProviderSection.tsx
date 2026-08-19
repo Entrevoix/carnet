@@ -109,6 +109,7 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
     baseUrl: "",
     model: "",
     visionModel: "",
+    allowInsecureTransport: false,
   });
   const [keyConfigured, setKeyConfigured] = useState(false);
   const [pendingKey, setPendingKey] = useState("");
@@ -619,6 +620,9 @@ export function LlmProviderSection({ theme, onError }: LlmProviderSectionProps) 
         onBaseUrlChange={(v) => setEditBuffer({ ...editBuffer, baseUrl: v })}
         onModelChange={(v) => setEditBuffer({ ...editBuffer, model: v })}
         onVisionModelChange={(v) => setEditBuffer({ ...editBuffer, visionModel: v })}
+        onAllowInsecureTransportChange={(v) =>
+          setEditBuffer({ ...editBuffer, allowInsecureTransport: v })
+        }
         isCustom={isCustom}
         isRelais={isRelais}
         keyConfigured={keyConfigured}

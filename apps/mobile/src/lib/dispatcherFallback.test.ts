@@ -439,3 +439,49 @@ describe("insecure-transport errors and the fallback chain", () => {
     expect(fetchMock).toHaveBeenCalledTimes(0);
   });
 });
+
+// #176 — per-provider consent (LlmProvider.allowInsecureTransport) bypasses
+// the transport gate for THAT provider's baseUrl, threaded through
+// dispatcher.ts's buildConfig into ProviderConfig.
+describe("allowInsecureTransport consent (#176)", () => {
+  const TAILNET_REMOTE = {
+    id: "custom-tailnet",
+    label: "Tailnet box",
+    baseUrl: "http://my-box.tailnet.ts.net",
+    model: "m",
+    visionModel: "vm",
+    preset: "custom",
+  };
+
+  it("consent off: the gate still blocks an http:// tailnet-hostname primary", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ...BASE_SETTINGS,
+      llmProviders: [...BASE_SETTINGS.llmProviders, TAILNET_REMOTE],
+      activeProviderId: TAILNET_REMOTE.id,
+    });
+
+    await expect(enrichIdea("consent off")).rejects.toSatisfy(
+      (e: unknown) => isInsecureTransportError(e),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+  });
+
+  it("consent on: an http:// tailnet-hostname primary passes the enrichment gate", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ...BASE_SETTINGS,
+      llmProviders: [
+        ...BASE_SETTINGS.llmProviders,
+        { ...TAILNET_REMOTE, allowInsecureTransport: true },
+      ],
+      activeProviderId: TAILNET_REMOTE.id,
+    });
+    fetchMock.mockResolvedValueOnce(makeOkResponse("# consented\n"));
+
+    const result = await enrichIdea("consent on");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://my-box.tailnet.ts.net/v1/chat/completions");
+    expect(result.markdown).toContain("consented");
+  });
+});

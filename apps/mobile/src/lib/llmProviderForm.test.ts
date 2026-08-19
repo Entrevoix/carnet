@@ -6,6 +6,7 @@ import {
   applyPickedModelToBuffer,
   editBufferFromProvider,
   reassignIdentityAfterDelete,
+  shouldShowInsecureTransportToggle,
   type EditBuffer,
 } from "./llmProviderForm";
 
@@ -19,13 +20,20 @@ const customProvider: LlmProvider = {
 };
 
 describe("editBufferFromProvider", () => {
-  it("copies the four editable fields", () => {
+  it("copies the four text fields plus allowInsecureTransport (defaulted false)", () => {
     expect(editBufferFromProvider(customProvider)).toEqual({
       label: "My Server",
       baseUrl: "https://my.server",
       model: "some-model",
       visionModel: "some-vision-model",
+      allowInsecureTransport: false,
     });
+  });
+
+  it("carries an explicit allowInsecureTransport: true through unchanged", () => {
+    expect(
+      editBufferFromProvider({ ...customProvider, allowInsecureTransport: true }),
+    ).toMatchObject({ allowInsecureTransport: true });
   });
 });
 
@@ -35,9 +43,10 @@ describe("applyEditBuffer", () => {
     baseUrl: "https://new.server",
     model: "new-model",
     visionModel: "new-vision-model",
+    allowInsecureTransport: false,
   };
 
-  it("applies baseUrl/model/visionModel/label to a custom entry", () => {
+  it("applies baseUrl/model/visionModel/label/allowInsecureTransport to a custom entry", () => {
     const providers = [...buildDefaultProviders(), customProvider];
     const next = applyEditBuffer(providers, "custom-1", buffer);
     const updated = next.find((p) => p.id === "custom-1");
@@ -48,7 +57,18 @@ describe("applyEditBuffer", () => {
       model: "new-model",
       visionModel: "new-vision-model",
       preset: null,
+      allowInsecureTransport: false,
     });
+  });
+
+  it("applies allowInsecureTransport: true to a preset entry too", () => {
+    const providers = buildDefaultProviders();
+    const next = applyEditBuffer(providers, "omniroute", {
+      ...buffer,
+      allowInsecureTransport: true,
+    });
+    const updated = next.find((p) => p.id === "omniroute");
+    expect(updated?.allowInsecureTransport).toBe(true);
   });
 
   it("does NOT overwrite a preset's label even if the buffer carries an edited one", () => {
@@ -98,6 +118,7 @@ describe("applyPickedModelToBuffer", () => {
     baseUrl: "https://x",
     model: "old-chat",
     visionModel: "old-vision",
+    allowInsecureTransport: false,
   };
 
   it("updates model for the chat target and leaves visionModel untouched", () => {
@@ -228,5 +249,28 @@ describe("reassignIdentityAfterDelete", () => {
     );
     expect(result.activeProviderId).toBe("omniroute");
     expect(result.fallbackProviderId).toBeNull();
+  });
+});
+
+// #176 — the cleartext-consent toggle must appear ONLY where consent is
+// meaningful: plain http:// AND not already covered by the credential gate.
+describe("shouldShowInsecureTransportToggle", () => {
+  it("shows for a plaintext public/tailnet-shaped host", () => {
+    expect(shouldShowInsecureTransportToggle("http://100.100.50.1:8080")).toBe(true);
+    expect(shouldShowInsecureTransportToggle("http://my-box.tailnet.ts.net")).toBe(true);
+  });
+
+  it("hides for https:// (nothing to consent to)", () => {
+    expect(shouldShowInsecureTransportToggle("https://my-box.tailnet.ts.net")).toBe(false);
+  });
+
+  it("hides for a loopback/RFC1918 host already covered by the gate", () => {
+    expect(shouldShowInsecureTransportToggle("http://127.0.0.1:8080")).toBe(false);
+    expect(shouldShowInsecureTransportToggle("http://192.168.1.20")).toBe(false);
+  });
+
+  it("hides for a blank base URL", () => {
+    expect(shouldShowInsecureTransportToggle("")).toBe(false);
+    expect(shouldShowInsecureTransportToggle("   ")).toBe(false);
   });
 });

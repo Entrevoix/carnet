@@ -303,6 +303,7 @@ export async function enrichIdea(
     "idea",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -325,6 +326,7 @@ export async function enrichJournal(
     "journal",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -347,6 +349,7 @@ export async function enrichPerson(
     "person",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -396,6 +399,7 @@ export async function enrichSharedImage(
     "shared",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -547,6 +551,7 @@ export async function enrichSharedLink(
     "shared",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -568,6 +573,7 @@ export async function promoteIdea(
     "idea",
     config.label,
     resolveEnrichmentTimeoutMs(config.baseUrl),
+    config.allowInsecureTransport ?? false,
   );
 }
 
@@ -605,6 +611,7 @@ export async function enhanceProse(
     "journal",
     config.label,
     ENHANCE_TIMEOUT_MS,
+    config.allowInsecureTransport ?? false,
   );
 }
 

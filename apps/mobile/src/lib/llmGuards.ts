@@ -34,6 +34,12 @@ export interface VisionReadyConfig {
   visionModel: string;
   baseUrl: string;
   label: string;
+  /** Per-provider consent (#176) to bypass the transport gate for THIS
+   * provider's baseUrl — see llmProviders.ts's `allowInsecureTransport` for
+   * the full contract. `undefined`/absent reads as `false`, so every
+   * existing VisionReadyConfig/ProviderConfig literal in this codebase's
+   * tests is unaffected by this field's addition. */
+  allowInsecureTransport?: boolean;
 }
 
 /** Hard cap on image payload sent to a vision model. Vision providers reject
@@ -82,7 +88,7 @@ export function assertVisionReady(
   const model = assertVisionModelConfigured(config.visionModel, config.label);
   const trimmed = assertUrlConfigured(config.baseUrl, config.label);
   const url = trimmed.replace(/\/+$/, "");
-  assertHttpsOrLocal(url, config.label);
+  assertHttpsOrLocal(url, config.label, config.allowInsecureTransport ?? false);
   return { model, url };
 }
 
@@ -100,10 +106,10 @@ export function assertVisionReady(
  * guard; this is not a security change (verified: same predicate, same
  * outcomes either way), only a corrected message.
  *
- * UNCONDITIONAL — fires regardless of whether a credential is actually
- * present. This is deliberate for every call site that reaches this
- * function directly: `executeChat` (llmHttp.ts, every enrich/chat/vision
- * call) and `assertVisionReady` below (→ `ocrCardViaVision`) are all
+ * UNCONDITIONAL BY DEFAULT — fires regardless of whether a credential is
+ * actually present. This is deliberate for every call site that reaches
+ * this function directly: `executeChat` (llmHttp.ts, every enrich/chat/
+ * vision call) and `assertVisionReady` below (→ `ocrCardViaVision`) are all
  * CONTENT-BEARING — they send the user's note text or an image regardless of
  * whether a key rides along, and per the #176 security review a keyless
  * `http://public-host` must still be refused for those calls (note content,
@@ -112,8 +118,23 @@ export function assertVisionReady(
  * llmClient.ts) do NOT call this directly — they call
  * {@link assertHttpsOrLocalForProbe} / go through `isCredentialSafeUrlForProbe`
  * instead, which skips the gate entirely when no key would be sent.
+ *
+ * `allowInsecureTransport` (#176, default `false`) is the ONE other escape
+ * hatch: explicit, per-provider, user-granted consent (see
+ * llmProviders.ts's field of the same name) to send THIS provider's
+ * credential and content over plain http:// to a URL the gate would
+ * otherwise refuse — e.g. a Tailscale hostname. It bypasses the check
+ * entirely when `true`, same as the gate passing on its own; callers thread
+ * it from the resolved `ProviderConfig`/`VisionReadyConfig`, never from a
+ * raw boolean literal, so consent always traces back to a specific entry
+ * the user opted in.
  */
-export function assertHttpsOrLocal(trimmed: string, label: string): void {
+export function assertHttpsOrLocal(
+  trimmed: string,
+  label: string,
+  allowInsecureTransport = false,
+): void {
+  if (allowInsecureTransport) return;
   if (isCredentialSafeUrl(trimmed)) return;
   throw new LlmClientError(
     `${label} URL must use https:// (or be a loopback/LAN address) to protect the API key`,
