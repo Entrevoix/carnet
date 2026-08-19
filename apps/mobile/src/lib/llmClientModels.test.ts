@@ -103,4 +103,27 @@ describe("healthCheck", () => {
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  // Device-verified 2026-08-17: Relais's self-signed cert on its https://
+  // port (8443) throws a plain TypeError on Android whose message is the
+  // Java exception text — these are the real Conscrypt/BoringSSL strings,
+  // not synthetic fixtures.
+  it.each([
+    "javax.net.ssl.SSLHandshakeException: java.security.cert.CertPathValidatorException: Trust anchor for certification path not found",
+    "SSLHandshakeException",
+  ])("returns 'untrusted-tls' for a real device TLS-trust error: %s", async (msg) => {
+    fetchMock.mockRejectedValueOnce(new TypeError(msg));
+    expect(await healthCheck("https://192.168.1.5:8443", "sk-test")).toBe(
+      "untrusted-tls",
+    );
+  });
+
+  // Negative control: a generic network failure must NOT be misclassified
+  // as a TLS-trust issue just because it's also a rejected fetch.
+  it("still returns 'unreachable' for a generic network error, not 'untrusted-tls'", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Network request failed"));
+    expect(await healthCheck("https://192.168.1.5:8443", "sk-test")).toBe(
+      "unreachable",
+    );
+  });
 });

@@ -194,7 +194,8 @@ export type HealthResult =
   | "unreachable"
   | "unauthorized"
   | "blocked-cleartext"
-  | "unsafe-url";
+  | "unsafe-url"
+  | "untrusted-tls";
 
 /**
  * Probe the provider the way the app actually talks to it: `GET /v1/models`
@@ -242,8 +243,27 @@ export async function healthCheck(
     // message text is the only signal available, so match on it rather than
     // pretending there is a typed error to catch.
     const message = e instanceof Error ? e.message : String(e);
-    return /cleartext/i.test(message) ? "blocked-cleartext" : "unreachable";
+    if (/cleartext/i.test(message)) return "blocked-cleartext";
+    if (isUntrustedTlsError(message)) return "untrusted-tls";
+    return "unreachable";
   }
+}
+
+/** Device-verified 2026-08-17: a self-signed cert on Relais's https:// port
+ * (8443) throws `javax.net.ssl.SSLHandshakeException: java.security.cert.
+ * CertPathValidatorException: Trust anchor for certification path not
+ * found`, surfaced to JS as a plain TypeError whose message is that Java
+ * exception text. These three substrings are the actual Conscrypt/BoringSSL
+ * strings Android produces for a cert-trust failure — deliberately NOT
+ * matching on the bare word "certificate", which also appears in unrelated
+ * messages (a malformed URL, an expired-but-otherwise-fine chain reported
+ * differently, etc.) and would misclassify them as this specific,
+ * actionable case. Anything that doesn't hit one of these stays
+ * "unreachable" rather than guessing. */
+function isUntrustedTlsError(message: string): boolean {
+  return /trust anchor|sslhandshakeexception|certpathvalidatorexception/i.test(
+    message,
+  );
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

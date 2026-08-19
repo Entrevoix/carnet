@@ -38,12 +38,17 @@ export type LocalReadinessState = "ok" | "unreachable";
 
 /** Probes one local provider's reachability via the same `healthCheck` the
  * "Test connection" button uses. Collapses every non-"ok" `HealthResult`
- * ("unreachable", "unauthorized", "blocked-cleartext", "unsafe-url") to
- * "unreachable" — this hint only ever needs to say "start it" or say
- * nothing; the granular reasons stay in Test Connection's own result
- * display. NEVER throws: a rejected/thrown `healthCheck` (network module
- * hiccup, a test double that misbehaves) reads as "unreachable" rather than
- * crashing the fire-and-forget probe effect that calls this. */
+ * ("unreachable", "unauthorized", "blocked-cleartext", "unsafe-url",
+ * "untrusted-tls") to "unreachable" — this hint only ever needs to say
+ * "start it" or say nothing; the granular reasons stay in Test Connection's
+ * own result display. "untrusted-tls" collapses here too: a self-signed
+ * cert on a local server is still "not usable right now" from this hint's
+ * point of view, and the generic queueing copy isn't wrong for it — the
+ * precise "certificate this device doesn't trust" explanation belongs in
+ * Test Connection's own display, not this pre-emptive row hint. NEVER
+ * throws: a rejected/thrown `healthCheck` (network module hiccup, a test
+ * double that misbehaves) reads as "unreachable" rather than crashing the
+ * fire-and-forget probe effect that calls this. */
 export async function probeLocalProviderReachability(
   baseUrl: string,
   apiKey: string,
