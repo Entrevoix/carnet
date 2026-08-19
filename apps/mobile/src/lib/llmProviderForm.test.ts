@@ -61,14 +61,76 @@ describe("applyEditBuffer", () => {
     });
   });
 
-  it("applies allowInsecureTransport: true to a preset entry too", () => {
+  it("applies allowInsecureTransport: true to a preset entry too, when the URL is unchanged", () => {
+    // baseUrl deliberately matches the stored omniroute preset's (blank) so
+    // this exercises consent APPLICATION, not the #176 reset-on-URL-change
+    // behavior covered separately below.
     const providers = buildDefaultProviders();
+    const stored = providers.find((p) => p.id === "omniroute");
     const next = applyEditBuffer(providers, "omniroute", {
       ...buffer,
+      baseUrl: stored?.baseUrl ?? "",
       allowInsecureTransport: true,
     });
     const updated = next.find((p) => p.id === "omniroute");
     expect(updated?.allowInsecureTransport).toBe(true);
+  });
+
+  // #176 MEDIUM fix: consent is granted to a specific host — editing the URL
+  // must force re-consent for the new one, not silently carry the old
+  // host's "yes" over.
+  describe("allowInsecureTransport reset-on-URL-change (#176)", () => {
+    it("resets allowInsecureTransport to false when baseUrl changed from the stored value", () => {
+      const consented: LlmProvider = { ...customProvider, allowInsecureTransport: true };
+      const providers = [...buildDefaultProviders(), consented];
+      const next = applyEditBuffer(providers, "custom-1", {
+        ...buffer,
+        baseUrl: "http://different.example.com",
+        allowInsecureTransport: true,
+      });
+      const updated = next.find((p) => p.id === "custom-1");
+      expect(updated?.allowInsecureTransport).toBe(false);
+    });
+
+    it("preserves allowInsecureTransport when baseUrl is unchanged (save without editing the URL)", () => {
+      const consented: LlmProvider = { ...customProvider, allowInsecureTransport: true };
+      const providers = [...buildDefaultProviders(), consented];
+      const next = applyEditBuffer(providers, "custom-1", {
+        ...buffer,
+        baseUrl: consented.baseUrl,
+        allowInsecureTransport: true,
+      });
+      const updated = next.find((p) => p.id === "custom-1");
+      expect(updated?.allowInsecureTransport).toBe(true);
+    });
+
+    it("treats whitespace-only differences as unchanged (trimmed comparison)", () => {
+      const consented: LlmProvider = {
+        ...customProvider,
+        baseUrl: "http://tailnet.example.com",
+        allowInsecureTransport: true,
+      };
+      const providers = [...buildDefaultProviders(), consented];
+      const next = applyEditBuffer(providers, "custom-1", {
+        ...buffer,
+        baseUrl: "  http://tailnet.example.com  ",
+        allowInsecureTransport: true,
+      });
+      const updated = next.find((p) => p.id === "custom-1");
+      expect(updated?.allowInsecureTransport).toBe(true);
+    });
+
+    it("does not resurrect consent on a URL change even if the buffer's toggle is false", () => {
+      const consented: LlmProvider = { ...customProvider, allowInsecureTransport: true };
+      const providers = [...buildDefaultProviders(), consented];
+      const next = applyEditBuffer(providers, "custom-1", {
+        ...buffer,
+        baseUrl: "http://different.example.com",
+        allowInsecureTransport: false,
+      });
+      const updated = next.find((p) => p.id === "custom-1");
+      expect(updated?.allowInsecureTransport).toBe(false);
+    });
   });
 
   it("does NOT overwrite a preset's label even if the buffer carries an edited one", () => {

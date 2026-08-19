@@ -65,6 +65,15 @@ export function shouldShowInsecureTransportToggle(baseUrl: string): boolean {
  * the caller's UI hides the label field for a preset, but this function
  * enforces the same rule at the data layer so a bug in the UI can't rename a
  * preset out from under `PROVIDER_PRESETS`-keyed lookups elsewhere.
+ *
+ * `allowInsecureTransport` is reset to `false` whenever `buffer.baseUrl`
+ * (trimmed) differs from the STORED entry's baseUrl (`p.baseUrl`, trimmed) —
+ * consent (#176) is granted to a specific host, not to "whatever URL this
+ * entry happens to hold." Without this, editing a consented Tailscale
+ * entry's URL to point at a different, unvetted http:// host would silently
+ * carry the old host's consent over to the new one. A save that leaves the
+ * URL unchanged (including a no-op edit that round-trips to the same
+ * trimmed value) preserves whatever the buffer's own toggle says.
  */
 export function applyEditBuffer(
   providers: readonly LlmProvider[],
@@ -73,13 +82,14 @@ export function applyEditBuffer(
 ): LlmProvider[] {
   return providers.map((p) => {
     if (p.id !== id) return p;
+    const urlChanged = p.baseUrl.trim() !== buffer.baseUrl.trim();
     return {
       ...p,
       label: p.preset === null ? buffer.label : p.label,
       baseUrl: buffer.baseUrl,
       model: buffer.model,
       visionModel: buffer.visionModel,
-      allowInsecureTransport: buffer.allowInsecureTransport,
+      allowInsecureTransport: urlChanged ? false : buffer.allowInsecureTransport,
     };
   });
 }

@@ -48,13 +48,23 @@ export type LocalReadinessState = "ok" | "unreachable";
  * Test Connection's own display, not this pre-emptive row hint. NEVER
  * throws: a rejected/thrown `healthCheck` (network module hiccup, a test
  * double that misbehaves) reads as "unreachable" rather than crashing the
- * fire-and-forget probe effect that calls this. */
+ * fire-and-forget probe effect that calls this.
+ *
+ * `allowInsecureTransport` (#176) forwards the resolved provider's consent
+ * flag into `healthCheck`'s probe-only gate — without it, a provider the
+ * user had already consented to for enrichment (an http:// Tailscale
+ * endpoint, say) would still fail THIS probe and permanently show the
+ * "Not reachable — make sure it's running" hint even while enrichment
+ * against that exact endpoint was succeeding. Defaults to `false` so a
+ * caller with no provider in hand (there is none today, but the signature
+ * shouldn't force one) keeps today's behavior. */
 export async function probeLocalProviderReachability(
   baseUrl: string,
   apiKey: string,
+  allowInsecureTransport = false,
 ): Promise<LocalReadinessState> {
   try {
-    const result: HealthResult = await healthCheck(baseUrl, apiKey);
+    const result: HealthResult = await healthCheck(baseUrl, apiKey, allowInsecureTransport);
     return result === "ok" ? "ok" : "unreachable";
   } catch {
     return "unreachable";

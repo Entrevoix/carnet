@@ -140,15 +140,26 @@ export function withSystemOverride(
  * catalog GET — every Authorization header this codebase builds is already
  * key-conditional (`apiKey ? {...} : {}`), so a blank `apiKey` means nothing
  * secret is ever in flight here. The transport gate is therefore only
- * enforced when `apiKey` is actually present (`assertHttpsOrLocalForProbe`)
- * — a keyless catalog browse against a plaintext public gateway is allowed,
- * where the identical call carrying a real key still throws. Content-bearing
- * calls (executeChat, ocrCardViaVision) are NOT narrowed this way — see
+ * enforced when `apiKey` is actually present AND the caller hasn't passed
+ * `allowInsecureTransport: true` (`assertHttpsOrLocalForProbe`) — a keyless
+ * catalog browse against a plaintext public gateway is allowed, and so is a
+ * keyed one against a provider the user has explicitly consented to
+ * (Settings → LLM provider's cleartext-consent toggle — see
+ * llmProviders.ts's `allowInsecureTransport`). Content-bearing calls
+ * (executeChat, ocrCardViaVision) are NOT narrowed this way — see
  * llmGuards.ts's assertHttpsOrLocal doc.
+ *
+ * `allowInsecureTransport` defaults to `false` so every pre-#176 caller (and
+ * every existing call in this codebase that doesn't have a resolved provider
+ * in hand) is unaffected; callers that DO have the provider — the Settings
+ * screen's model browser — must pass its `allowInsecureTransport` field
+ * through explicitly, since a raw baseUrl/apiKey pair carries no consent
+ * information on its own.
  */
 export async function listModels(
   baseUrl: string,
   apiKey: string,
+  allowInsecureTransport = false,
 ): Promise<string[]> {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   // No ProviderConfig (and therefore no label) at this call site — the model
@@ -161,7 +172,7 @@ export async function listModels(
   // its listModels re-export) — the only real caller (SettingsScreen) always
   // passes an explicit URL, so the blank-default path was already dead for
   // this call, and the message branding was never asserted by any test.
-  assertHttpsOrLocalForProbe(trimmed, apiKey, "LLM provider");
+  assertHttpsOrLocalForProbe(trimmed, apiKey, "LLM provider", allowInsecureTransport);
 
   const url = `${trimmed}/v1/models`;
 
@@ -225,16 +236,24 @@ export type HealthResult =
  * this call carries no note content, and the Authorization header is
  * key-conditional (line below), so a blank `apiKey` never transmits a
  * credential. The transport gate is therefore only enforced when `apiKey`
- * is non-blank (`isCredentialSafeUrlForProbe`) — "Test Connection" against a
- * keyless plaintext public host now probes instead of short-circuiting to
- * "unsafe-url", matching what the real (keyless) request would do.
+ * is non-blank AND `allowInsecureTransport` is false
+ * (`isCredentialSafeUrlForProbe`) — "Test Connection" against a keyless
+ * plaintext public host now probes instead of short-circuiting to
+ * "unsafe-url", and so does a keyed probe against a provider the user has
+ * explicitly consented to for this endpoint (Settings → LLM provider's
+ * cleartext-consent toggle). Defaults to `false` so every caller without a
+ * resolved provider in hand is unaffected; the Settings screen's Test
+ * Connection button passes the entry's `allowInsecureTransport` explicitly.
  */
 export async function healthCheck(
   baseUrl: string,
   apiKey: string,
+  allowInsecureTransport = false,
 ): Promise<HealthResult> {
   const trimmed = (baseUrl.trim() || DEFAULT_LOCAL_LLM_URL).replace(/\/+$/, "");
-  if (!isCredentialSafeUrlForProbe(trimmed, apiKey)) return "unsafe-url";
+  if (!isCredentialSafeUrlForProbe(trimmed, apiKey, allowInsecureTransport)) {
+    return "unsafe-url";
+  }
   try {
     return await withTimeout(
       FETCH_TIMEOUT_MS,

@@ -149,36 +149,56 @@ export function assertHttpsOrLocal(
 /**
  * PROBE-ONLY variant of the transport gate (#176): fires
  * {@link assertHttpsOrLocal}'s exact check, but ONLY when `apiKey` is
- * non-blank. `listModels` (llmClient.ts) is a reachability/catalog probe —
- * it carries no note content, and every existing Authorization construction
- * in this codebase is already key-conditional (`apiKey ? {Authorization...}
- * : {}`), so a BLANK key sent to this endpoint transmits no credential at
- * all. Refusing a keyless probe to a plaintext public host protects nothing
- * — there is nothing secret in flight — and the #176 review found this was
- * blocking a legitimate keyless-catalog-browse case (e.g. an open,
- * self-hosted OpenAI-compatible gateway with no auth configured, reachable
- * only over http://).
+ * non-blank AND `allowInsecureTransport` (the resolved provider's #176
+ * consent flag, when the caller has one in hand) is false. `listModels`
+ * (llmClient.ts) is a reachability/catalog probe — it carries no note
+ * content, and every existing Authorization construction in this codebase
+ * is already key-conditional (`apiKey ? {Authorization...} : {}`), so a
+ * BLANK key sent to this endpoint transmits no credential at all. Refusing
+ * a keyless probe to a plaintext public host protects nothing — there is
+ * nothing secret in flight — and the #176 review found this was blocking a
+ * legitimate keyless-catalog-browse case (e.g. an open, self-hosted
+ * OpenAI-compatible gateway with no auth configured, reachable only over
+ * http://).
  *
- * When `apiKey` IS present, this is byte-identical to `assertHttpsOrLocal` —
- * a real credential must still never cross an unsafe URL. */
+ * `allowInsecureTransport` closes a gap the initial #176 landing left open:
+ * a KEYED probe (Test Connection / Browse Models with a real key configured)
+ * against a provider the user had already consented to for enrichment still
+ * hit this gate, because the probe call sites didn't have the consent flag
+ * to forward. Both flags are independent escape hatches — a blank key needs
+ * no consent, and consent bypasses the gate regardless of key — so either
+ * one being true is enough.
+ *
+ * When neither escape hatch applies, this is byte-identical to
+ * `assertHttpsOrLocal` — a real credential must still never cross an unsafe
+ * URL without either the caller having nothing secret to send or the user
+ * having explicitly said so for this provider. */
 export function assertHttpsOrLocalForProbe(
   trimmed: string,
   apiKey: string,
   label: string,
+  allowInsecureTransport = false,
 ): void {
   if (!apiKey.trim()) return;
-  assertHttpsOrLocal(trimmed, label);
+  assertHttpsOrLocal(trimmed, label, allowInsecureTransport);
 }
 
 /**
  * Non-throwing sibling of {@link assertHttpsOrLocalForProbe}, for
  * `healthCheck` (llmClient.ts), which must never throw — see that
  * function's own doc for why a connectivity check reports a status instead
- * of crashing the "Test Connection" button. Same key-conditional
- * probe-only classification: a blank `apiKey` means no credential is ever
- * transmitted, so the gate has nothing to protect and is skipped. */
-export function isCredentialSafeUrlForProbe(trimmed: string, apiKey: string): boolean {
+ * of crashing the "Test Connection" button. Same key-conditional,
+ * consent-aware probe-only classification: a blank `apiKey` means no
+ * credential is ever transmitted, and `allowInsecureTransport` is the
+ * resolved provider's #176 consent flag — either being true skips the
+ * gate. */
+export function isCredentialSafeUrlForProbe(
+  trimmed: string,
+  apiKey: string,
+  allowInsecureTransport = false,
+): boolean {
   if (!apiKey.trim()) return true;
+  if (allowInsecureTransport) return true;
   return isCredentialSafeUrl(trimmed);
 }
 

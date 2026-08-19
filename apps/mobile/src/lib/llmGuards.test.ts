@@ -187,6 +187,31 @@ describe("assertHttpsOrLocalForProbe (probe-only, key-conditional)", () => {
       assertHttpsOrLocalForProbe("http://127.0.0.1:8080", "sk-test", "LLM provider"),
     ).not.toThrow();
   });
+
+  // #176 HIGH fix: a KEYED probe (Test Connection / Browse Models with a real
+  // key configured) against a provider the user already consented to for
+  // enrichment must not still hit this gate.
+  it("does NOT throw for a plaintext public host with a key WHEN allowInsecureTransport is true", () => {
+    expect(() =>
+      assertHttpsOrLocalForProbe(
+        "http://public.example.com",
+        "sk-test",
+        "LLM provider",
+        true,
+      ),
+    ).not.toThrow();
+  });
+
+  it("still throws when allowInsecureTransport is explicitly false", () => {
+    expect(() =>
+      assertHttpsOrLocalForProbe(
+        "http://public.example.com",
+        "sk-test",
+        "LLM provider",
+        false,
+      ),
+    ).toThrow(LlmClientError);
+  });
 });
 
 describe("isCredentialSafeUrlForProbe (non-throwing sibling for healthCheck)", () => {
@@ -205,5 +230,19 @@ describe("isCredentialSafeUrlForProbe (non-throwing sibling for healthCheck)", (
       true,
     );
     expect(isCredentialSafeUrlForProbe("http://127.0.0.1:8080", "sk-test")).toBe(true);
+  });
+
+  // #176 HIGH fix: consent is a second, independent escape hatch alongside
+  // the blank-key one — either being true skips the gate.
+  it("returns true for a keyed plaintext public host when allowInsecureTransport is true", () => {
+    expect(
+      isCredentialSafeUrlForProbe("http://public.example.com", "sk-test", true),
+    ).toBe(true);
+  });
+
+  it("returns false for a keyed plaintext public host when allowInsecureTransport is false", () => {
+    expect(
+      isCredentialSafeUrlForProbe("http://public.example.com", "sk-test", false),
+    ).toBe(false);
   });
 });
