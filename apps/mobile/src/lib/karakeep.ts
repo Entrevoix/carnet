@@ -91,6 +91,19 @@ export function assetContentPath(assetId: string): string {
  * local / LAN dev + self-hosted loop (loopback, 10.x, 192.168.x) via
  * exact-host parsing in {@link isCredentialSafeUrl}. All other http:// URLs
  * throw.
+ *
+ * CONTENT-BEARING classification (#176 security review): unlike llmClient.ts's
+ * listModels/healthCheck, EVERY Karakeep call this guards
+ * (createTextBookmark/updateTextBookmark/attachTags/uploadAsset/
+ * attachAssetToBookmark, via karakeepFetch/karakeepUpload below) sends real
+ * user content — the note's markdown body, tags, or an uploaded file — never
+ * just a bare reachability probe. There is no keyless-catalog-browse
+ * equivalent here to narrow, so this stays UNCONDITIONAL regardless of
+ * whether `apiKey` is blank: a keyless plaintext public host must still be
+ * refused, because the note content itself (not only a credential) would
+ * otherwise leak in the clear. Karakeep is explicitly OUT of scope for the
+ * #176 per-provider consent toggle (that flag lives on `LlmProvider`, which
+ * Karakeep is not) — a known, documented gap rather than an oversight.
  */
 function assertHttpsOrLocal(trimmed: string): void {
   if (isCredentialSafeUrl(trimmed)) return;

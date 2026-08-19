@@ -29,6 +29,26 @@ describe("listModels", () => {
 
     expect(models).toEqual(["a-model", "b-model"]);
   });
+
+  // #176 — probe-only classification: no note content ever crosses this
+  // call, so a BLANK key means the transport gate protects nothing.
+  it("allows a keyless catalog browse against a plaintext public host", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: "m" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const models = await listModels("http://public.example.com", "");
+    expect(models).toEqual(["m"]);
+  });
+
+  it("still rejects a plaintext public host when a real key would be sent", async () => {
+    await expect(
+      listModels("http://public.example.com", "sk-test"),
+    ).rejects.toThrow(/https:\/\//);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 // ── healthCheck ───────────────────────────────────────────────────────────────
@@ -98,6 +118,24 @@ describe("healthCheck", () => {
   });
 
   it("returns 'unsafe-url' without issuing a request", async () => {
+    expect(await healthCheck("http://example.com:8080", "sk-test")).toBe(
+      "unsafe-url",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // #176 — probe-only classification: healthCheck sends no note content, and
+  // its Authorization header is already key-conditional (see the "omits the
+  // Authorization header" case above), so a blank key never transmits a
+  // credential. A keyless "Test Connection" against a plaintext public host
+  // now probes instead of short-circuiting to "unsafe-url".
+  it("probes (does not short-circuit) a plaintext public host when no key is set", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 200 }));
+    expect(await healthCheck("http://example.com:8080", "")).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still returns 'unsafe-url' for a plaintext public host when a key IS set", async () => {
     expect(await healthCheck("http://example.com:8080", "sk-test")).toBe(
       "unsafe-url",
     );

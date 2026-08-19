@@ -99,6 +99,19 @@ export function assertVisionReady(
  * misleading about its own behavior. Both providers now state the true
  * guard; this is not a security change (verified: same predicate, same
  * outcomes either way), only a corrected message.
+ *
+ * UNCONDITIONAL — fires regardless of whether a credential is actually
+ * present. This is deliberate for every call site that reaches this
+ * function directly: `executeChat` (llmHttp.ts, every enrich/chat/vision
+ * call) and `assertVisionReady` below (→ `ocrCardViaVision`) are all
+ * CONTENT-BEARING — they send the user's note text or an image regardless of
+ * whether a key rides along, and per the #176 security review a keyless
+ * `http://public-host` must still be refused for those calls (note content,
+ * not just a key, would otherwise leak in the clear). Call sites that are
+ * PROBE-ONLY (no user content, e.g. `listModels`/`healthCheck` in
+ * llmClient.ts) do NOT call this directly — they call
+ * {@link assertHttpsOrLocalForProbe} / go through `isCredentialSafeUrlForProbe`
+ * instead, which skips the gate entirely when no key would be sent.
  */
 export function assertHttpsOrLocal(trimmed: string, label: string): void {
   if (isCredentialSafeUrl(trimmed)) return;
@@ -110,6 +123,42 @@ export function assertHttpsOrLocal(trimmed: string, label: string): void {
     // secondary. See isInsecureTransportError.
     { insecureTransport: true },
   );
+}
+
+/**
+ * PROBE-ONLY variant of the transport gate (#176): fires
+ * {@link assertHttpsOrLocal}'s exact check, but ONLY when `apiKey` is
+ * non-blank. `listModels` (llmClient.ts) is a reachability/catalog probe —
+ * it carries no note content, and every existing Authorization construction
+ * in this codebase is already key-conditional (`apiKey ? {Authorization...}
+ * : {}`), so a BLANK key sent to this endpoint transmits no credential at
+ * all. Refusing a keyless probe to a plaintext public host protects nothing
+ * — there is nothing secret in flight — and the #176 review found this was
+ * blocking a legitimate keyless-catalog-browse case (e.g. an open,
+ * self-hosted OpenAI-compatible gateway with no auth configured, reachable
+ * only over http://).
+ *
+ * When `apiKey` IS present, this is byte-identical to `assertHttpsOrLocal` —
+ * a real credential must still never cross an unsafe URL. */
+export function assertHttpsOrLocalForProbe(
+  trimmed: string,
+  apiKey: string,
+  label: string,
+): void {
+  if (!apiKey.trim()) return;
+  assertHttpsOrLocal(trimmed, label);
+}
+
+/**
+ * Non-throwing sibling of {@link assertHttpsOrLocalForProbe}, for
+ * `healthCheck` (llmClient.ts), which must never throw — see that
+ * function's own doc for why a connectivity check reports a status instead
+ * of crashing the "Test Connection" button. Same key-conditional
+ * probe-only classification: a blank `apiKey` means no credential is ever
+ * transmitted, so the gate has nothing to protect and is skipped. */
+export function isCredentialSafeUrlForProbe(trimmed: string, apiKey: string): boolean {
+  if (!apiKey.trim()) return true;
+  return isCredentialSafeUrl(trimmed);
 }
 
 /** Throw not-configured when a resolved base URL is blank. `config.baseUrl`

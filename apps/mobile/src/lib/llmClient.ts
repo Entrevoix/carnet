@@ -51,17 +51,17 @@ import {
   buildSharedLinkPrompt,
   type PromptPair,
 } from "./prompts";
-import { isCredentialSafeUrl } from "./netAllowlist";
 import { withTimeout } from "./httpClient";
 import { fetchUrlPreview, type UrlPreview } from "./urlpreview";
 import type { IdeaStatus } from "@carnet/shared";
 import { LlmClientError, timeoutError } from "./llmErrors";
 import {
-  assertHttpsOrLocal,
+  assertHttpsOrLocalForProbe,
   assertModelConfigured,
   assertUrlConfigured,
   assertVisionModelConfigured,
   assertVisionReady,
+  isCredentialSafeUrlForProbe,
   type VisionReadyConfig,
 } from "./llmGuards";
 import {
@@ -129,11 +129,22 @@ export function withSystemOverride(
 
 /**
  * Fetch the available model catalog from `${baseUrl}/v1/models`. Returns
- * the sorted list of model IDs. Same auth + HTTPS rules as chatCompletion.
+ * the sorted list of model IDs. Same auth + HTTPS rules as chatCompletion —
+ * WITH one exception: see the classification note below.
  *
  * This is the network primitive behind the Settings screen's "Browse
  * models" picker — so the user can see what's actually available on their
  * configured provider instead of guessing a model name.
+ *
+ * PROBE-ONLY classification (#176): this call sends no note content, only a
+ * catalog GET — every Authorization header this codebase builds is already
+ * key-conditional (`apiKey ? {...} : {}`), so a blank `apiKey` means nothing
+ * secret is ever in flight here. The transport gate is therefore only
+ * enforced when `apiKey` is actually present (`assertHttpsOrLocalForProbe`)
+ * — a keyless catalog browse against a plaintext public gateway is allowed,
+ * where the identical call carrying a real key still throws. Content-bearing
+ * calls (executeChat, ocrCardViaVision) are NOT narrowed this way — see
+ * llmGuards.ts's assertHttpsOrLocal doc.
  */
 export async function listModels(
   baseUrl: string,
@@ -150,7 +161,7 @@ export async function listModels(
   // its listModels re-export) — the only real caller (SettingsScreen) always
   // passes an explicit URL, so the blank-default path was already dead for
   // this call, and the message branding was never asserted by any test.
-  assertHttpsOrLocal(trimmed, "LLM provider");
+  assertHttpsOrLocalForProbe(trimmed, apiKey, "LLM provider");
 
   const url = `${trimmed}/v1/models`;
 
@@ -209,13 +220,21 @@ export type HealthResult =
  * calls were succeeding. Probing an endpoint nothing else uses cannot tell the
  * user whether the thing they care about works; probing `/v1/models` can, and
  * it validates the API key besides.
+ *
+ * PROBE-ONLY classification (#176): same reasoning as `listModels` above —
+ * this call carries no note content, and the Authorization header is
+ * key-conditional (line below), so a blank `apiKey` never transmits a
+ * credential. The transport gate is therefore only enforced when `apiKey`
+ * is non-blank (`isCredentialSafeUrlForProbe`) — "Test Connection" against a
+ * keyless plaintext public host now probes instead of short-circuiting to
+ * "unsafe-url", matching what the real (keyless) request would do.
  */
 export async function healthCheck(
   baseUrl: string,
   apiKey: string,
 ): Promise<HealthResult> {
   const trimmed = (baseUrl.trim() || DEFAULT_LOCAL_LLM_URL).replace(/\/+$/, "");
-  if (!isCredentialSafeUrl(trimmed)) return "unsafe-url";
+  if (!isCredentialSafeUrlForProbe(trimmed, apiKey)) return "unsafe-url";
   try {
     return await withTimeout(
       FETCH_TIMEOUT_MS,
