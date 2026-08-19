@@ -69,7 +69,13 @@ describe("probeLocalProviderReachability", () => {
     ).resolves.toBe("ok");
   });
 
-  it.each(["unreachable", "unauthorized", "blocked-cleartext", "unsafe-url"])(
+  it.each([
+    "unreachable",
+    "unauthorized",
+    "blocked-cleartext",
+    "unsafe-url",
+    "untrusted-tls",
+  ])(
     "maps a %s healthCheck result to unreachable",
     async (result) => {
       healthCheckMock.mockResolvedValue(result);

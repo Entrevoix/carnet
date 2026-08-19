@@ -709,6 +709,7 @@ describe("SettingsScreen", () => {
         ["unreachable", /check the URL and that the server is running/i],
         ["blocked-cleartext", /Android blocked this plain http/i],
         ["unsafe-url", /Not a valid local address/i],
+        ["untrusted-tls", /certificate this device doesn't trust/i],
         ["ok", /Reachable/],
       ] as const)("renders the %s message", async (result, pattern) => {
         // Keyed by base URL rather than call order. #85's readiness hint

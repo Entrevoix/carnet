@@ -232,6 +232,13 @@ export function ProviderEditForm({
           for anything else.
         </HelperText>
       )}
+      {connectionResult === "untrusted-tls" && (
+        <HelperText type="error" visible>
+          Server uses a certificate this device doesn't trust — see the
+          provider's docs for a trusted setup. (Self-signed certificates
+          aren't supported yet.)
+        </HelperText>
+      )}
 
       {isCustom && (
         <Button
