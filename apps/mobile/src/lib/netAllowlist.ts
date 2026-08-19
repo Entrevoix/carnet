@@ -8,16 +8,39 @@
  *   - `localhost` / `127.0.0.1` (loopback)
  *   - `10.0.0.0/8`   (RFC1918 — host-on-LAN dev loop)
  *   - `192.168.0.0/16` (RFC1918 — a user may run OmniRoute at 192.168.x)
+ *   - `172.16.0.0/12`  (RFC1918)
  *
  * The previous implementation used a right-unanchored prefix regex
  * (`/^http:\/\/(localhost|127\.0\.0\.1|10\.)/`). That let `http://10.evil.com`,
  * `http://localhost.attacker.com`, and `http://127.0.0.1.attacker.com` through
  * — leaking the Bearer key to an attacker host. Exact hostname parsing via
  * `new URL()` closes that bypass.
+ *
+ * This module exports TWO predicates over the same host classification
+ * question, and callers must pick the right one deliberately (issue #176's
+ * security review split them apart — see each function's own doc):
+ *   - {@link isAllowedPlaintextHost} (and everything built on it —
+ *     {@link isCredentialSafeUrl}, llmGuards.ts's assertHttpsOrLocal) is the
+ *     CREDENTIAL GATE: it decides whether a Bearer key may travel in the
+ *     clear. It stays narrow (loopback + RFC1918 only) on purpose.
+ *   - {@link isLocalNetworkUrl} is a UX-locality predicate: "does this look
+ *     like my own network?", consumed by call sites that carry no security
+ *     consequence for a wrong answer (a timeout tier, a readiness hint, a
+ *     keyless-provider banner). It is intentionally WIDER than the gate.
  */
 
-/** True when `url`'s host is one of the allowed cleartext local/LAN hosts.
- * Consulted only for `http://` URLs — see {@link isCredentialSafeUrl}. */
+/** True when `url`'s host is one of the allowed cleartext local/LAN hosts —
+ * the CREDENTIAL GATE. Consulted only for `http://` URLs — see
+ * {@link isCredentialSafeUrl}. Every consumer of this function (directly or
+ * via isCredentialSafeUrl/assertHttpsOrLocal) decides whether a Bearer API
+ * key is allowed to travel over this URL:
+ *   - llmClient.ts's isCredentialSafeUrl → assertHttpsOrLocal (llmGuards.ts)
+ *     → executeChat/assertVisionReady (every content-bearing enrichment call)
+ *   - karakeep.ts's assertHttpsOrLocal (every Karakeep call — all
+ *     content-bearing, no probe-only path exists there)
+ *
+ * Deliberately NOT widened to Tailscale's 100.64.0.0/10 CGNAT range — see
+ * {@link isLocalNetworkUrl}'s doc for why that widening is UX-only. */
 export function isAllowedPlaintextHost(url: string): boolean {
   try {
     const { hostname } = new URL(url);
@@ -44,14 +67,45 @@ export function isAllowedPlaintextHost(url: string): boolean {
   }
 }
 
-/** True when `url` points at a loopback or RFC1918 LAN host, whatever its
- * scheme — the same exact-hostname classification {@link isAllowedPlaintextHost}
- * performs, named for call sites that ask "is this endpoint on my own network?"
- * rather than "is cleartext safe here?". A self-hosted local endpoint (Relais on
- * loopback, an OmniRoute box at 192.168.x) legitimately needs no API key; a
- * remote one does. */
+/** True when `url` points at a loopback/RFC1918 LAN host (everything
+ * {@link isAllowedPlaintextHost} allows) OR a Tailscale CGNAT address
+ * (`100.64.0.0/10`), whatever the URL's scheme — the UX-LOCALITY predicate,
+ * named for call sites that ask "does this endpoint live on my own network?"
+ * rather than "is a Bearer key safe to send here?". Consumers:
+ *   - llmHttp.ts's resolveEnrichmentTimeoutMs — a local/tailnet endpoint gets
+ *     the generous on-device-inference timeout tier instead of the
+ *     fast-fail-for-the-offline-queue cloud one.
+ *   - providerReadiness.ts's isLocalProvider — which providers get the
+ *     "make sure it's running" reachability hint vs. always-on cloud
+ *     treatment.
+ *   - dispatcher.ts's assertVisionCredentialPresent — whether a missing API
+ *     key gets an advisory "usually requires one" banner.
+ *
+ * NONE of these consumers gate whether a credential is transmitted — a wrong
+ * answer here costs a mistimed timeout tier or a banner that doesn't fire,
+ * never a leaked key. That is why this is deliberately WIDER than the
+ * credential gate: a self-hosted Relais/OmniRoute reachable over a Tailscale
+ * tailnet (100.64.0.0/10 is the address space `tailscaled` issues) is just as
+ * much "my own network" for UX purposes as a 192.168.x LAN box, even though
+ * the #176 security review explicitly declined to widen the CREDENTIAL gate
+ * to the same range (a tailnet is not the same trust boundary as a
+ * physically-local LAN — see isAllowedPlaintextHost's doc). Bounds mirror
+ * that function's 172.16/12 check: first octet 100, second octet 64-127
+ * inclusive (100.64.0.0 - 100.127.255.255). */
 export function isLocalNetworkUrl(url: string): boolean {
-  return isAllowedPlaintextHost(url);
+  if (isAllowedPlaintextHost(url)) return true;
+  try {
+    const { hostname } = new URL(url);
+    const parts = hostname.split(".");
+    const allNumeric =
+      parts.length === 4 && parts.every((p) => /^\d+$/.test(p));
+    if (!allNumeric) return false;
+    if (parts[0] !== "100") return false;
+    const second = Number(parts[1]);
+    return second >= 64 && second <= 127;
+  } catch {
+    return false;
+  }
 }
 
 /** True when `url` is safe to send a Bearer API key to: any `https://` URL, or
