@@ -64,6 +64,44 @@ describe("listModels", () => {
     const models = await listModels("http://public.example.com", "sk-test", true);
     expect(models).toEqual(["m"]);
   });
+
+  // Re-verification (explicit false, not just the default) — a NON-consented
+  // KEYED probe must still be refused. Pairs with the "true" case above so
+  // both sides of the consent bypass are directly exercised.
+  it("still rejects a KEYED catalog browse when allowInsecureTransport is explicitly false", async () => {
+    await expect(
+      listModels("http://public.example.com", "sk-test", false),
+    ).rejects.toThrow(/https:\/\//);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // #176 LOW fix: assertHttpsOrLocalForProbe skips the gate on
+  // `!apiKey.trim()`, treating a whitespace-only key as "no credential" —
+  // the header must agree, both in whether it's sent (an all-whitespace key
+  // must NOT reach a public plaintext host as "Bearer    ") and in what it
+  // sends for a genuine key with incidental padding.
+  it("treats a whitespace-only key as blank: gate skips AND no Authorization header is sent", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [{ id: "m" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const models = await listModels("http://public.example.com", "   ");
+    expect(models).toEqual(["m"]);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it("trims a genuine key before sending it in the Authorization header", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await listModels("http://127.0.0.1:8080", "  sk-test  ");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
+  });
 });
 
 // ── healthCheck ───────────────────────────────────────────────────────────────
@@ -214,5 +252,23 @@ describe("healthCheck", () => {
     expect(await healthCheck("https://192.168.1.5:8443", "sk-test")).toBe(
       "unreachable",
     );
+  });
+
+  // #176 LOW fix: isCredentialSafeUrlForProbe skips the gate on
+  // `!apiKey.trim()` — the header must agree, both in whether it's sent (an
+  // all-whitespace key must not reach a public plaintext host as
+  // "Bearer    ") and in what it sends for a genuine key with padding.
+  it("treats a whitespace-only key as blank: gate skips (probes) AND no Authorization header is sent", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 200 }));
+    expect(await healthCheck("http://example.com:8080", "   ")).toBe("ok");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it("trims a genuine key before sending it in the Authorization header", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("", { status: 200 }));
+    await healthCheck("http://127.0.0.1:8080", "  sk-test  ");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
   });
 });

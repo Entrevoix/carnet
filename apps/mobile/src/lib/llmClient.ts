@@ -181,7 +181,12 @@ export async function listModels(
     {
       method: "GET",
       headers: {
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        // Trimmed truthiness (#176 LOW fix) — MUST match
+        // assertHttpsOrLocalForProbe's `!apiKey.trim()` gate-skip check
+        // above. A whitespace-only key is treated as "no credential" for
+        // the gate; sending `Authorization: Bearer    ` here would
+        // contradict that by putting key-shaped content on the wire anyway.
+        ...(apiKey.trim() ? { Authorization: `Bearer ${apiKey.trim()}` } : {}),
       },
     },
     "LLM provider",
@@ -262,7 +267,10 @@ export async function healthCheck(
         const response = await fetch(`${trimmed}/v1/models`, {
           method: "GET",
           headers: {
-            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+            // Trimmed truthiness (#176 LOW fix) — MUST match
+            // isCredentialSafeUrlForProbe's `!apiKey.trim()` gate-skip check
+            // above. See listModels's identical fix for the rationale.
+            ...(apiKey.trim() ? { Authorization: `Bearer ${apiKey.trim()}` } : {}),
           },
           signal,
         });
