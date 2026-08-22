@@ -97,10 +97,10 @@ export function ProviderEditForm({
           LAN cleartext on a release build, and a 2026-08-16 emulator
           investigation (#153) then found even LOOPBACK refused on API 35 —
           the platform default was version-dependent all along. Since
-          withCleartextLocalProviders.js pins usesCleartextTraffic, the app's
-          own allowlist (netAllowlist.ts: loopback + RFC1918) is the single
-          gate on every Android version, and this copy states that. Keep the
-          three in sync: this text, netAllowlist.ts, and the plugin. */}
+          withNetworkSecurityConfig.js pins cleartextTrafficPermitted, the
+          app's own allowlist (netAllowlist.ts: loopback + RFC1918) is the
+          single gate on every Android version, and this copy states that.
+          Keep the three in sync: this text, netAllowlist.ts, and the plugin. */}
       <HelperText type="info" visible>
         Local addresses (127.0.0.1 or a private 10.x / 172.16–31.x / 192.168.x
         host, e.g. Relais or Ollama on your LAN) may use plain http://. Any
@@ -266,8 +266,10 @@ export function ProviderEditForm({
       {connectionResult === "untrusted-tls" && (
         <HelperText type="error" visible>
           Server uses a certificate this device doesn't trust — see the
-          provider's docs for a trusted setup. (Self-signed certificates
-          aren't supported yet.)
+          provider's docs for a trusted setup, or install the server's
+          certificate on this device (Android Settings → Security → More
+          security → Encryption &amp; credentials → Install a certificate).
+          See docs/self-signed-certs.md.
         </HelperText>
       )}
 
