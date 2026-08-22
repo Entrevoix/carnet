@@ -41,10 +41,27 @@ Carnet's network security config trusts both the standard system CA store
 *and* the user CA store (`<certificates src="user" />`). This means:
 
 - Any certificate you deliberately install via the steps above is trusted
-  **app-wide** in Carnet, not scoped to one provider's URL.
-- This is the same trust model a desktop browser uses for a manually
-  imported CA — Carnet isn't doing anything more permissive than what
-  Android itself already permits into every unpinned app.
+  **app-wide** in Carnet, not scoped to one provider's URL. A CA installed so
+  Relais works is *equally* trusted for every other host Carnet talks to —
+  api.openai.com, Anthropic's API, your Karakeep instance, anything. That CA
+  could, in principle, intercept traffic to those too, not just Relais.
+- Carnet opts into the browser's trust model (system CAs *and* user-installed
+  CAs) here. That's **broader** than Android's own default for apps: since
+  API 24, an app that doesn't ship a custom network security config trusts
+  only the system CA store, and a user-installed CA is excluded unless the
+  app opts in the way this one now does. This is a deliberate tradeoff for
+  #176, not an oversight — a self-signed Relais is otherwise unusable over
+  HTTPS, and Android's network-security-config can't scope trust per-domain
+  here because the server's hostname is whatever the user configures.
+- **Practical risk this creates**: if a CA gets installed into your device's
+  user store through some other means — a corporate MDM profile, or a
+  prompt you didn't fully read — that CA becomes trusted by Carnet for every
+  provider, including your cloud LLM API keys. Before this feature, Carnet's
+  cloud API traffic was protected by the system-CA-only default; now it
+  isn't. Only install certificates you obtained yourself from a server you
+  control, and be aware of what CAs are already in your device's user store
+  (Settings → Security → Encryption & credentials → Trusted credentials →
+  User tab).
 - Uninstalling the certificate from Android Settings revokes Carnet's trust
   in it too — there's no separate Carnet-side list to manage.
 

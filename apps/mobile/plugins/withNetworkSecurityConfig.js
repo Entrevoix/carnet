@@ -22,8 +22,13 @@
 // manifest. android:usesCleartextTraffic is kept below anyway as inert
 // belt-and-braces (debug builds still read it before this config plugin's
 // manifest mod runs in some tooling paths, and it costs nothing to leave).
-// verify-cleartext-prebuild.sh and withNetworkSecurityConfig.test.js both
-// pin cleartextTrafficPermitted="true" in the XML for exactly this reason.
+// This is pinned three ways, not equally strong: a constant-level assertion
+// (withNetworkSecurityConfig.test.js, runs in CI via vitest's plugins/**
+// include) checks NETWORK_SECURITY_CONFIG_XML's literal content; a real
+// `expo prebuild` + scripts/verify-cleartext-prebuild.sh checks the same
+// thing survives actual generation — but that script is MANUAL-ONLY, it is
+// not wired into ci.yml, so it only protects a contributor who remembers to
+// run it locally before pushing.
 //
 // Why the platform gate opens fully instead of mirroring lib/netAllowlist.ts:
 // Android's network-security-config matches DOMAINS (exact host or subdomain
@@ -35,13 +40,19 @@
 // arrangement every debug build has always run under, since Expo injects this
 // exact attribute in debug. This plugin makes release match debug.
 //
-// Why <certificates src="user"> is safe to add app-wide: it's the same trust
-// model a browser uses — Android already gates *installing* a user CA cert
-// behind device PIN/biometric plus an explicit "Install anyway, this
-// certificate can see your traffic" warning. Carnet trusting what the user
-// already told Android to trust adds no new attack surface beyond what the
-// OS itself already permits into every browser and app that doesn't pin.
-// See docs/self-signed-certs.md for the user-facing guide.
+// Trust-posture honesty on <certificates src="user">: this is NOT merely
+// matching Android's existing default. Since API 24, an app with no custom
+// network security config trusts the SYSTEM CA store ONLY — a user-installed
+// CA is excluded unless the app explicitly opts in, which is what this line
+// does. Carnet is deliberately opting into the BROADER trust model a desktop
+// browser uses (system + user CAs), a real posture change accepted for #176
+// because a self-signed Relais is otherwise unusable over HTTPS and
+// network-security-config can't scope trust per-domain when the server
+// hostname is user-configured. The blast radius: any CA the user's device
+// trusts (installed for Relais, or by anything else — an MDM profile, a
+// tricked install) is now trusted for EVERY host Carnet talks to, including
+// cloud providers' API endpoints. See docs/self-signed-certs.md, which
+// carries the full tradeoff and the user-facing mitigation.
 const fs = require('fs');
 const path = require('path');
 const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');

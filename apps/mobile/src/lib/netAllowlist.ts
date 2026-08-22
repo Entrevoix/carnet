@@ -110,7 +110,14 @@ export function isLocalNetworkUrl(url: string): boolean {
 
 /** True when `url` is safe to send a Bearer API key to: any `https://` URL, or
  * an `http://` URL whose host is in the local/LAN allowlist. Everything else
- * (other schemes, unparseable URLs, plain http to a public host) is false. */
+ * (other schemes, unparseable URLs, plain http to a public host) is false.
+ *
+ * #176: "https" here means "trusted by whatever the platform's TLS trust
+ * store resolves to" — since withNetworkSecurityConfig.js opted the app into
+ * trusting Android's USER CA store as well as the system one, that no longer
+ * implies a chain to a public CA. A cert the device user installed (for a
+ * self-signed Relais, or by anything else with access to the user CA store)
+ * satisfies this check too. See docs/self-signed-certs.md. */
 export function isCredentialSafeUrl(url: string): boolean {
   try {
     const { protocol } = new URL(url);

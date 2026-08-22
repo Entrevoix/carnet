@@ -117,6 +117,11 @@ export function ProviderEditForm({
               for THIS entry only, and the consent is stripped on settings
               import (see settingsTransfer.ts) so a receiving device must
               re-consent explicitly. */}
+          <HelperText type="info" visible>
+            Prefer real encryption if this server can offer it: switch to
+            https:// and install its certificate (docs/self-signed-certs.md)
+            instead of sending your key and notes unencrypted below.
+          </HelperText>
           <List.Item
             title="Send unencrypted to this address"
             description="This address looks like a private network (VPN/LAN). Send the API key and note text unencrypted to it?"
