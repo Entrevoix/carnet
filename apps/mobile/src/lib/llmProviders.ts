@@ -43,7 +43,16 @@ export interface LlmProvider {
    * shouldShowInsecureTransportToggle. Has NO Karakeep equivalent: Karakeep
    * is out of scope for this consent mechanism (karakeep.ts's
    * assertHttpsOrLocal doc). Stripped on settings IMPORT — see
-   * settingsTransfer.ts. */
+   * settingsTransfer.ts.
+   *
+   * Superseded in PREFERENCE, not removed, by user-CA trust
+   * (withNetworkSecurityConfig.js, also #176): installing the server's
+   * certificate gets the user real end-to-end TLS, which beats cleartext
+   * consent on every axis (confidentiality, not just "the app UI made you
+   * click a box"). This flag stays for servers that genuinely have no TLS
+   * to offer at all — a user-CA cert isn't an option there. ProviderEditForm
+   * points users at docs/self-signed-certs.md as the preferred path before
+   * showing this toggle. */
   allowInsecureTransport?: boolean;
 }
 

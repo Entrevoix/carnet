@@ -305,7 +305,13 @@ export async function healthCheck(
  * messages (a malformed URL, an expired-but-otherwise-fine chain reported
  * differently, etc.) and would misclassify them as this specific,
  * actionable case. Anything that doesn't hit one of these stays
- * "unreachable" rather than guessing. */
+ * "unreachable" rather than guessing.
+ *
+ * #176: this is no longer necessarily a dead end — installing the server's
+ * certificate into Android's user CA store makes it trusted app-wide (see
+ * withNetworkSecurityConfig.js's <certificates src="user" /> trust-anchor).
+ * ProviderEditForm's "untrusted-tls" HelperText points users at
+ * docs/self-signed-certs.md for the install steps. */
 function isUntrustedTlsError(message: string): boolean {
   return /trust anchor|sslhandshakeexception|certpathvalidatorexception/i.test(
     message,
