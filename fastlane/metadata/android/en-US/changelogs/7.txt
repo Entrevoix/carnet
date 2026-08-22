@@ -1,0 +1,2 @@
+- Self-signed server certificates are now supported: install the server's certificate on your device (Settings → Security) and Carnet will trust it — see docs/self-signed-certs.md
+- The "certificate not trusted" error now explains exactly how to fix it
