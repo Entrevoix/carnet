@@ -60,7 +60,7 @@
         }
       ],
       "./plugins/withSpeechRecognitionQueries",
-      "./plugins/withCleartextLocalProviders",
+      "./plugins/withNetworkSecurityConfig",
       "./plugins/withAppShortcuts",
       "./plugins/withCaptureNotification",
       "./plugins/withCaptureWidget",

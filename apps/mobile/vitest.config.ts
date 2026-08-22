@@ -13,7 +13,15 @@ export default defineConfig({
     // .test.tsx = screen/component smoke tests; they opt into jsdom per-file
     // via `// @vitest-environment jsdom` (see markdownPasteSafety.test.ts for
     // the precedent).
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "test/fixtures/**/*.test.ts"],
+    include: [
+      "src/**/*.test.ts",
+      "src/**/*.test.tsx",
+      "test/fixtures/**/*.test.ts",
+      // Config-plugin unit tests exercise pure functions the plugins export
+      // (manifest mutation, XML generation) — not the full expo mod
+      // pipeline, which is covered by scripts/verify-*-prebuild.sh instead.
+      "plugins/**/*.test.js",
+    ],
     server: {
       deps: {
         // Externalized deps are loaded with plain Node require, which
