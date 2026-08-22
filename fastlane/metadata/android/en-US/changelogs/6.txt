@@ -1,0 +1,3 @@
+- Private-network providers: new per-provider consent toggle to allow plain-HTTP endpoints (VPN/LAN), with honest warnings; consent resets when the URL changes and never transfers between devices
+- Test Connection now distinguishes an untrusted (self-signed) certificate from an unreachable server
+- Slow local models get a longer enrichment timeout instead of failing mid-generation
