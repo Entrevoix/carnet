@@ -1,8 +1,8 @@
 # IzzyOnDroid submission (Phase 1 of #182)
 
-Submit as a new issue at <https://gitlab.com/IzzyOnDroid/repo/-/issues> (requires a
-GitLab account) titled **"Add: Carnet (com.ventouxlabs.carnet)"**, or via the contact
-address listed at <https://apt.izzysoft.de/fdroid/>. Ready-to-paste body:
+Submit as a new issue at <https://gitlab.com/IzzyOnDroid/applists/-/issues>
+(requires a GitLab account; use their new-app issue template if one is offered)
+titled **"Add: Carnet (com.ventouxlabs.carnet)"**. Ready-to-paste body:
 
 ---
 
